@@ -589,6 +589,40 @@ rewrite.
 
 ---
 
+## 12b. Alternatives considered: Rust and Zig
+
+Evaluated after M1a Task 1, with the stack already proven. Decision: **stay on
+Bun + TypeScript.**
+
+**Zig — rejected.** No MTProto *client* library exists. The one serious Zig
+Telegram project, `mtproto.zig`, is a proxy: it relays traffic without speaking
+the client protocol. Adopting Zig means implementing RSA, AES-IGE, the DH
+handshake and TL-schema codegen for ~1,500 types before the first message sends.
+Note that OpenTUI's renderer is already Zig, so its rendering performance is
+already in hand.
+
+**Rust — credible, and better in exactly one place.** `grammers` 0.10.0 is
+actively maintained (moved to Codeberg; releases Oct 2025, Feb 2026, Jul 2026),
+`ratatui` 0.30.2 is mature, and `ratatui-image` covers sixel/kitty/iterm2/
+halfblocks. Its README warns the crypto is unaudited.
+
+The one genuine advantage is animated stickers: the `rlottie` crate (0.5.4,
+updated 2026-03) wraps **Telegram's own Lottie renderer**, which is strictly
+better than this spec's ThorVG-WASM plan — the single M2 component never proved
+out. Performance was not a factor: a chat client is network-bound, and Bun's
+startup and memory cost never matter for a long-running process.
+
+**Why Bun won:** IGNIS is TypeScript-only. Adopting Rust discards the DI
+container, `getError`/`ApplicationError`, `ILogger`, and most of the style
+standard's concrete rules, which is a deliberate project requirement (§2). The
+two are mutually exclusive.
+
+**Carried into M2:** if ThorVG-WASM rasterisation proves too slow or too
+inaccurate, the fallback is a **small Rust sidecar built on `rlottie`** that
+rasterises `.tgs` to frames, invoked from the TUI — `rlottie`'s quality without
+rewriting the client. The half-block renderer is the same algorithm in any
+language, so nothing in §12's M2 plan is wasted either way.
+
 ## 13. Open questions
 
 1. **Project name.** `tglow` is a placeholder chosen to sit in the devglow family.
