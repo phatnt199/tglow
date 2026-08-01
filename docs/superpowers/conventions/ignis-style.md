@@ -79,6 +79,17 @@ logger.for('connect').error('Could not connect | Reason: %s', reason);
 
 `ILogger` is `debug | info | warn | error | emerg | log(level, …) | for(method)`.
 
+### Capital letters are `<S-x>`, never `'X'`
+
+OpenTUI lowercases the letter into `name` and reports the shift separately, so a
+real Shift+G press arrives as `{ name: 'g', shift: true }` and normalises to
+`<S-g>`. Verified empirically — `pressKey('G')`, `pressKey('g', {shift:true})`
+and `typeText('G')` all produce exactly that.
+
+A binding written `keys: 'G'` is therefore **dead**: nothing a user can type will
+ever match it, and no test that constructs its key by hand will reveal that. Any
+binding on a capital letter must be written `<S-g>`, `<S-u>`, `<S-v>`.
+
 ### Terminal tests: wrap every key press in `act()`
 
 ```ts

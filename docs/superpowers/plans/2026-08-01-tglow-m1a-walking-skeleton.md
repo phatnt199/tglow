@@ -38,6 +38,7 @@ Confirmed by running code on this machine — see `docs/superpowers/probes/`. Do
 - `ILoggerProvider` is exactly `{ get(scope: string): ILogger }`.
 - `ILogger` is `debug | info | warn | error | emerg | log(level, …) | for(methodName)`.
 - OpenTUI `KeyEvent` reports Alt as `option` or `meta`, **never `alt`**.
+- **Capital letters arrive as lowercase + `shift: true`.** Shift+G is `{ name: 'g', shift: true }`, which normalises to `<S-g>`. A binding written `keys: 'G'` is dead — nothing a user types can match it, and a hand-constructed test key will not reveal that. Verified empirically.
 - **Every simulated key press must be wrapped in React's `act()`**, or the state update never flushes and the assertion reads a stale frame — silently, with no failure that points at the cause:
   ```ts
   await act(async () => { renderer.mockInput.pressKey('j'); });
@@ -1194,7 +1195,7 @@ test('gg and G jump to the ends of history', () => {
   const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('g'), keymap });
   expect(engine.resolve({ state: pending.state, key: buildKey('g'), keymap }).actions)
     .toEqual([{ type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'first' }]);
-  expect(engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('G', { shift: true }), keymap }).actions)
+  expect(engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('g', { shift: true }), keymap }).actions)
     .toEqual([{ type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'last' }]);
 });
 
@@ -1255,7 +1256,7 @@ export class KeymapService {
       action: () => [{ type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'first' }],
     },
     {
-      context: '*', mode: VimModes.NORMAL, keys: 'G', description: 'Newest message',
+      context: '*', mode: VimModes.NORMAL, keys: '<S-g>', description: 'Newest message',
       action: () => [{ type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'last' }],
     },
     {
