@@ -10,10 +10,12 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@hono/zod-openapi": "^1.5.1",
     "@opentui/core": "0.4.5",
     "@opentui/react": "0.4.5",
     "@venizia/ignis-helpers": "0.1.1-14",
     "@venizia/ignis-inversion": "0.1.1-6",
+    "hono": "^4.12.33",
     "react": "19.2.8",
     "reflect-metadata": "0.2.2",
     "telegram": "2.26.22"
