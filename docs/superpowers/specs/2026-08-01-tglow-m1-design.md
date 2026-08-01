@@ -76,10 +76,13 @@ Three findings that shape the design:
 
 - **`@injectable` does not exist in `0.1.1-6`.** Removed since 0.1.0. Scope is
   set on the binding via `.setScope(...)`; only `@inject` remains.
-- **The published `0.1.0` helpers cannot be imported without `hono`** — its root
-  barrel pulls `@hono/zod-openapi`. The `0.1.1-14` prerelease removes that
-  dependency (15 packages instead of 50), so the higher version is required, not
-  merely preferred.
+- **`ignis-helpers` cannot be imported without `@hono/zod-openapi`** at any
+  version, including `0.1.1-14`. Its root barrel reaches
+  `dist/modules/error/types.js`, which requires it at runtime on the
+  `ApplicationLogger` path. `@hono/zod-openapi` and `hono` are therefore direct
+  dependencies that tglow never imports itself — six extra packages, the price
+  of a scoped logger that can be diverted off stdout. The `./common` subpath
+  avoids them but carries no logger.
 - **The default logger provider writes to stdout**, which corrupts a TUI's
   alternate screen. `main.ts` must register a file-writing provider before
   anything can log.

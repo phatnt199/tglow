@@ -15,8 +15,9 @@ First of two plans for milestone M1 of `docs/superpowers/specs/2026-08-01-tglow-
 **Read `docs/superpowers/conventions/ignis-style.md` before writing any code.** It is binding on every file and carries the verified IGNIS API. The rules below are the ones most often broken; the document is the full set.
 
 - **Runtime:** Bun ≥ 1.3. Never `npm`/`node`. Tests run with `bun test`.
-- **Exact versions** — highest published, verified working together. Do **not** downgrade `@venizia/*` to `0.1.0`: its helpers cannot be imported without `hono`.
-  - `typescript` `7.0.2` · `@venizia/ignis-inversion` `0.1.1-6` · `@venizia/ignis-helpers` `0.1.1-14` · `@opentui/core` and `@opentui/react` `0.4.5` · `react` `19.2.8` · `@types/react` `19.2.18` · `telegram` `2.26.22` · `reflect-metadata` `0.2.2`
+- **Exact versions** — highest published, verified working together. Do **not** downgrade `@venizia/*` to `0.1.0`: it is older than `0.1.1-6` despite looking newer, and has a different DI API.
+  - `typescript` `7.0.2` · `@venizia/ignis-inversion` `0.1.1-6` · `@venizia/ignis-helpers` `0.1.1-14` · `@opentui/core` and `@opentui/react` `0.4.5` · `react` `19.2.8` · `@types/react` `19.2.18` · `telegram` `2.26.22` · `reflect-metadata` `0.2.2` · `@hono/zod-openapi` `^1.5.1` · `hono` `^4.12.33`
+- **`@hono/zod-openapi` and `hono` are dependencies tglow never imports.** `@venizia/ignis-helpers` requires `@hono/zod-openapi` at runtime from `dist/modules/error/types.js`, on the `ApplicationLogger` path — omitting them makes every helpers import fail with `Cannot find module '@hono/zod-openapi'`. Do not remove them as unused.
 - **`experimentalDecorators` and `emitDecoratorMetadata` must be inline in `tsconfig.json`.** Bun does not resolve them through `extends`; without them `@inject` is silently dropped and dependencies arrive `undefined` with no error.
 - **`@injectable` does not exist in `0.1.1-6`.** Set scope on the binding: `.setScope(BindingScopes.SINGLETON)`. Only `@inject({ key })` remains.
 - **IGNIS style, non-negotiable:** `I` prefix on interfaces, `T` on type aliases, kebab-case filenames, arrow functions only (never `function`), named exports only, explicit return types, options object named `opts`, `static readonly` constant classes (never `enum`), barrel `index.ts` at every folder level, `_` prefix on private fields, **never abbreviate** (`database` not `db`, `configuration` not `cfg`, `message` not `msg`).
@@ -101,10 +102,12 @@ Confirmed by running code on this machine — see `docs/superpowers/probes/`. Do
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@hono/zod-openapi": "^1.5.1",
     "@opentui/core": "0.4.5",
     "@opentui/react": "0.4.5",
     "@venizia/ignis-helpers": "0.1.1-14",
     "@venizia/ignis-inversion": "0.1.1-6",
+    "hono": "^4.12.33",
     "react": "19.2.8",
     "reflect-metadata": "0.2.2",
     "telegram": "2.26.22"

@@ -17,15 +17,32 @@ Highest published version of each, verified working together on this machine.
 | --- | --- | --- |
 | `typescript` | `7.0.2` | Highest stable. Typechecks IGNIS decorators cleanly — verified. |
 | `@venizia/ignis-inversion` | `0.1.1-6` | Highest. DI container, `getError`, `ApplicationError`. |
-| `@venizia/ignis-helpers` | `0.1.1-14` | Highest. **Prerelease drops the `@hono/zod-openapi` dependency** — 15 packages instead of 50. |
+| `@venizia/ignis-helpers` | `0.1.1-14` | Highest. Supplies `ApplicationLogger` / `LoggerFactory` / `ILogger`. |
+| `@hono/zod-openapi` | `1.5.1` | **Required transitively by helpers**, not used by tglow directly — see below. |
+| `hono` | `4.12.33` | Peer of `@hono/zod-openapi`. |
 | `@opentui/core` / `@opentui/react` | `0.4.5` | Only published version. |
 | `react` | `19.2.8` | `@types/react` stops at 19.2.18; the 19.3 canary has no types and would break `strict`. |
 | `telegram` (GramJS) | `2.26.22` | Only published version. |
 | `reflect-metadata` | `0.2.2` | Required for `@inject` metadata. |
 
-> **Do not downgrade `@venizia/*` to `0.1.0`.** The stable 0.1.0 helpers cannot
-> be imported without installing `hono` and `@hono/zod-openapi`. The prerelease
-> fixed exactly that.
+> **`@venizia/ignis-helpers` cannot be imported without `@hono/zod-openapi`.**
+> Its root barrel reaches `dist/modules/error/types.js`, which requires it at
+> runtime — on the `ApplicationLogger` / `LoggerFactory` path, not only on
+> HTTP-specific paths. Verified in an isolated directory:
+>
+> ```
+> Cannot find module '@hono/zod-openapi'
+>   from node_modules/@venizia/ignis-helpers/dist/modules/error/types.js
+> ```
+>
+> So `@hono/zod-openapi` and `hono` are declared as direct dependencies. tglow
+> imports neither; they exist purely to satisfy that require. Cost is six extra
+> packages. The `./common` subpath avoids them but carries no logger, so it
+> cannot replace the root import.
+>
+> **Do not downgrade `@venizia/*` to `0.1.0`.** It is older than `0.1.1-6`
+> despite looking newer to some tooling, and `0.1.1-6` is what the DI API in
+> this document describes.
 
 `experimentalDecorators` and `emitDecoratorMetadata` must be **inline** in
 `tsconfig.json`. Bun does not resolve them through `extends`, and `@inject` is
