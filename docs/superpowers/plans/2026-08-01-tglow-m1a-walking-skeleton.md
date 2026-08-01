@@ -38,8 +38,13 @@ Confirmed by running code on this machine — see `docs/superpowers/probes/`. Do
 - `ILoggerProvider` is exactly `{ get(scope: string): ILogger }`.
 - `ILogger` is `debug | info | warn | error | emerg | log(level, …) | for(methodName)`.
 - OpenTUI `KeyEvent` reports Alt as `option` or `meta`, **never `alt`**.
-- **`testRender` from `@opentui/react/test-utils` does not work for keyboard tests.** It renders with no `AppContext` provider, so `useAppContext().keyHandler` is null and `useKeyboard` no-ops behind its `?.` guard — tests pass while asserting on a UI that received nothing. Task 2 builds the working replacement.
-- `renderer.keyInput` is the `KeyHandler` to supply to `AppContext`.
+- **Every simulated key press must be wrapped in React's `act()`**, or the state update never flushes and the assertion reads a stale frame — silently, with no failure that points at the cause:
+  ```ts
+  await act(async () => { renderer.mockInput.pressKey('j'); });
+  await renderer.flush();
+  ```
+  Verified by controlled comparison — without `act()` the frame is unchanged; with it the frame updates. True of `testRender` and `renderWithKeys` alike. This is the easiest way to write a TUI test that passes while testing nothing.
+- `renderer.keyInput` is the `KeyHandler` supplied to `AppContext`. `createRoot(...).render()` already self-wraps the tree in an `AppContext` provider, so `testRender` is functional. Task 2's `renderWithKeys` wires the provider explicitly anyway: it does not rely on that internal behaviour, and it matches how `main.ts` wires the real renderer, so tests and production share one shape.
 - JSX intrinsics: `box`, `text`, `span`, `scrollbox`, `input`, `textarea`, `select`, `b`, `i`, `u`, `a`, `br`, `code`.
 - GramJS: `TelegramClient`, `Api` from `telegram`; `StringSession` from `telegram/sessions`; `Logger` from `telegram/extensions/Logger`.
 
@@ -301,15 +306,16 @@ import { AppContext, createRoot } from '@opentui/react';
 import { createTestRenderer, type TestRendererSetup } from '@opentui/core/testing';
 
 /**
- * Render a component tree for testing with keyboard input actually connected.
+ * Render a component tree for testing, with the AppContext wiring made explicit.
  *
- * Do not replace this with `testRender` from `@opentui/react/test-utils`: that
- * helper renders without an AppContext provider, so `useAppContext().keyHandler`
- * is null and `useKeyboard` no-ops behind its optional-chaining guard. Tests
- * then pass while asserting on a UI that never received a key.
+ * `testRender` from `@opentui/react/test-utils` also works: `createRoot().render()`
+ * self-wraps the tree in an AppContext provider. This helper does not depend on
+ * that internal, and it mirrors how `main.ts` wires the real renderer, so tests
+ * and production share one shape.
  *
- * Driving `createTestRenderer` directly means the renderer exists before the
- * first render, so `renderer.keyInput` can be supplied as the key handler.
+ * Callers MUST wrap key presses in React's `act()`. Without it the state update
+ * does not flush and the next assertion reads a stale frame — the failure mode
+ * is a passing test that checked nothing.
  */
 export const renderWithKeys = async (
   node: ReactNode,
@@ -410,11 +416,15 @@ directories are empty and become meaningful as they fill.
 
 ```bash
 git add src/test/
-git commit -m "Add working TUI test harness and dependency boundary tests
+git commit -m "Add TUI test harness and dependency boundary tests
 
-The documented testRender helper renders without an AppContext provider,
-so useKeyboard never receives events and keyboard tests pass while
-asserting on a UI that got no input."
+renderWithKeys wires the AppContext provider explicitly rather than
+relying on createRoot's internal self-wrap, and mirrors how main.ts
+wires the real renderer.
+
+Key presses must be wrapped in act(): without it the state update never
+flushes and the assertion reads a stale frame, so the test passes having
+checked nothing."
 ```
 
 ---

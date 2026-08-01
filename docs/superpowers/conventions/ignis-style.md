@@ -79,6 +79,18 @@ logger.for('connect').error('Could not connect | Reason: %s', reason);
 
 `ILogger` is `debug | info | warn | error | emerg | log(level, …) | for(method)`.
 
+### Terminal tests: wrap every key press in `act()`
+
+```ts
+await act(async () => { renderer.mockInput.pressKey('j'); });
+await renderer.flush();
+```
+
+Without `act()` the React state update does not flush, so the next assertion
+reads a stale frame. Nothing errors and nothing warns in the result — the test
+simply passes having checked nothing. Verified by controlled comparison; it
+holds for `testRender` and for `src/test/render.tsx` alike.
+
 ### The logger must never write to stdout
 
 A TUI owns the alternate screen. The default provider is winston writing to
