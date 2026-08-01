@@ -1361,9 +1361,10 @@ export * from './vim-engine.ts';
 Run: `bun test src/keys/`
 Expected: PASS — 10 keymap tests plus the earlier engine and normalizer tests.
 
-If `j` in the chat-list context resolves to a message move rather than a chat
-move, `resolve` is picking the first match rather than the most specific: make
-`candidates` prefer bindings whose `context` is not `'*'`.
+`j` in the chat-list context must move the chat cursor, not the message cursor.
+Task 5's engine guarantees that by preferring context-specific bindings over
+wildcard ones. If it fails here, that preference is missing or inverted — fix it
+in the engine, not by reordering this table.
 
 - [ ] **Step 6: Commit**
 
