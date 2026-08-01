@@ -53,8 +53,40 @@ Two negative findings that **constrain the design**:
   Consequence: `.webm` video stickers can show a still thumbnail only (VP9 decode
   would require a new native dependency).
 
-**Chosen stack:** Bun 1.3 · TypeScript · `@opentui/react` 0.4.5 · React 19 ·
-`telegram` (GramJS) 2.26.22 · `bun:sqlite` (built in, zero deps) · `sharp` (M2).
+**Chosen stack:** Bun 1.3 · TypeScript 7.0.2 · `@opentui/react` 0.4.5 · React
+19.2.8 · `telegram` (GramJS) 2.26.22 · `bun:sqlite` (built in, zero deps) ·
+`@venizia/ignis-inversion` 0.1.1-6 · `@venizia/ignis-helpers` 0.1.1-14 ·
+`sharp` (M2).
+
+### IGNIS
+
+The project follows the **IGNIS Code Style Standard** throughout and uses
+IGNIS's DI container, error helpers and logger. Full rules and the verified API
+live in `docs/superpowers/conventions/ignis-style.md`; every task brief points
+at it. Additional verified findings:
+
+| Claim | Result |
+| --- | --- |
+| `@venizia/ignis-inversion` DI under Bun | PASS — constructor injection, singleton scope |
+| `getError` → `ApplicationError` | PASS — `[Class][method]` format, statusCode 400 |
+| `ApplicationLogger` + custom provider | PASS — logs divertible to a file |
+| TypeScript 7.0.2 with IGNIS decorators | PASS — typechecks and runs |
+
+Three findings that shape the design:
+
+- **`@injectable` does not exist in `0.1.1-6`.** Removed since 0.1.0. Scope is
+  set on the binding via `.setScope(...)`; only `@inject` remains.
+- **The published `0.1.0` helpers cannot be imported without `hono`** — its root
+  barrel pulls `@hono/zod-openapi`. The `0.1.1-14` prerelease removes that
+  dependency (15 packages instead of 50), so the higher version is required, not
+  merely preferred.
+- **The default logger provider writes to stdout**, which corrupts a TUI's
+  alternate screen. `main.ts` must register a file-writing provider before
+  anything can log.
+
+IGNIS core, boot and filter are deliberately **not** used — they are HTTP server
+machinery (controllers, routes, OpenAPI, Drizzle repositories) and tglow has no
+HTTP surface. See §8 of the conventions document.
 
 TDLib was rejected: it would add a ~40 MB native binary and an FFI risk surface to
 buy a local database and update-gap handling that GramJS + `bun:sqlite` give us
@@ -68,13 +100,28 @@ with no native dependency at all.
 
 Enforced by review and by a lint boundary check:
 
-- `keys/` imports **nothing**. No Telegram, no React, no terminal, no I/O.
-- `core/` imports GramJS and `bun:sqlite`. It **never** imports React or OpenTUI.
+- `keys/` imports **only `@venizia/ignis-inversion`**. No Telegram, no React, no
+  terminal, no I/O. It is deterministic: same state plus same key always yields
+  the same actions.
+- `core/` imports GramJS, `bun:sqlite` and IGNIS. It **never** imports React or
+  OpenTUI.
 - `tui/` imports `core` (read state, dispatch actions) and `keys` (types only).
-  It **never** calls GramJS directly.
-- `main.ts` wires the three together.
+  It **never** imports `telegram`.
+- `main.ts` builds the container and wires the three together.
 
 Actions flow down; state flows up. One direction only.
+
+Every unit is a class bound into the IGNIS container and resolved by binding
+key, so a test can swap any dependency for a fake without touching the code
+under test. Services take their collaborators through `@inject` on constructor
+parameters rather than reaching for module-level singletons.
+
+**On the vim engine's determinism.** Its correctness is entirely mechanical —
+counts, operator+motion composition, mode transitions — so it must be drivable
+from a test with no terminal and no account. Being a container-resolved service
+does not compromise that: `VimEngineService` takes no collaborators, so a test
+resolves it from a container and asserts on returned actions. The rule that
+matters is the import restriction above, and Task 2's boundary test enforces it.
 
 ### Layout
 
