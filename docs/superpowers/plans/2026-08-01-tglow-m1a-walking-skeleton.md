@@ -910,6 +910,33 @@ test('resolve never mutates the state it is given', () => {
   buildEngine().resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('3'), keymap });
   expect(INITIAL_ENGINE_STATE).toEqual(before);
 });
+
+// Otherwise `j` in the chat list would move the message cursor, and which one
+// won would depend on the order bindings happen to be declared in.
+test('a context-specific binding beats a wildcard one for the same keys', () => {
+  const withOverride = [
+    ...keymap,
+    {
+      context: VimContexts.CHAT_LIST, mode: VimModes.NORMAL, keys: 'j', description: 'next chat',
+      action: (count: number) => [{ type: ActionTypes.CURSOR_MOVE, unit: 'chat' as const, delta: count }],
+    },
+  ];
+  const engine = buildEngine();
+
+  // In the chat list, the specific binding wins even though '*' is declared first.
+  expect(
+    engine.resolve({
+      state: { ...INITIAL_ENGINE_STATE, context: VimContexts.CHAT_LIST },
+      key: buildKey('j'),
+      keymap: withOverride,
+    }).actions,
+  ).toEqual([{ type: ActionTypes.CURSOR_MOVE, unit: 'chat', delta: 1 }]);
+
+  // Elsewhere the wildcard still applies.
+  expect(
+    engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('j'), keymap: withOverride }).actions,
+  ).toEqual([{ type: ActionTypes.CURSOR_MOVE, unit: 'message', delta: 1 }]);
+});
 ```
 
 - [ ] **Step 2: Run it and watch it fail**
@@ -1028,7 +1055,12 @@ export class VimEngineService {
 
     const sequence = state.pending + token;
 
-    const exact = candidates.find(binding => binding.keys === sequence);
+    // A context-specific binding beats a wildcard one for the same keys, so
+    // `j` in the chat list moves the chat cursor rather than the message cursor.
+    // Without this, resolution depends on keymap declaration order.
+    const exact =
+      candidates.find(binding => binding.keys === sequence && binding.context !== '*') ??
+      candidates.find(binding => binding.keys === sequence);
     if (exact) {
       const applied = this.applyStateActions({ state, binding: exact, count: state.count ?? 1 });
       return { state: applied.state, actions: applied.actions, status: 'resolved' };
