@@ -50,6 +50,13 @@ test('the engine resolves from the container', () => {
   expect(buildEngine()).toBeInstanceOf(VimEngineService);
 });
 
+test('resolve throws on an empty keymap', () => {
+  const engine = buildEngine();
+  expect(() => engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('j'), keymap: [] })).toThrow(
+    '[VimEngineService][resolve]',
+  );
+});
+
 test('a single mapped key resolves immediately', () => {
   const result = buildEngine().resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('j'), keymap });
   expect(result.status).toBe('resolved');
@@ -86,6 +93,21 @@ test('zero after a digit continues the count', () => {
   expect(second.state.count).toBe(10);
 });
 
+test('a digit in insert mode does not accumulate a count', () => {
+  const engine = buildEngine();
+  const insert: IEngineState = { ...INITIAL_ENGINE_STATE, mode: VimModes.INSERT };
+  const result = engine.resolve({ state: insert, key: buildKey('3'), keymap });
+  expect(result.state.count).toBeNull();
+});
+
+test('a digit while a prefix is pending does not accumulate a count', () => {
+  const engine = buildEngine();
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('g'), keymap });
+  expect(pending.state.pending).toBe('g');
+  const result = engine.resolve({ state: pending.state, key: buildKey('3'), keymap });
+  expect(result.state.count).toBeNull();
+});
+
 test('a prefix of a longer binding stays pending', () => {
   const result = buildEngine().resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('g'), keymap });
   expect(result.status).toBe('pending');
@@ -118,6 +140,25 @@ test('bindings are filtered by mode', () => {
   expect(engine.resolve({ state: insert, key: buildKey('escape'), keymap }).status).toBe('resolved');
 });
 
+test('a binding with an array of modes matches any of them', () => {
+  const multiModeKeymap: IKeyBinding[] = [
+    {
+      context: '*', mode: [VimModes.NORMAL, VimModes.VISUAL], keys: 'x', description: 'multi-mode',
+      action: () => [{ type: ActionTypes.CHAT_OPEN }],
+    },
+  ];
+  const engine = buildEngine();
+
+  const normal = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('x'), keymap: multiModeKeymap });
+  expect(normal.status).toBe('resolved');
+
+  const visual: IEngineState = { ...INITIAL_ENGINE_STATE, mode: VimModes.VISUAL };
+  expect(engine.resolve({ state: visual, key: buildKey('x'), keymap: multiModeKeymap }).status).toBe('resolved');
+
+  const insertMode: IEngineState = { ...INITIAL_ENGINE_STATE, mode: VimModes.INSERT };
+  expect(engine.resolve({ state: insertMode, key: buildKey('x'), keymap: multiModeKeymap }).status).toBe('unmapped');
+});
+
 test('bindings are filtered by context', () => {
   const engine = buildEngine();
   const chatList: IEngineState = { ...INITIAL_ENGINE_STATE, context: VimContexts.CHAT_LIST };
@@ -130,35 +171,95 @@ test('mode.set updates the returned state', () => {
   expect(result.state.mode).toBe(VimModes.INSERT);
 });
 
+test('focus.set updates the returned context', () => {
+  const focusKeymap: IKeyBinding[] = [
+    {
+      context: '*', mode: VimModes.NORMAL, keys: '<C-w>', description: 'focus chat list',
+      action: () => [{ type: ActionTypes.FOCUS_SET, context: VimContexts.CHAT_LIST }],
+    },
+  ];
+  const result = buildEngine().resolve({
+    state: INITIAL_ENGINE_STATE,
+    key: buildKey('w', { ctrl: true }),
+    keymap: focusKeymap,
+  });
+  expect(result.state.context).toBe(VimContexts.CHAT_LIST);
+});
+
 test('resolve never mutates the state it is given', () => {
-  const before = { ...INITIAL_ENGINE_STATE };
-  buildEngine().resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('3'), keymap });
-  expect(INITIAL_ENGINE_STATE).toEqual(before);
+  // A frozen copy makes a mutation throw immediately, which fails the test
+  // loudly -- rather than relying on a later equality check that could pass
+  // for the wrong reason if a shared constant got contaminated elsewhere.
+  const buildFrozenState = (): IEngineState => Object.freeze({ ...INITIAL_ENGINE_STATE });
+  const engine = buildEngine();
+
+  // The pending/count path.
+  expect(() => engine.resolve({ state: buildFrozenState(), key: buildKey('3'), keymap })).not.toThrow();
+  // The resolved path.
+  expect(() => engine.resolve({ state: buildFrozenState(), key: buildKey('j'), keymap })).not.toThrow();
+  // The unmapped path.
+  expect(() => engine.resolve({ state: buildFrozenState(), key: buildKey('z'), keymap })).not.toThrow();
 });
 
 // Otherwise `j` in the chat list would move the message cursor, and which one
 // won would depend on the order bindings happen to be declared in.
 test('a context-specific binding beats a wildcard one for the same keys', () => {
-  const withOverride: IKeyBinding[] = [
-    ...keymap,
-    {
-      context: VimContexts.CHAT_LIST, mode: VimModes.NORMAL, keys: 'j', description: 'next chat',
-      action: (count: number) => [{ type: ActionTypes.CURSOR_MOVE, unit: 'chat' as const, delta: count }],
-    },
-  ];
+  const specificBinding: IKeyBinding = {
+    context: VimContexts.CHAT_LIST, mode: VimModes.NORMAL, keys: 'j', description: 'next chat',
+    action: (count: number) => [{ type: ActionTypes.CURSOR_MOVE, unit: 'chat' as const, delta: count }],
+  };
+  const wildcardFirst: IKeyBinding[] = [...keymap, specificBinding];
+  const specificFirst: IKeyBinding[] = [specificBinding, ...keymap];
   const engine = buildEngine();
 
-  // In the chat list, the specific binding wins even though '*' is declared first.
+  // Wildcard declared first, specific declared last -- the specific binding
+  // wins. On its own this doesn't prove order-independence, since a
+  // last-wins implementation would also pass this half.
   expect(
     engine.resolve({
       state: { ...INITIAL_ENGINE_STATE, context: VimContexts.CHAT_LIST },
       key: buildKey('j'),
-      keymap: withOverride,
+      keymap: wildcardFirst,
     }).actions,
   ).toEqual([{ type: ActionTypes.CURSOR_MOVE, unit: 'chat', delta: 1 }]);
 
-  // Elsewhere the wildcard still applies.
+  // Specific declared first, wildcard declared last -- still wins. A
+  // last-wins implementation would fail this half.
   expect(
-    engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('j'), keymap: withOverride }).actions,
+    engine.resolve({
+      state: { ...INITIAL_ENGINE_STATE, context: VimContexts.CHAT_LIST },
+      key: buildKey('j'),
+      keymap: specificFirst,
+    }).actions,
+  ).toEqual([{ type: ActionTypes.CURSOR_MOVE, unit: 'chat', delta: 1 }]);
+
+  // Elsewhere, the specific binding is filtered out by context before
+  // specificity is even considered, so the wildcard is the only candidate --
+  // this exercises context filtering, not specificity resolution.
+  expect(
+    engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('j'), keymap: wildcardFirst }).actions,
   ).toEqual([{ type: ActionTypes.CURSOR_MOVE, unit: 'message', delta: 1 }]);
+});
+
+// M1a limitation, not a bug: resolve checks for an exact match before it
+// checks for a prefix, so a keymap that binds both a key and a longer
+// sequence starting with it makes the longer binding unreachable. The M1a
+// keymap avoids this -- 'g' and 'n' are only ever prefixes, and 'j' / 'jk'
+// never compete because they live in different modes. Resolving it properly
+// needs operator-pending semantics and a timeout, which is M1b work.
+test('a binding that is also a prefix of a longer one makes the longer one unreachable (known limit, see M1b)', () => {
+  const conflictingKeymap: IKeyBinding[] = [
+    {
+      context: '*', mode: VimModes.NORMAL, keys: 'g', description: 'short',
+      action: () => [{ type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'first' }],
+    },
+    {
+      context: '*', mode: VimModes.NORMAL, keys: 'gg', description: 'long',
+      action: () => [{ type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'last' }],
+    },
+  ];
+  const result = buildEngine().resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('g'), keymap: conflictingKeymap });
+  expect(result.status).toBe('resolved');
+  expect(result.actions).toEqual([{ type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'first' }]);
+  expect(result.state.pending).toBe('');
 });
