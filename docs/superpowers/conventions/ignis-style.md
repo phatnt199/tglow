@@ -113,7 +113,8 @@ LoggerFactory.use({ provider: { get: (scope: string): ILogger => buildFileLogger
 | Type alias | `T` prefix | `TVimMode`, `TBindingKey` |
 | Class | PascalCase + suffix | `MessageRepository`, `TelegramClientService` |
 | File | kebab-case | `chat-list.tsx`, `vim-engine.ts` |
-| Private field | underscore prefix | `_messages`, `_container` |
+| Private **data** field | underscore prefix | `_messages`, `_container`, `_logger` |
+| Private **method** | no prefix | `matchesMode`, `accumulateCount` |
 | Binding key | `@tglow/[component]/[feature]` | `@tglow/core/message-store` |
 | Constants | `static readonly` class, never `enum` | `class VimModes { static readonly NORMAL = 'normal'; }` |
 | Barrel | `index.ts` at every folder level | `src/core/index.ts` |
@@ -122,6 +123,11 @@ LoggerFactory.use({ provider: { get: (scope: string): ILogger => buildFileLogger
 **Never abbreviate.** `configuration` not `cfg`. `database` not `db`. `message`
 not `msg`. `repository` not `repo`. This applies to type parameters too:
 `<TDocument>` not `<TDoc>`.
+
+Because every member is an arrow-function property, "field" and "method" are the
+same construct syntactically. The split above is by role: state carries `_`,
+behaviour does not. IGNIS's own code is inconsistent here (`BaseLogger._scope`
+versus `Binding.bindScope`), so this is tglow's ruling, not an inherited one.
 
 ---
 
