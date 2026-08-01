@@ -4,15 +4,16 @@ import { AppContext, createRoot } from '@opentui/react';
 import { createTestRenderer, type TestRendererSetup } from '@opentui/core/testing';
 
 /**
- * Render a component tree for testing with keyboard input actually connected.
+ * Render a component tree for testing, with the AppContext wiring made explicit.
  *
- * Do not replace this with `testRender` from `@opentui/react/test-utils`: that
- * helper renders without an AppContext provider, so `useAppContext().keyHandler`
- * is null and `useKeyboard` no-ops behind its optional-chaining guard. Tests
- * then pass while asserting on a UI that never received a key.
+ * `testRender` from `@opentui/react/test-utils` also works: `createRoot().render()`
+ * self-wraps the tree in an AppContext provider. This helper does not depend on
+ * that internal, and it mirrors how `main.ts` wires the real renderer, so tests
+ * and production share one shape.
  *
- * Driving `createTestRenderer` directly means the renderer exists before the
- * first render, so `renderer.keyInput` can be supplied as the key handler.
+ * Callers MUST wrap key presses in React's `act()`. Without it the state update
+ * does not flush and the next assertion reads a stale frame — the failure mode
+ * is a passing test that checked nothing.
  */
 export const renderWithKeys = async (
   node: ReactNode,
