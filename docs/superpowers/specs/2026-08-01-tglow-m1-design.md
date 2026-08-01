@@ -1,0 +1,549 @@
+# tglow — a vim-native Telegram client for the terminal
+
+**Date:** 2026-08-01
+**Status:** M1 design, approved for planning
+**Scope of this document:** milestone M1 in implementable detail; M2–M4 as roadmap.
+
+---
+
+## 1. What this is
+
+A Telegram client that runs in the terminal, driven entirely by vim keys, styled
+with the devglow palette so it sits alongside the author's neovim, zsh, alacritty
+and superfile setup as one visual system.
+
+It logs in as a **real user account** over MTProto — not a bot — so it shows every
+DM, group and channel with full history.
+
+Design stance: **an editor that happens to chat.** The app starts in NORMAL mode.
+Nothing you type is sent by accident.
+
+### Success criteria for M1
+
+A person can launch `tglow`, log in with their phone number, see their chat list,
+read history, send a message, receive one live, reply to it, edit it, delete it —
+and never touch the mouse or an arrow key.
+
+---
+
+## 2. Verified technical foundation
+
+Every load-bearing assumption below was **tested on this machine**, not assumed.
+Probe source: `docs/superpowers/probes/` (ported from the brainstorming scratchpad).
+
+| Claim | How it was verified | Result |
+| --- | --- | --- |
+| GramJS imports under Bun | `import("telegram")` | PASS — v2.26.22 |
+| MTProto crypto works on Bun | AES-IGE encrypt/decrypt round-trip | PASS |
+| Sockets + DH handshake work | live TCP connect to a Telegram DC | PASS |
+| Auth key + session serialize | `client.session.save()` | PASS — 369-char session |
+| Live RPC round-trip | `help.getNearestDc` | PASS — returned `country=VN` |
+| OpenTUI loads on Bun | `import("@opentui/core")` | PASS — 257 exports |
+| OpenTUI React bindings load | `import("@opentui/react")` | PASS |
+| WebP decode + resize | `sharp` 0.35.3 lossless round-trip | PASS |
+| Half-block sticker rendering | truecolor `▀` render of a real WebP | PASS |
+| `.tgs` unwrapping | `Bun.gunzipSync` → Lottie JSON | PASS — zero deps |
+
+Two negative findings that **constrain the design**:
+
+- **Alacritty 0.18.0-dev supports no image protocol.** Confirmed by inspecting
+  terminfo: no sixel, no Kitty graphics. All image output must therefore be
+  Unicode half-blocks (`▀`, fg = top pixel, bg = bottom pixel, 2 px per cell).
+- **No `ffmpeg`/`chafa`/`magick` on the system.** Decoding must happen in-process.
+  Consequence: `.webm` video stickers can show a still thumbnail only (VP9 decode
+  would require a new native dependency).
+
+**Chosen stack:** Bun 1.3 · TypeScript · `@opentui/react` 0.4.5 · React 19 ·
+`telegram` (GramJS) 2.26.22 · `bun:sqlite` (built in, zero deps) · `sharp` (M2).
+
+TDLib was rejected: it would add a ~40 MB native binary and an FFI risk surface to
+buy a local database and update-gap handling that GramJS + `bun:sqlite` give us
+with no native dependency at all.
+
+---
+
+## 3. Architecture
+
+### The dependency rule
+
+Enforced by review and by a lint boundary check:
+
+- `keys/` imports **nothing**. No Telegram, no React, no terminal, no I/O.
+- `core/` imports GramJS and `bun:sqlite`. It **never** imports React or OpenTUI.
+- `tui/` imports `core` (read state, dispatch actions) and `keys` (types only).
+  It **never** calls GramJS directly.
+- `main.ts` wires the three together.
+
+Actions flow down; state flows up. One direction only.
+
+### Layout
+
+```
+src/
+├── keys/                    PURE — exhaustively unit-testable
+│   ├── types.ts             Mode, Context, Key, Action, Binding
+│   ├── engine.ts            resolve(state, key, keymap) → {state, actions}
+│   ├── keymap.ts            the binding table (single source of truth)
+│   ├── motions.ts           j k gg G { } <C-d> <C-u> H M L
+│   ├── operators.ts         d y c + counts, operator-pending state
+│   └── registers.ts         named registers, "+ via OSC 52
+│
+├── core/                    Headless — runs and is tested without a terminal
+│   ├── client.ts            GramJS lifecycle, reconnect with backoff
+│   ├── auth.ts              phone → code → 2FA → ready (explicit state machine)
+│   ├── session.ts           session persistence, 0600, encrypted at rest
+│   ├── dialogs.ts           chat list: fetch, ordering, unread counts
+│   ├── messages.ts          history paging, send, edit, delete, reply
+│   ├── entities.ts          Telegram entities → styled spans
+│   ├── updates.ts           live update dispatch + pts gap recovery
+│   ├── store.ts             observable state + typed event bus
+│   └── cache/
+│       ├── schema.sql       tables + indices
+│       ├── migrate.ts       versioned migrations
+│       └── db.ts            bun:sqlite wrapper
+│
+├── tui/                     OpenTUI React — dumb by design
+│   ├── App.tsx
+│   ├── panes/               ChatList · MessageView · Composer · StatusLine
+│   ├── overlays/            WhichKey(\) · Picker(<C-p>) · Search(/) · Cmdline(:)
+│   ├── theme/
+│   │   ├── palettes/        all 12 devglow palettes as typed objects
+│   │   └── tokens.ts        semantic mapping (palette → UI role)
+│   └── hooks/               useStore, useKeys, useDimensions
+│
+└── main.ts
+```
+
+### Data flow
+
+```
+keypress ──→ keys/engine (pure fn) ──→ Action[] ──→ dispatch
+                                                       │
+                                                       ▼
+                                         core: mutate store, call Telegram
+                                                       │
+        React re-render  ◄─── store.emit  ◄────────────┤
+                                                       │
+                        Telegram update ──→ core/updates
+```
+
+### Why this shape
+
+`keys/engine` being a **pure function** is the load-bearing decision. Full vim —
+counts, operator+motion composition, registers, `.` repeat — is a state machine,
+and state machines are only tractable when you can drive them from a test with no
+terminal and no network. Bolting vim onto React keypress handlers is how these
+projects collapse under their own weight.
+
+`core/` running headless means "send a message, receive an update, persist it" is
+testable in CI against a mock transport.
+
+Each file stays small enough to hold in one context window.
+
+---
+
+## 4. The vim engine
+
+### Modes
+
+| Mode | Purpose | Enter | Leave |
+| --- | --- | --- | --- |
+| `NORMAL` | navigate chats and messages | *default at launch* | — |
+| `INSERT` | type into the composer | `i` `a` `o` | `jk` or `Esc` → composer-NORMAL |
+| `VISUAL` | select a message range | `v` `V` | `Esc` |
+| `COMMAND` | `:` ex commands | `:` | `Enter` / `Esc` |
+| `SEARCH` | `/` incremental search | `/` `?` | `Enter` / `Esc` |
+
+### Two vim contexts
+
+This is the subtle part. There are two distinct "buffers":
+
+1. **App-level** — the message list is the buffer, each *message* is a line.
+   `j`/`k` move between messages, `dd` deletes a message, `yy` yanks its text.
+2. **Composer-level** — the text being typed is a buffer with ordinary vim text
+   editing: `w` `b` `0` `$` `dw` `ciw` `x` `A` `I`.
+
+Transition model:
+
+```
+ NORMAL (messages) ──i/a──► INSERT (composer, typing)
+        ▲                        │
+        │                       jk
+        │                        ▼
+        └──── Esc ──────  NORMAL (composer, text editing)
+```
+
+Both `jk` and `Esc` leave INSERT for composer-NORMAL — they are equivalent, as in
+vim. A further `Esc` from composer-NORMAL returns focus to the message list.
+
+This is what "fully vim" requires: a half-measure where `jk` jumped straight out
+to the message list would make editing a multi-line draft impossible.
+
+### Engine state
+
+```ts
+interface EngineState {
+  mode: Mode;
+  context: Context;              // "chatlist" | "messages" | "composer" | "overlay"
+  pending: Key[];                // unresolved prefix, e.g. [d] awaiting a motion
+  count: number | null;          // the 3 in 3j
+  operator: OperatorId | null;   // d | y | c while operator-pending
+  register: string | null;       // set by "
+  lastChange: Action[] | null;   // powers .
+  lastFind: { motion: string; char: string } | null;  // powers ; and ,
+}
+
+function resolve(
+  state: EngineState,
+  key: Key,
+  keymap: Keymap,
+): { state: EngineState; actions: Action[]; status: "pending" | "resolved" | "unmapped" };
+```
+
+Pure. No side effects. Every branch reachable from a unit test.
+
+### Bindings are declarative
+
+```ts
+interface Binding {
+  context: Context | "*";
+  mode: Mode | Mode[];
+  keys: string;               // "dd", "<C-p>", "\\nv"
+  action: Action | ((ctx: BindingCtx) => Action[]);
+  countable?: boolean;        // may be prefixed with a count
+  desc: string;               // powers the which-key popup
+}
+```
+
+The `desc` field mirrors the author's `003-keymaps.lua`, where every mapping
+carries a description. One table drives both dispatch and the `\` popup, so they
+can never drift apart.
+
+---
+
+## 5. Keymap — built on existing muscle memory
+
+Leader is `\`, matching `vim.g.mapleader`. Mappings deliberately echo the
+author's neovim config so the keys are already learned.
+
+### Navigation (NORMAL)
+
+| Key | Action | Echoes |
+| --- | --- | --- |
+| `j` / `k` | next / previous message | vim |
+| `3j` | down 3 messages | counts |
+| `gg` / `G` | oldest loaded / newest | vim |
+| `<C-d>` / `<C-u>` | half page | vim |
+| `<A-j>` / `<A-k>` | scroll view one line | their `<A-j>`/`<A-k>` |
+| `zz` | centre current message | vim |
+| `<C-w>h/l` | move focus between panes | vim windows |
+| `nf` | focus chat list | their `nf` → NvimTreeFocus |
+| `\nv` | toggle chat-list sidebar | their `<leader>nv` → NvimTreeToggle |
+| `]u` / `[u` | next / previous **unread** chat | their `]q`/`[q` pattern |
+| `]m` / `[m` | next / previous **mention** | same pattern |
+
+### Message actions (NORMAL)
+
+| Key | Action |
+| --- | --- |
+| `i` / `a` | write (INSERT in composer) |
+| `r` | reply to message under cursor |
+| `e` | edit own message |
+| `dd` | delete message (`3dd` deletes 3) |
+| `yy` | yank message text |
+| `\y` | yank to **system clipboard** via OSC 52 |
+| `K` | message details / sender info — *echoes LSP hover* |
+| `gd` | jump to the message this replies to — *echoes goto-definition* |
+| `gr` | show replies to this message — *echoes LSP references* · **M3** |
+| `v` / `V` | visual select a message range |
+
+`\y` uses OSC 52, which works because the author's alacritty sets
+`terminal.osc52 = "OnlyCopy"` and tmux advertises `clipboard`.
+
+### Search and jump
+
+| Key | Action | Echoes |
+| --- | --- | --- |
+| `<C-p>` | fuzzy jump to chat | their `<C-p>` → Telescope git_files |
+| `/` `?` `n` `N` | incremental search over **cached** history | vim |
+| `:` | ex command line | vim |
+| `\` | which-key popup | their which-key "modern" preset |
+| `<C-f>` | full-text search in chat (server + FTS5) · **M3** | their `<C-f>` → buffer fuzzy find |
+| `<C-r>` | global message search · **M3** | their `<C-r>` → Telescope find_files |
+
+`/` in M1 searches what is already cached, using a `LIKE` over the `messages`
+table — cheap, offline, and enough that the key does not feel broken. `<C-f>`
+escalates to server-side and FTS5 search in M3.
+
+### Ex commands (M1 subset)
+
+`:q` quit · `:w` send draft · `:e <chat>` open chat · `:set palette=<name>` ·
+`:read` mark chat read · `:reload` reconnect.
+
+---
+
+## 6. Interface and theming
+
+### Layout
+
+```
+┌─ chats ───────┐┌─ Alice ─────────────────────────────────┐
+│  Alice      2 ││  3  Alice   did you push it?             │
+│  Bob          ││  2  me      not yet                    ✓✓│
+│  devs       7 ││  1  Alice   ok ping me                   │
+│  saved        ││▶ 0  Alice   morning!                     │
+└───────────────┘└──────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│ ❯ press i to write…                                        │
+└────────────────────────────────────────────────────────────┘
+ NORMAL │ Alice │ 3 unread │ 4/312 │ \ for keys
+```
+
+The status bar is M1-accurate: mode, chat, unread count, cursor position in the
+loaded history, hint. Presence (`online`, `typing…`) joins it in M2.
+
+**Relative message numbers.** The gutter shows relative distance from the cursor,
+exactly like `relativenumber` + `number` in the author's config — so `3j` is
+visually obvious before you type it. The cursor row shows absolute position.
+
+Other borrowed settings: `scrolloff = 8` equivalent, cursorline on the selected
+message, `│` pane separators (their `fillchars`), Nerd Font icons, lualine-style
+status bar with the mode in section A.
+
+### Theme
+
+All 12 devglow palettes ship as typed TS objects with the same 17-key structure
+as `devglow/lua/devglow/palettes/*.lua` (12 colours + 5 shades). **sage** is the
+default, matching the active alacritty theme. Switch live with `:set palette=ember`.
+
+Semantic tokens map palette → role, so palettes stay swappable:
+
+| Token | sage value | Use |
+| --- | --- | --- |
+| `mode.normal` | `TEAL #7DB9B6` | status bar in NORMAL |
+| `mode.insert` | `GOLD #EBC17A` | status bar in INSERT |
+| `mode.visual` | `PINK #D68C8C` | status bar in VISUAL |
+| `chat.unread` | `GOLD` | unread badge |
+| `msg.own` | `TEAL` | your messages |
+| `msg.other` | `FOREGROUND #E6E6E6` | their messages |
+| `msg.cursor` | `DARK_03 #383838` | cursorline |
+| `text.code` | `GREEN #87AFAF` | code entities |
+| `text.link` | `SKY #7EAAC7` | link entities |
+| `text.spoiler` | `DARK_03` on `DARK_03` | hidden until revealed |
+| `state.error` | `RED #AF5F5F` | errors, failed sends |
+| `border` | `DARK_02 #282828` | pane borders |
+
+---
+
+## 7. Data and sync
+
+### SQLite schema (`bun:sqlite`)
+
+```sql
+CREATE TABLE peers (            -- users, groups, channels
+  id            TEXT PRIMARY KEY,
+  type          TEXT NOT NULL,  -- user | chat | channel
+  access_hash   TEXT,
+  title         TEXT NOT NULL,
+  username      TEXT,
+  is_self       INTEGER DEFAULT 0,
+  is_bot        INTEGER DEFAULT 0,
+  status        TEXT,           -- online | offline | recently | ...  (M2 displays)
+  status_seen_at INTEGER,
+  updated_at    INTEGER NOT NULL
+);
+
+CREATE TABLE dialogs (
+  peer_id            TEXT PRIMARY KEY REFERENCES peers(id),
+  pinned             INTEGER DEFAULT 0,
+  unread_count       INTEGER DEFAULT 0,
+  unread_mentions    INTEGER DEFAULT 0,
+  read_inbox_max_id  INTEGER DEFAULT 0,
+  read_outbox_max_id INTEGER DEFAULT 0,
+  top_message_id     INTEGER,
+  last_message_at    INTEGER,
+  muted_until        INTEGER DEFAULT 0,
+  folder_id          INTEGER DEFAULT 0      -- M4 uses this
+);
+CREATE INDEX idx_dialogs_order ON dialogs(pinned DESC, last_message_at DESC);
+
+CREATE TABLE messages (
+  peer_id         TEXT NOT NULL REFERENCES peers(id),
+  id              INTEGER NOT NULL,
+  from_id         TEXT,
+  date            INTEGER NOT NULL,
+  edit_date       INTEGER,
+  text            TEXT,
+  entities        TEXT,          -- JSON
+  reply_to_msg_id INTEGER,
+  fwd_from        TEXT,          -- JSON
+  media_kind      TEXT,          -- null in M1; M2 populates
+  media_json      TEXT,
+  out             INTEGER DEFAULT 0,
+  deleted         INTEGER DEFAULT 0,
+  PRIMARY KEY (peer_id, id)
+);
+CREATE INDEX idx_messages_peer_date ON messages(peer_id, date DESC);
+
+CREATE TABLE history_ranges (   -- which id ranges are contiguously cached
+  peer_id TEXT NOT NULL,
+  min_id  INTEGER NOT NULL,
+  max_id  INTEGER NOT NULL,
+  PRIMARY KEY (peer_id, min_id)
+);
+
+CREATE TABLE sync_state (       -- 'pts' | 'qts' | 'date' | 'seq' | 'channel:<id>:pts'
+  key   TEXT PRIMARY KEY,
+  value INTEGER NOT NULL
+);
+
+CREATE TABLE drafts (
+  peer_id         TEXT PRIMARY KEY,
+  text            TEXT,
+  reply_to_msg_id INTEGER,
+  updated_at      INTEGER
+);
+```
+
+`history_ranges` is what makes scrollback correct: it records which id ranges are
+known-contiguous, so scrolling up can tell "cached" from "never fetched" instead
+of silently showing a hole.
+
+M3 adds `CREATE VIRTUAL TABLE messages_fts USING fts5(text, content=messages)`.
+The schema above is shaped so that slots in without migration pain.
+
+### Paging
+
+Render from SQLite first (instant, works offline), fetch from network on miss.
+Keep a sliding window of ~200 messages in memory; page out beyond that.
+Scrolling past the top of a contiguous range triggers `messages.getHistory`
+with `offset_id`, results written to cache and the range extended.
+
+### Live updates and gap recovery
+
+GramJS emits updates; `core/updates.ts` normalises them, writes to SQLite, and
+emits store events. `pts`/`qts`/`date`/`seq` persist in `sync_state`.
+
+On reconnect, or when an update arrives with a `pts` beyond the expected next
+value, call `updates.getDifference` (or `updates.getChannelDifference` for
+channels) and replay. **This is the single most commonly skipped piece of a
+Telegram client, and skipping it is why messages silently go missing.** It is in
+M1 deliberately.
+
+---
+
+## 8. Auth and security
+
+State machine in `core/auth.ts`:
+
+```
+start → needPhone → needCode → [needPassword] → ready
+                        └── needSignUp (unregistered number: error, do not sign up)
+```
+
+The session string grants **complete access to the account** — it is equivalent
+to a logged-in device. Handling:
+
+- stored at `~/.local/share/tglow/session` with mode `0600`
+- encrypted at rest with a key derived from a passphrase (scrypt); if no
+  passphrase is set, the file is still `0600` and the user is warned once
+- `api_id` / `api_hash` live in `~/.config/tglow/config.toml`, never in the repo
+- `.gitignore` covers config, session and cache from the first commit
+- logging redacts phone numbers, codes, session strings and auth keys
+
+**Requires the user:** `api_id` and `api_hash` must be obtained by the account
+owner from <https://my.telegram.org> (login required), and the phone-code login
+must be completed interactively. Neither can be automated.
+
+**Ban risk, stated plainly:** third-party MTProto clients can attract account
+restrictions if they behave abnormally. Mitigations: honour `FLOOD_WAIT` strictly,
+never poll aggressively, send a truthful device model/app version, and do not
+auto-read or auto-join anything.
+
+---
+
+## 9. Error handling
+
+| Condition | Response |
+| --- | --- |
+| `FLOOD_WAIT_x` | queue and retry after `x`; status bar shows a countdown |
+| Network loss | exponential backoff reconnect; status shows `reconnecting…`; cached view stays readable |
+| `AUTH_KEY_UNREGISTERED` / session revoked | drop session, return to login, explain why |
+| `pts` gap | `getDifference` replay (§7) |
+| `MESSAGE_ID_INVALID` on edit/delete | refresh that message from server, report to user |
+| SQLite corruption | rebuild cache from network; never block startup on it |
+| Send failure | message stays in composer marked failed in `state.error`; retry with `<C-r>` |
+
+Principle: the UI never crashes on a Telegram error. Every failure resolves to a
+status-bar message and a recoverable state.
+
+---
+
+## 10. Testing
+
+| Unit | Method | Needs an account? |
+| --- | --- | --- |
+| `keys/` | exhaustive unit tests: every mode transition, counts, operator+motion pairs, registers, `.` repeat | no |
+| `core/` | integration tests against a **mock GramJS transport** + real in-memory SQLite | no |
+| `core/updates` | replay recorded update sequences incl. deliberate `pts` gaps | no |
+| `tui/` | snapshot tests rendering OpenTUI to a buffer and asserting the frame | no |
+| end-to-end | manual, against a real account | yes |
+
+CI runs everything except end-to-end. TDD throughout: the `keys/` engine in
+particular is written test-first, since its correctness is entirely mechanical.
+
+---
+
+## 11. M1 scope boundary
+
+**In:** config · auth + session + encryption · connection with reconnect ·
+SQLite cache + migrations · dialog list with ordering and unread counts · message
+history with paging · send text · **rich text entities** (bold, italic, code,
+link, spoiler) · **reply, edit, delete** · live updates · **pts gap recovery** ·
+mark as read · read receipts · full vim engine (modes, counts, operators,
+registers, `.`) · devglow theming with all 12 palettes · status bar · which-key
+popup · `<C-p>` fuzzy chat jump · `/` incremental search over cached history.
+
+**Out (later milestones):** all media and images · stickers · reactions · voice
+waveforms · typing indicators · online status display · forward · server-side and
+FTS5 message search · global search · link previews · albums · polls · folders ·
+archive · forum topics · threads · draft sync · scheduled messages · notifications.
+
+Rationale: M1 is everything needed for text conversation to be genuinely usable,
+plus every architectural unknown resolved. Nothing in M1 is deferrable without
+making the result unusable; nothing outside it blocks the architecture.
+
+---
+
+## 12. Roadmap
+
+**M2 · Sight** — half-block image renderer (proven, §2) · `stripped` instant
+blurry previews · photo/video thumbnails · static `.webp` stickers · **animated
+`.tgs`** via `@thorvg/lottie-player` WASM on a ~12 fps frame timer, opt-in with
+`:set stickeranim` · reactions view and send, own reaction in `GOLD` · voice
+message waveforms from the API's waveform bytes (`▁▂▃▅▇`) · typing indicators ·
+online status. *Video `.webm` stickers remain still-only — see §2.*
+
+**M3 · Action** — forward · in-chat message search (FTS5) · global search ·
+`:` command mode expansion · link preview cards · albums / grouped media · polls ·
+forwarded-from headers · contact and location messages · pinned message bar.
+
+**M4 · Structure** — folders · archive · **forum topics** · channel comment
+threads · draft sync with other Telegram clients · scheduled messages.
+
+**Known design tension, flagged early:** forum topics introduce a third
+navigation level (folder → chat → topic → messages). The two-pane layout in §6
+must not assume exactly two levels. M1 therefore models navigation as a
+**stack of scopes** rather than a fixed pair of panes, so M4 does not force a
+rewrite.
+
+---
+
+## 13. Open questions
+
+1. **Project name.** `tglow` is a placeholder chosen to sit in the devglow family.
+2. **Animated-sticker CPU budget.** ThorVG rasterisation cost per frame at
+   terminal sizes is unmeasured. M2 should benchmark before committing to a
+   default frame rate; the opt-in flag exists so the default can be "off".
+3. **Multi-account.** The schema has no `account_id` column. Single-account is
+   assumed for M1; adding it later is a migration, not a redesign.

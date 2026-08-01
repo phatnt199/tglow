@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+bun.lockb
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Secrets and per-user state — NEVER commit these.
+# The session file is equivalent to a logged-in device on the account.
+config.toml
+*.session
+session
+.env
+.env.*
+
+# Local cache
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+cache/
+
+# Editor / OS
+.DS_Store
+*.swp
