@@ -2,7 +2,7 @@ import { getError } from '@venizia/ignis-inversion';
 
 // Type-only import, erased at runtime under verbatimModuleSyntax, so this
 // path choice has no bearing on the telegram/global.window crash the test
-// files' value imports had to avoid (see __tests__/tui/action-reducer.test.ts)
+// files' value imports had to avoid (see src/__tests__/tui/action-reducer.test.ts)
 // -- points at the concrete module rather than the core/ barrel purely
 // because that is where IApplicationState is actually defined.
 import type { IApplicationState } from '../core/application-store.ts';

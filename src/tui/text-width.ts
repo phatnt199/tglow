@@ -9,7 +9,7 @@
  *
  * OpenTUI 0.4.5 exposes no width helper of its own -- the calculation lives in
  * its Zig core, reachable only through a native buffer -- so this is a
- * reimplementation, and `__tests__/tui/text-width.test.tsx` pins it against the
+ * reimplementation, and `src/__tests__/tui/text-width.test.tsx` pins it against the
  * cells that renderer actually consumes rather than against a table of
  * expected numbers. A wrap width that disagrees with the renderer by even one
  * column re-opens the overdraw the wrapping exists to close.

@@ -5,7 +5,7 @@ import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
 
 // Type-only import, erased at runtime under verbatimModuleSyntax, so this
 // path choice has no bearing on the telegram/global.window crash the test
-// files' value imports had to avoid (see __tests__/tui/app.test.tsx) --
+// files' value imports had to avoid (see src/__tests__/tui/app.test.tsx) --
 // points at the concrete module rather than the core/ barrel purely because
 // that is where IApplicationState is actually defined.
 import type { ApplicationStoreService, IApplicationState } from '../core/application-store.ts';
