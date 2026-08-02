@@ -2,6 +2,7 @@ import { test, expect } from 'bun:test';
 import { act } from 'react';
 
 import { BindingScopes, Container } from '@venizia/ignis-inversion';
+import { rgbToHex } from '@opentui/core';
 import type { TestRendererSetup } from '@opentui/core/testing';
 
 import { BindingKeys } from '../../src/common/index.ts';
@@ -15,6 +16,12 @@ import { buildTokens } from '../../src/tui/theme/index.ts';
 import { App } from '../../src/tui/app.tsx';
 
 const tokens = buildTokens({ paletteName: 'sage' });
+
+// Mirrors the layout constants in src/tui/app.tsx.
+const TERMINAL_WIDTH = 70;
+const TERMINAL_HEIGHT = 14;
+const SIDEBAR_WIDTH = 22;
+const CHROME_HEIGHT = 3;
 
 const dialogs: IDialogRow[] = [
   { peerId: 'u1', title: 'Alice', pinned: 0, unreadCount: 2, lastMessageAt: 300, topMessageId: 3 },
@@ -104,7 +111,7 @@ const mount = async (opts: { messages?: IMessageRow[]; onSend?: (text: string) =
       onQuit={() => { quit.push(true); }}
       onOpenChat={async chat => { opened.push(chat.peerId); }}
     />,
-    { width: 70, height: 14 },
+    { width: TERMINAL_WIDTH, height: TERMINAL_HEIGHT },
   );
   await renderer.flush();
   return { renderer, store, sent, composerAtSend, opened, quit };
@@ -121,20 +128,54 @@ test('starts in NORMAL mode with both panes on screen', async () => {
   expect(frame).not.toContain('\\\\');
 });
 
+// The `▸` these assertions used to look for is gone: the owner's neovim marks
+// position with cursorlineopt="both", so the cursor is a background across the
+// row. Reading the highlighted rows out by colour keeps the assertion on the
+// same fact -- which row the cursor is on -- through the change of mechanism,
+// and additionally pins that exactly one row carries it.
+const cursorRows = (renderer: TestRendererSetup): number[] =>
+  renderer.captureSpans().lines.flatMap((line, index) =>
+    line.spans.some(span => rgbToHex(span.bg).toLowerCase() === tokens.messageCursor.toLowerCase())
+      ? [index]
+      : []);
+
+const rowContaining = (renderer: TestRendererSetup, text: string): number =>
+  renderer.captureCharFrame().split('\n').findIndex(line => line.includes(text));
+
 test('j moves the cursor — engine to store to render', async () => {
   const { renderer, store } = await mount();
   expect(store.getState().messageCursor).toBe(0);
-  const linesBefore = renderer.captureCharFrame().split('\n');
-  expect(linesBefore.find(line => line.includes('msg1'))).toContain('▸');
-  expect(linesBefore.find(line => line.includes('msg2'))).not.toContain('▸');
+  expect(cursorRows(renderer)).toEqual([rowContaining(renderer, 'msg1')]);
 
   await act(async () => { renderer.mockInput.pressKey('j'); });
   await renderer.flush();
 
   expect(store.getState().messageCursor).toBe(1);
-  const linesAfter = renderer.captureCharFrame().split('\n');
-  expect(linesAfter.find(line => line.includes('msg2'))).toContain('▸');
-  expect(linesAfter.find(line => line.includes('msg1'))).not.toContain('▸');
+  expect(cursorRows(renderer)).toEqual([rowContaining(renderer, 'msg2')]);
+});
+
+// The seam between two bordered boxes drew a doubled `┐┌`, and the owner's own
+// fillchars call for a single rule instead. The composer's box went the same
+// way, which is also what freed the row the panes now use.
+test('the panes are separated by one rule, with no boxes anywhere', async () => {
+  const { renderer } = await mount();
+  const rows = renderer.captureCharFrame().split('\n');
+  const body = rows.slice(0, TERMINAL_HEIGHT - CHROME_HEIGHT);
+
+  for (const row of body) {
+    expect({ row, rule: row[SIDEBAR_WIDTH] }).toEqual({ row, rule: '│' });
+  }
+  expect(rows[TERMINAL_HEIGHT - CHROME_HEIGHT]).toBe('─'.repeat(TERMINAL_WIDTH));
+
+  const frame = renderer.captureCharFrame();
+  for (const glyph of ['┌', '┐', '└', '┘', '├', '┤', '┬', '┴']) {
+    expect({ glyph, present: frame.includes(glyph) }).toEqual({ glyph, present: false });
+  }
+});
+
+test('the open chat is marked in the sidebar independently of the cursor', async () => {
+  const { renderer } = await mount();
+  expect(renderer.captureCharFrame().split('\n')[0]![0]).toBe('▎');
 });
 
 test('3j moves three messages', async () => {

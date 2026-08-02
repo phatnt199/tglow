@@ -28,9 +28,14 @@ export interface IAppProps {
 }
 
 const SIDEBAR_WIDTH = 22;
-const CHROME_HEIGHT = 4;
-/** A border spends one cell on each side, on both axes. */
-const BORDER_THICKNESS = 2;
+/** The composer's rule and prompt, then the status line. */
+const CHROME_HEIGHT = 3;
+/**
+ * `fillchars = "vert:│"`: splits are a single rule, not a box. Boxing the
+ * panes also put a doubled `┐┌` seam where two of them met.
+ */
+const RULE_WIDTH = 1;
+const VERTICAL_RULE = '│';
 
 const CONTROL_CHARACTER_BOUNDARY = 0x20;
 const DELETE_CODE_POINT = 0x7f;
@@ -236,32 +241,40 @@ export const App = (props: IAppProps) => {
   });
 
   const activeDialog = state.dialogs.find(dialog => dialog.peerId === state.activePeerId);
-  const bodyHeight = Math.max(1, height - CHROME_HEIGHT);
-  const paneHeight = Math.max(1, bodyHeight - BORDER_THICKNESS);
+  const paneHeight = Math.max(1, height - CHROME_HEIGHT);
+  const messageWidth = Math.max(1, width - SIDEBAR_WIDTH - RULE_WIDTH);
 
   return (
     <box flexDirection="column" width={width} height={height} backgroundColor={tokens.background}>
-      <box flexDirection="row" height={bodyHeight}>
-        <box border borderColor={tokens.border} width={SIDEBAR_WIDTH}>
-          <ChatList
-            dialogs={state.dialogs}
-            cursor={state.chatCursor}
-            focused={state.engine.context === VimContexts.CHAT_LIST}
-            tokens={tokens}
-            width={SIDEBAR_WIDTH - BORDER_THICKNESS}
-            height={paneHeight}
-          />
+      <box flexDirection="row" height={paneHeight}>
+        <ChatList
+          dialogs={state.dialogs}
+          cursor={state.chatCursor}
+          focused={state.engine.context === VimContexts.CHAT_LIST}
+          tokens={tokens}
+          width={SIDEBAR_WIDTH}
+          height={paneHeight}
+          activePeerId={state.activePeerId}
+        />
+
+        {/* One `<text>` per row rather than a newline-joined string: the same
+            one-child-one-row rule the panes follow, so the rule cannot be
+            shrunk into its neighbours either. */}
+        <box flexDirection="column" width={RULE_WIDTH} height={paneHeight} flexShrink={0}>
+          {Array.from({ length: paneHeight }, (unused, row) => (
+            <text key={row} height={1} flexShrink={0} fg={tokens.border}>{VERTICAL_RULE}</text>
+          ))}
         </box>
-        <box border borderColor={tokens.border} flexGrow={1}>
-          <MessageView
-            messages={state.messages}
-            cursor={state.messageCursor}
-            focused={state.engine.context === VimContexts.MESSAGES}
-            tokens={tokens}
-            height={paneHeight}
-            resolveSenderName={resolveSenderName}
-          />
-        </box>
+
+        <MessageView
+          messages={state.messages}
+          cursor={state.messageCursor}
+          focused={state.engine.context === VimContexts.MESSAGES}
+          tokens={tokens}
+          width={messageWidth}
+          height={paneHeight}
+          resolveSenderName={resolveSenderName}
+        />
       </box>
 
       <Composer
@@ -269,6 +282,7 @@ export const App = (props: IAppProps) => {
         mode={state.engine.mode}
         focused={state.engine.context === VimContexts.COMPOSER}
         tokens={tokens}
+        width={width}
       />
 
       <StatusLine
@@ -279,6 +293,7 @@ export const App = (props: IAppProps) => {
         total={state.messages.length}
         hint="\ for keys"
         tokens={tokens}
+        width={width}
       />
     </box>
   );
