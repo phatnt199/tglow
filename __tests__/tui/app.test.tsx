@@ -48,7 +48,7 @@ const pressEscape = async (renderer: TestRendererSetup): Promise<void> => {
   await renderer.flush();
 };
 
-const mount = async (opts: { messages?: IMessageRow[] } = {}) => {
+const mount = async (opts: { messages?: IMessageRow[]; onSend?: (text: string) => Promise<void> } = {}) => {
   const container = new Container({ scope: 'AppTest' });
   container.bind({ key: BindingKeys.KEY_NORMALIZER }).toClass(KeyNormalizerService).setScope(BindingScopes.SINGLETON);
   container.bind({ key: BindingKeys.VIM_ENGINE }).toClass(VimEngineService).setScope(BindingScopes.SINGLETON);
@@ -60,8 +60,30 @@ const mount = async (opts: { messages?: IMessageRow[] } = {}) => {
   });
 
   const sent: string[] = [];
+  // What the composer held at the moment the send handler ran. MessageService
+  // decides whether to clear by comparing exactly this against the text it
+  // sent, so an empty string here means that comparison can never be true --
+  // which is what App clearing optimistically did to it.
+  const composerAtSend: string[] = [];
   const opened: string[] = [];
   const quit: boolean[] = [];
+
+  // Stands in for MessageService, which owns the composer: it clears on
+  // success only if what it sent is still what is there, and deliberately
+  // preserves it on failure.
+  const onSend = opts.onSend ?? (async (text: string): Promise<void> => {
+    sent.push(text);
+    // MessageService takes its snapshot after the network round-trip, so this
+    // one has to come after a turn of the loop as well. Read synchronously it
+    // would see the state from before App's own patch landed, and a composer
+    // App had cleared would still look untouched.
+    await Promise.resolve();
+    composerAtSend.push(store.getState().composerText);
+    if (store.getState().composerText === text) {
+      store.setState({ patch: { composerText: '' } });
+    }
+  });
+
   const renderer = await renderWithKeys(
     <App
       store={store}
@@ -70,14 +92,14 @@ const mount = async (opts: { messages?: IMessageRow[] } = {}) => {
       keyNormalizer={container.get<KeyNormalizerService>({ key: BindingKeys.KEY_NORMALIZER })}
       tokens={tokens}
       resolveSenderName={() => 'Alice'}
-      onSend={async text => { sent.push(text); }}
+      onSend={onSend}
       onQuit={() => { quit.push(true); }}
-      onOpenChat={async opts => { opened.push(opts.peerId); }}
+      onOpenChat={async chat => { opened.push(chat.peerId); }}
     />,
     { width: 70, height: 14 },
   );
   await renderer.flush();
-  return { renderer, store, sent, opened, quit };
+  return { renderer, store, sent, composerAtSend, opened, quit };
 };
 
 test('starts in NORMAL mode with both panes on screen', async () => {
@@ -179,8 +201,8 @@ test('typing in INSERT reaches the composer and does not move the cursor', async
   expect(store.getState().messageCursor).toBe(0);
 });
 
-test('Enter in INSERT sends the composed text and clears the composer', async () => {
-  const { renderer, store, sent } = await mount();
+test('Enter in INSERT sends the composed text and the sender clears the composer', async () => {
+  const { renderer, store, sent, composerAtSend } = await mount();
   await act(async () => { renderer.mockInput.pressKey('i'); });
   await renderer.flush();
   await act(async () => { await renderer.mockInput.typeText('on my way'); });
@@ -188,7 +210,30 @@ test('Enter in INSERT sends the composed text and clears the composer', async ()
   await act(async () => { renderer.mockInput.pressEnter(); });
   await renderer.flush();
   expect(sent).toEqual(['on my way']);
+  // App hands the text over and touches nothing: the composer must still hold
+  // it when the service looks, or the service's "only clear what is still
+  // there" check can never be true. It was dead code in production for
+  // exactly that reason.
+  expect(composerAtSend).toEqual(['on my way']);
   expect(store.getState().composerText).toBe('');
+});
+
+// Final review, Critical 3: App cleared composerText the moment Enter was
+// pressed, before the send had even been attempted, so a rejected send left
+// the user with an empty composer and nothing to retry. Task 13 built
+// MessageService around never losing typed text; its test passed because it
+// called the service directly and never went through App.
+test('a send that fails leaves the typed text in the composer', async () => {
+  const { renderer, store } = await mount({
+    onSend: async (): Promise<void> => { throw new Error('FLOOD_WAIT_30'); },
+  });
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('hello'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+  expect(store.getState().composerText).toBe('hello');
 });
 
 // Code review on Task 16: the printable check relied on !ctrl alone, but Tab

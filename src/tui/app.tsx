@@ -1,6 +1,7 @@
 import { useCallback, useSyncExternalStore } from 'react';
 
 import { useKeyboard, useTerminalDimensions } from '@opentui/react';
+import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
 
 // Type-only import, erased at runtime under verbatimModuleSyntax, so this
 // path choice has no bearing on the telegram/global.window crash the test
@@ -60,6 +61,19 @@ const isPrintableCharacter = (opts: { sequence: string; ctrl: boolean; meta: boo
 
   const codePoint = codePoints[0].codePointAt(0) ?? 0;
   return codePoint >= CONTROL_CHARACTER_BOUNDARY && codePoint !== DELETE_CODE_POINT;
+};
+
+const logger: ILogger = ApplicationLogger.get('App');
+
+/**
+ * The send and open-chat callbacks are deliberately fire-and-forget -- a key
+ * press must not wait on the network -- but a rejection escaping one of them
+ * is an unhandled rejection, which ends the process and takes the alternate
+ * screen with it. The services report failure through the store; App only has
+ * to stop the rejection escaping and leave a trace behind.
+ */
+const logRejection = (opts: { method: string; error: unknown }): void => {
+  logger.for(opts.method).error('Callback rejected | Reason: %s', opts.error);
 };
 
 /**
@@ -163,15 +177,23 @@ export const App = (props: IAppProps) => {
 
       switch (action.type) {
         case ActionTypes.COMPOSER_SEND: {
-          const text = accumulated.composerText;
-          patch = { ...patch, composerText: '' };
-          void onSend(text);
+          // The composer is MessageService's to clear, and it clears only
+          // once the message has actually gone. Emptying it here was
+          // optimistic in the worst sense: a rejected send left the user with
+          // nothing to retry and no copy of what they had written, and it
+          // also made the service's "still what I sent?" check permanently
+          // false, so its own clear never ran in production.
+          void onSend(accumulated.composerText).catch(error => {
+            logRejection({ method: 'onSend', error });
+          });
           break;
         }
         case ActionTypes.CHAT_OPEN: {
           const target = accumulated.dialogs[accumulated.chatCursor];
           if (target) {
-            void onOpenChat({ peerId: target.peerId });
+            void onOpenChat({ peerId: target.peerId }).catch(error => {
+              logRejection({ method: 'onOpenChat', error });
+            });
           }
           break;
         }
