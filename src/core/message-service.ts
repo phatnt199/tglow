@@ -1,8 +1,8 @@
 import { inject } from '@venizia/ignis-inversion';
-import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
+import { ApplicationLogger, toError, type ILogger } from '@venizia/ignis-helpers';
 
 import { BindingKeys } from '../common/index.ts';
-import type { ApplicationStoreService } from './application-store.ts';
+import type { ApplicationStoreService, IApplicationState } from './application-store.ts';
 import type { DatabaseService, IMessageRow } from './cache/index.ts';
 
 const SEND_REFRESH_LIMIT = 200;
@@ -23,6 +23,11 @@ export interface IMessageAdapter {
 
 export class MessageService {
   private readonly _logger: ILogger = ApplicationLogger.get(MessageService.name);
+  // The limit the view is currently displaying, so a republish after send()
+  // shows the same page size loadHistory() last asked for rather than a
+  // hardcoded one -- see SEND_REFRESH_LIMIT, its fallback before loadHistory
+  // has ever run.
+  private _historyLimit: number | null = null;
 
   constructor(
     @inject({ key: BindingKeys.MESSAGE_ADAPTER }) private readonly _adapter: IMessageAdapter,
@@ -37,6 +42,7 @@ export class MessageService {
 
   loadHistory = async (opts: { peerId: string; limit: number }): Promise<void> => {
     const { peerId, limit } = opts;
+    this._historyLimit = limit;
 
     try {
       const fetched = await this._adapter.fetchHistory({ peerId, limit });
@@ -59,12 +65,24 @@ export class MessageService {
       });
     } catch (error) {
       this._logger.for(this.loadHistory.name).error('Could not load history | Reason: %s', error);
+
+      // The fallback read must not be able to throw: this catch is the last
+      // line of defence, and the caller invokes loadHistory() fire-and-forget,
+      // so an escaping error becomes an unhandled rejection rather than a
+      // message on screen.
+      let cached: IMessageRow[] = this._store.getState().messages;
+      try {
+        cached = this.forDisplay({ rows: this._database.listMessages({ peerId, limit }) });
+      } catch (cacheError) {
+        this._logger.for(this.loadHistory.name).error('Cache unreadable | Reason: %s', cacheError);
+      }
+
       // Offline is not an error state for reading — show what we already have.
       this._store.setState({
         patch: {
-          messages: this.forDisplay({ rows: this._database.listMessages({ peerId, limit }) }),
+          messages: cached,
           activePeerId: peerId,
-          statusMessage: `Could not load history: ${(error as Error).message}`,
+          statusMessage: `Could not load history: ${toError(error).message}`,
         },
       });
     }
@@ -77,8 +95,22 @@ export class MessageService {
       return;
     }
 
+    let sent: IRawMessage;
     try {
-      const sent = await this._adapter.send({ peerId, text });
+      sent = await this._adapter.send({ peerId, text });
+    } catch (error) {
+      this._logger.for(this.send.name).error('Send failed | Reason: %s', error);
+      this._store.setState({ patch: { statusMessage: `Send failed: ${toError(error).message}` } });
+      return;
+    }
+
+    // Snapshotted right after the network round-trip, the only await in this
+    // method: only clear the composer if the user has not since typed
+    // something new. Losing what they typed next would be exactly the failure
+    // this service exists to avoid, even though this particular send succeeded.
+    const stillUnchanged = this._store.getState().composerText === text;
+
+    try {
       this._database.insertMessages({
         messages: [{
           peerId: sent.peerId,
@@ -89,18 +121,32 @@ export class MessageService {
           out: sent.out,
         }],
       });
-      this._store.setState({
-        patch: {
-          messages: this.forDisplay({
-            rows: this._database.listMessages({ peerId, limit: SEND_REFRESH_LIMIT }),
-          }),
-          composerText: '',
-          statusMessage: null,
-        },
-      });
+
+      const patch: Partial<IApplicationState> = {
+        messages: this.forDisplay({
+          rows: this._database.listMessages({ peerId, limit: this._historyLimit ?? SEND_REFRESH_LIMIT }),
+        }),
+        activePeerId: peerId,
+        statusMessage: null,
+      };
+      if (stillUnchanged) {
+        patch.composerText = '';
+      }
+      this._store.setState({ patch });
     } catch (error) {
-      this._logger.for(this.send.name).error('Send failed | Reason: %s', error);
-      this._store.setState({ patch: { statusMessage: `Send failed: ${(error as Error).message}` } });
+      // The message already reached Telegram; only the local copy is
+      // missing. Reporting this as a send failure would invite the caller to
+      // retry, sending a message that already arrived a second time — losing
+      // the cache row is recoverable, a duplicate send is not.
+      this._logger.for(this.send.name).error('Sent but could not cache | Reason: %s', error);
+
+      const patch: Partial<IApplicationState> = {
+        statusMessage: `Sent, but could not save it locally: ${toError(error).message}`,
+      };
+      if (stillUnchanged) {
+        patch.composerText = '';
+      }
+      this._store.setState({ patch });
     }
   };
 }

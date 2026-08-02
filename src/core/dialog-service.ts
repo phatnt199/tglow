@@ -1,9 +1,9 @@
 import { inject } from '@venizia/ignis-inversion';
-import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
+import { ApplicationLogger, toError, type ILogger } from '@venizia/ignis-helpers';
 
 import { BindingKeys } from '../common/index.ts';
 import type { ApplicationStoreService } from './application-store.ts';
-import type { DatabaseService } from './cache/index.ts';
+import type { DatabaseService, IDialogRow } from './cache/index.ts';
 
 export interface IRawDialog {
   peerId: string;
@@ -55,11 +55,20 @@ export class DialogService {
       this._store.setState({ patch: { dialogs: this._database.listDialogs(), statusMessage: null } });
     } catch (error) {
       this._logger.for(this.sync.name).error('Could not refresh chats | Reason: %s', error);
+
+      // The fallback read must not be able to throw: this catch is the last
+      // line of defence, and the caller invokes sync() fire-and-forget, so an
+      // escaping error becomes an unhandled rejection rather than a message
+      // on screen.
+      let cached: IDialogRow[] = this._store.getState().dialogs;
+      try {
+        cached = this._database.listDialogs();
+      } catch (cacheError) {
+        this._logger.for(this.sync.name).error('Cache unreadable | Reason: %s', cacheError);
+      }
+
       this._store.setState({
-        patch: {
-          dialogs: this._database.listDialogs(),
-          statusMessage: `Could not refresh chats: ${(error as Error).message}`,
-        },
+        patch: { dialogs: cached, statusMessage: `Could not refresh chats: ${toError(error).message}` },
       });
     }
   };

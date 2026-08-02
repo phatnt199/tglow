@@ -68,9 +68,35 @@ test('a network failure leaves the cached list visible', async () => {
     },
   });
   await service.sync();
+
+  // Written straight to the cache, bypassing the adapter entirely, so the
+  // store has never seen this row. Only a catch that genuinely re-reads the
+  // cache -- not one that merely leaves the store's previous state alone --
+  // can make it appear below.
+  database.upsertPeer({ id: 'u2', type: 'user', accessHash: 'h2', title: 'Bob', username: 'bob' });
+  database.upsertDialog({ peerId: 'u2', pinned: 0, unreadCount: 0, lastMessageAt: 50, topMessageId: 2 });
+
   shouldFail = true;
   await service.sync();
-  expect(store.getState().dialogs).toHaveLength(1);
+  expect(store.getState().dialogs).toHaveLength(2);
   expect(store.getState().statusMessage).toContain('network down');
   database.close();
+});
+
+// The fallback read itself must not be able to throw: sync() is invoked
+// fire-and-forget by its caller, so a second exception escaping the catch
+// would become an unhandled rejection instead of a status message on screen.
+test('a network failure with an unreadable cache still resolves instead of throwing', async () => {
+  const database = new DatabaseService();
+  database.open({ filePath: ':memory:' });
+  const store = new ApplicationStoreService();
+  const service = new DialogService(
+    { fetchDialogs: async () => { throw new Error('network down'); } },
+    database,
+    store,
+  );
+  database.close();
+
+  await expect(service.sync()).resolves.toBeUndefined();
+  expect(store.getState().statusMessage).toContain('network down');
 });
