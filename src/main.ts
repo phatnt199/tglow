@@ -17,6 +17,7 @@ import {
   MessageService,
   SessionStoreService,
   TelegramClientService,
+  UpdateService,
   installFileLogger,
   type IApplicationConfiguration,
 } from './core/index.ts';
@@ -90,6 +91,7 @@ const main = async (): Promise<void> => {
   const store = container.get<ApplicationStoreService>({ key: BindingKeys.APPLICATION_STORE });
   const dialogService = container.get<DialogService>({ key: BindingKeys.DIALOG_SERVICE });
   const messageService = container.get<MessageService>({ key: BindingKeys.MESSAGE_SERVICE });
+  const updateService = container.get<UpdateService>({ key: BindingKeys.UPDATE_SERVICE });
 
   store.setState({ patch: { connection: 'connected' } });
   await dialogService.sync();
@@ -99,6 +101,11 @@ const main = async (): Promise<void> => {
     await messageService.loadHistory({ peerId: firstDialog.peerId, limit: HISTORY_LIMIT });
   }
 
+  // Started only after the initial sync and history load have landed, so the
+  // first live message to arrive republishes against a cache and a store
+  // that already reflect a full loadHistory rather than racing it from zero.
+  const stopReceivingUpdates = updateService.start();
+
   // Ctrl-C is a binding, not an exit: the renderer's own handler tears itself
   // down and leaves the database and the client open, and in INSERT it would
   // fire on a keystroke that is meant to reach the composer. quit() below is
@@ -107,6 +114,7 @@ const main = async (): Promise<void> => {
   const root = createRoot(renderer);
 
   const quit = (): void => {
+    stopReceivingUpdates();
     renderer.destroy();
     database.close();
     void client.destroy();

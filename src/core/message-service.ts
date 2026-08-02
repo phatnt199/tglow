@@ -19,6 +19,7 @@ export interface IRawMessage {
 export interface IMessageAdapter {
   fetchHistory(opts: { peerId: string; limit: number }): Promise<IRawMessage[]>;
   send(opts: { peerId: string; text: string }): Promise<IRawMessage>;
+  subscribeToNewMessages(opts: { onMessage: (message: IRawMessage) => void }): () => void;
 }
 
 export class MessageService {

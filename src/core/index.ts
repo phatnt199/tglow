@@ -8,3 +8,4 @@ export * from './logger-provider.ts';
 export * from './message-service.ts';
 export * from './session-store.ts';
 export * from './telegram-client.ts';
+export * from './update-service.ts';

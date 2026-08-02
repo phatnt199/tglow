@@ -9,6 +9,7 @@ export class BindingKeys {
   static readonly AUTHENTICATION = '@tglow/core/authentication';
   static readonly DIALOG_SERVICE = '@tglow/core/dialog-service';
   static readonly MESSAGE_SERVICE = '@tglow/core/message-service';
+  static readonly UPDATE_SERVICE = '@tglow/core/update-service';
   static readonly DIALOG_ADAPTER = '@tglow/core/dialog-adapter';
   static readonly MESSAGE_ADAPTER = '@tglow/core/message-adapter';
 

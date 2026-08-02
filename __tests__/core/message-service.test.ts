@@ -19,6 +19,9 @@ const buildService = (adapter: IMessageAdapter): { service: MessageService; data
 const buildAdapter = (overrides: Partial<IMessageAdapter> = {}): IMessageAdapter => ({
   fetchHistory: async () => [],
   send: async opts => buildRawMessage({ id: 99, peerId: opts.peerId, text: opts.text, out: 1, date: 999 }),
+  // MessageService never calls this -- UpdateService (__tests__/core/update-service.test.ts)
+  // is what exercises it -- but IMessageAdapter requires it, so a stub keeps this fake whole.
+  subscribeToNewMessages: () => (): void => {},
   ...overrides,
 });
 
