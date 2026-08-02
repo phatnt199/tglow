@@ -191,12 +191,24 @@ Both are overlays following the which-key pattern already built. `<C-p>` fuzzy-
 matches dialog titles; `/` searches cached message text with a SQLite `LIKE`,
 with `n`/`N` to cycle. Server-side and FTS5 search stay in M3.
 
-### 4.4 The remaining ten devglow palettes
+### 4.4 The remaining ten devglow palettes, and user themes
 
 Transcribe from `devglow/lua/devglow/palettes/*.lua`. **Every value asserted
 against the source file** — ember's five shades were invented rather than
 transcribed in M1a and the whole ramp was wrong, and nothing caught it because
 only sage had assertions.
+
+**User-defined colorschemes are wanted** (requested 2026-08-02), in the spirit of
+an nvim colorscheme or a tmux theme: drop a file in `~/.config/tglow/themes/` and
+select it with `:set palette=<name>`. That is a later milestone, but it changes
+one decision here: the palette loader must resolve a name across **built-ins and
+a user directory**, not just a built-in record. Building it that way now costs
+nothing; retrofitting a lookup that assumes a closed set costs a refactor.
+
+A user theme supplies the same 17 devglow keys; semantic tokens are derived from
+them exactly as the built-ins are, so a theme file cannot break the interface by
+omitting a role. A malformed or incomplete theme falls back to sage with a
+status-line message rather than refusing to start.
 
 ---
 
