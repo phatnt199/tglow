@@ -56,7 +56,19 @@ Two negative findings that **constrain the design**:
 **Chosen stack:** Bun 1.3 · TypeScript 7.0.2 · `@opentui/react` 0.4.5 · React
 19.2.8 · `telegram` (GramJS) 2.26.22 · `bun:sqlite` (built in, zero deps) ·
 `@venizia/ignis-inversion` 0.1.1-6 · `@venizia/ignis-helpers` 0.1.1-14 ·
-`sharp` (M2).
+`drizzle-orm` 0.45.2 · `drizzle-kit` 0.31.10 · `sharp` (M2).
+
+**On the data layer.** §7's schema is expressed as Drizzle tables, and
+`drizzle-kit generate` diffs them to produce migrations. The original plan used
+`CREATE TABLE IF NOT EXISTS`, which is a no-op against a database that already
+exists — a column added in M2 would never have reached anyone who had already
+run the application, silently. Drizzle is also what IGNIS uses, so this moves
+toward its stack. Pinned to 0.45.2/0.31.10, not the 1.0 RC, whose
+`drizzle-kit generate` crashes with `SQLiteSyncDialect is not a constructor`.
+
+**On tests.** Every test lives under `__tests__/`, mirroring `src/`, so source
+directories contain only source. `tsconfig.json`'s `include` covers both — with
+`src` alone, typecheck silently stops covering tests.
 
 ### IGNIS
 
@@ -148,9 +160,9 @@ src/
 │   ├── updates.ts           live update dispatch + pts gap recovery
 │   ├── store.ts             observable state + typed event bus
 │   └── cache/
-│       ├── schema.sql       tables + indices
-│       ├── migrate.ts       versioned migrations
-│       └── db.ts            bun:sqlite wrapper
+│       ├── schema.ts        Drizzle table definitions
+│       ├── migrate.ts       applies generated migrations on open
+│       └── database.ts      DatabaseService over drizzle-orm/bun-sqlite
 │
 ├── tui/                     OpenTUI React — dumb by design
 │   ├── App.tsx
