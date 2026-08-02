@@ -23,6 +23,17 @@ const messages: IMessageRow[] = [1, 2, 3, 4].map(id => ({
   peerId: 'u1', id, fromId: 'u1', date: id * 100, text: `msg${id}`, out: 0,
 }));
 
+// What main.ts actually loads. Zero-padded so no assertion can be satisfied by
+// a substring of another row -- "msg1" is inside "msg150", "msg001" is not.
+const history: IMessageRow[] = Array.from({ length: 200 }, (unused, index) => ({
+  peerId: 'u1',
+  id: index + 1,
+  fromId: 'u1',
+  date: (index + 1) * 100,
+  text: `msg${String(index + 1).padStart(3, '0')}`,
+  out: 0,
+}));
+
 // A lone \x1b could still open a CSI sequence, so OpenTUI's input parser holds
 // it for 20ms before giving up and delivering a bare Escape. Every other key
 // arrives synchronously; this one needs the window to pass first, or the press
@@ -37,14 +48,16 @@ const pressEscape = async (renderer: TestRendererSetup): Promise<void> => {
   await renderer.flush();
 };
 
-const mount = async () => {
+const mount = async (opts: { messages?: IMessageRow[] } = {}) => {
   const container = new Container({ scope: 'AppTest' });
   container.bind({ key: BindingKeys.KEY_NORMALIZER }).toClass(KeyNormalizerService).setScope(BindingScopes.SINGLETON);
   container.bind({ key: BindingKeys.VIM_ENGINE }).toClass(VimEngineService).setScope(BindingScopes.SINGLETON);
   container.bind({ key: BindingKeys.KEYMAP }).toClass(KeymapService).setScope(BindingScopes.SINGLETON);
 
   const store = new ApplicationStoreService();
-  store.setState({ patch: { dialogs, messages, activePeerId: 'u1', connection: 'connected' } });
+  store.setState({
+    patch: { dialogs, messages: opts.messages ?? messages, activePeerId: 'u1', connection: 'connected' },
+  });
 
   const sent: string[] = [];
   const opened: string[] = [];
@@ -214,6 +227,25 @@ test('return in the chat list opens the chat and moves focus to messages', async
   await renderer.flush();
   expect(opened).toEqual(['u1']);
   expect(store.getState().engine.context).toBe(VimContexts.MESSAGES);
+});
+
+// Final review, Critical 2: the panes rendered every row and App never told
+// them how many rows they had, so main.ts's 200-message history went into
+// roughly ten. The pane tests cover the window itself; this one covers the
+// wiring, which is the half that was actually missing.
+test('a history longer than the pane scrolls to keep the cursor on screen', async () => {
+  const { renderer, store } = await mount({ messages: history });
+  expect(renderer.captureCharFrame()).toContain('msg001');
+
+  // <S-g> is the newest-message binding: OpenTUI reports a shifted letter
+  // lowercased with shift set separately, never a bare 'G'.
+  await act(async () => { renderer.mockInput.pressKey('g', { shift: true }); });
+  await renderer.flush();
+
+  expect(store.getState().messageCursor).toBe(history.length - 1);
+  const frame = renderer.captureCharFrame();
+  expect(frame).toContain('msg200');
+  expect(frame).not.toContain('msg001');
 });
 
 test('<C-c> quits the application', async () => {

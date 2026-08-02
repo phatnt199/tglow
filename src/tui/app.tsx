@@ -28,6 +28,8 @@ export interface IAppProps {
 
 const SIDEBAR_WIDTH = 22;
 const CHROME_HEIGHT = 4;
+/** A border spends one cell on each side, on both axes. */
+const BORDER_THICKNESS = 2;
 
 const CONTROL_CHARACTER_BOUNDARY = 0x20;
 const DELETE_CODE_POINT = 0x7f;
@@ -189,6 +191,7 @@ export const App = (props: IAppProps) => {
 
   const activeDialog = state.dialogs.find(dialog => dialog.peerId === state.activePeerId);
   const bodyHeight = Math.max(1, height - CHROME_HEIGHT);
+  const paneHeight = Math.max(1, bodyHeight - BORDER_THICKNESS);
 
   return (
     <box flexDirection="column" width={width} height={height} backgroundColor={tokens.background}>
@@ -199,7 +202,8 @@ export const App = (props: IAppProps) => {
             cursor={state.chatCursor}
             focused={state.engine.context === VimContexts.CHAT_LIST}
             tokens={tokens}
-            width={SIDEBAR_WIDTH - 2}
+            width={SIDEBAR_WIDTH - BORDER_THICKNESS}
+            height={paneHeight}
           />
         </box>
         <box border borderColor={tokens.border} flexGrow={1}>
@@ -208,6 +212,7 @@ export const App = (props: IAppProps) => {
             cursor={state.messageCursor}
             focused={state.engine.context === VimContexts.MESSAGES}
             tokens={tokens}
+            height={paneHeight}
             resolveSenderName={resolveSenderName}
           />
         </box>

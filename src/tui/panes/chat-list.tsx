@@ -1,5 +1,6 @@
 import type { IDialogRow } from '../../core/cache/index.ts';
 import type { ITokens } from '../theme/index.ts';
+import { resolveVisibleRange } from '../viewport.ts';
 
 export interface IChatListProps {
   dialogs: IDialogRow[];
@@ -7,6 +8,8 @@ export interface IChatListProps {
   focused: boolean;
   tokens: ITokens;
   width: number;
+  /** Rows available to this pane; see IMessageViewProps.height for what rendering past it does. */
+  height: number;
 }
 
 const MARKER_WIDTH = 2;
@@ -14,7 +17,7 @@ const BADGE_WIDTH = 4;
 const MINIMUM_NAME_WIDTH = 4;
 
 export const ChatList = (props: IChatListProps) => {
-  const { dialogs, cursor, focused, tokens, width } = props;
+  const { dialogs, cursor, focused, tokens, width, height } = props;
 
   if (dialogs.length === 0) {
     return (
@@ -25,10 +28,12 @@ export const ChatList = (props: IChatListProps) => {
   }
 
   const nameWidth = Math.max(MINIMUM_NAME_WIDTH, width - MARKER_WIDTH - BADGE_WIDTH);
+  const { start, end } = resolveVisibleRange({ total: dialogs.length, cursor, height });
 
   return (
     <box flexDirection="column" width={width}>
-      {dialogs.map((dialog, index) => {
+      {dialogs.slice(start, end).map((dialog, offset) => {
+        const index = start + offset;
         const selected = index === cursor;
         const marker = selected && focused ? '▸ ' : '  ';
         const name =

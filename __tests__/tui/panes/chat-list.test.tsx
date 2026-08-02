@@ -15,7 +15,7 @@ const dialogs: IDialogRow[] = [
 
 test('lists every chat', async () => {
   const renderer = await renderWithKeys(
-    <ChatList dialogs={dialogs} cursor={0} focused tokens={tokens} width={20} />,
+    <ChatList dialogs={dialogs} cursor={0} focused tokens={tokens} width={20} height={10} />,
     { width: 20, height: 10 },
   );
   await renderer.flush();
@@ -27,7 +27,7 @@ test('lists every chat', async () => {
 
 test('shows unread counts', async () => {
   const renderer = await renderWithKeys(
-    <ChatList dialogs={dialogs} cursor={0} focused tokens={tokens} width={20} />,
+    <ChatList dialogs={dialogs} cursor={0} focused tokens={tokens} width={20} height={10} />,
     { width: 20, height: 10 },
   );
   await renderer.flush();
@@ -38,7 +38,7 @@ test('shows unread counts', async () => {
 
 test('marks the cursor row when focused', async () => {
   const renderer = await renderWithKeys(
-    <ChatList dialogs={dialogs} cursor={1} focused tokens={tokens} width={20} />,
+    <ChatList dialogs={dialogs} cursor={1} focused tokens={tokens} width={20} height={10} />,
     { width: 20, height: 10 },
   );
   await renderer.flush();
@@ -47,16 +47,38 @@ test('marks the cursor row when focused', async () => {
 
 test('does not mark the cursor row when unfocused', async () => {
   const renderer = await renderWithKeys(
-    <ChatList dialogs={dialogs} cursor={1} focused={false} tokens={tokens} width={20} />,
+    <ChatList dialogs={dialogs} cursor={1} focused={false} tokens={tokens} width={20} height={10} />,
     { width: 20, height: 10 },
   );
   await renderer.flush();
   expect(renderer.captureCharFrame()).not.toContain('▸');
 });
 
+// Final review, Critical 2: the pane rendered every dialog regardless of the
+// rows it had, so a chat list longer than the sidebar could not be scrolled
+// to -- the cursor moved onto rows that were never drawn.
+test('the visible window follows the cursor through a long chat list', async () => {
+  const many: IDialogRow[] = Array.from({ length: 40 }, (unused, index) => ({
+    peerId: `p${index}`,
+    title: `chat${String(index).padStart(2, '0')}`,
+    pinned: 0,
+    unreadCount: 0,
+    lastMessageAt: index,
+    topMessageId: index,
+  }));
+  const renderer = await renderWithKeys(
+    <ChatList dialogs={many} cursor={39} focused tokens={tokens} width={20} height={6} />,
+    { width: 20, height: 10 },
+  );
+  await renderer.flush();
+  const frame = renderer.captureCharFrame();
+  expect(frame).toContain('chat39');
+  expect(frame).not.toContain('chat00');
+});
+
 test('renders an empty list without crashing', async () => {
   const renderer = await renderWithKeys(
-    <ChatList dialogs={[]} cursor={0} focused tokens={tokens} width={20} />,
+    <ChatList dialogs={[]} cursor={0} focused tokens={tokens} width={20} height={10} />,
     { width: 20, height: 10 },
   );
   await renderer.flush();

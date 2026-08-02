@@ -1,11 +1,14 @@
 import type { IMessageRow } from '../../core/cache/index.ts';
 import type { ITokens } from '../theme/index.ts';
+import { resolveVisibleRange } from '../viewport.ts';
 
 export interface IMessageViewProps {
   messages: IMessageRow[];
   cursor: number;
   focused: boolean;
   tokens: ITokens;
+  /** Rows available to this pane. Rendering past it does not overflow -- yoga shrinks every row instead, so a 200-message history displayed every twentieth message and marked the wrong one as the cursor. */
+  height: number;
   resolveSenderName: (opts: { fromId: string | null }) => string;
 }
 
@@ -13,7 +16,7 @@ const GUTTER_WIDTH = 4;
 const SENDER_WIDTH = 8;
 
 export const MessageView = (props: IMessageViewProps) => {
-  const { messages, cursor, focused, tokens, resolveSenderName } = props;
+  const { messages, cursor, focused, tokens, height, resolveSenderName } = props;
 
   if (messages.length === 0) {
     return (
@@ -23,9 +26,15 @@ export const MessageView = (props: IMessageViewProps) => {
     );
   }
 
+  const { start, end } = resolveVisibleRange({ total: messages.length, cursor, height });
+
   return (
     <box flexDirection="column">
-      {messages.map((message, index) => {
+      {messages.slice(start, end).map((message, offset) => {
+        // The absolute position in the history, not the position in the
+        // window: the gutter numbers and the cursor comparison both mean the
+        // former, and a sliced index would silently renumber the whole pane.
+        const index = start + offset;
         const selected = index === cursor;
         // Hybrid numbering as in relativenumber + number: the cursor row shows
         // its absolute index, every other row its distance from the cursor.
