@@ -1,19 +1,7 @@
 import { test, expect } from 'bun:test';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
 import { VimModes } from '../keys/common/index.ts';
 import { ApplicationStoreService } from './application-store.ts';
-import { installFileLogger } from './logger-provider.ts';
-
-// The throwing-subscriber test below drives a real ILogger.error() call.
-// LoggerFactory's default provider is winston, which this project does not
-// install (see ignis-style.md), so without a registered provider that call
-// throws regardless of file run order. Register the file provider up front,
-// at module load, so this file's outcome never depends on whether some other
-// test file happened to call installFileLogger first.
-installFileLogger({ filePath: join(mkdtempSync(join(tmpdir(), 'tglow-application-store-')), 'tglow.log') });
 
 test('starts with sensible defaults', () => {
   const store = new ApplicationStoreService();
