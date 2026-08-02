@@ -8,6 +8,7 @@
   },
   "scripts": {
     "start": "bun run src/main.ts",
+    "build": "bun run scripts/build-migrations.ts && bun build --compile src/main.ts --outfile dist/tglow && bun run scripts/checksum.ts dist/tglow",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
