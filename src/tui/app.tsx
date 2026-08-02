@@ -57,6 +57,16 @@ const CONTROL_CHARACTER_BOUNDARY = 0x20;
 const DELETE_CODE_POINT = 0x7f;
 
 /**
+ * `revealedSpoilers` is a required prop on `MessageView` -- deliberately, so
+ * a caller cannot forget to wire it and silently render every spoiler the
+ * same way. `IApplicationState` gains a real `revealedSpoilers` set of its
+ * own in the task that binds `zs` to reveal one; until that lands, every
+ * message renders masked, which is the correct default for a chat nobody has
+ * touched yet.
+ */
+const NO_REVEALED_SPOILERS: Set<number> = new Set();
+
+/**
  * True only for a single, unmodified, printable character. Two things a
  * naive check misses:
  *
@@ -318,6 +328,7 @@ export const App = (props: IAppProps) => {
           width={messageWidth}
           height={paneHeight}
           resolveSenderName={resolveSenderName}
+          revealedSpoilers={NO_REVEALED_SPOILERS}
         />
       </box>
 

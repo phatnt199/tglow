@@ -14,6 +14,10 @@ export interface ITokens {
   messageOwn: string;
   messageOther: string;
   messageCursor: string;
+  /** `code`/`pre` entities. */
+  textCode: string;
+  /** `url`/`textUrl`/`mention`/`hashtag` entities. */
+  textLink: string;
   error: string;
 }
 
@@ -33,6 +37,8 @@ export const buildTokens = (opts: { paletteName: string }): ITokens => {
     messageOwn: palette.TEAL,
     messageOther: palette.FOREGROUND,
     messageCursor: palette.DARK_03,
+    textCode: palette.GREEN,
+    textLink: palette.SKY,
     error: palette.RED,
   };
 };

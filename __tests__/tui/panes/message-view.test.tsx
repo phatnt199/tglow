@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test';
 
-import { rgbToHex } from '@opentui/core';
+import { rgbToHex, TextAttributes } from '@opentui/core';
 import type { TestRendererSetup } from '@opentui/core/testing';
 
 import type { IMessageRow } from '../../../src/core/cache/index.ts';
@@ -47,6 +47,7 @@ interface ISpan {
   foreground: string;
   background: string;
   width: number;
+  attributes: number;
 }
 
 const readSpans = (renderer: TestRendererSetup, row: number): ISpan[] =>
@@ -55,6 +56,7 @@ const readSpans = (renderer: TestRendererSetup, row: number): ISpan[] =>
     foreground: toHex(span.fg),
     background: toHex(span.bg),
     width: span.width,
+    attributes: span.attributes,
   }));
 
 const readRows = (renderer: TestRendererSetup): string[] => {
@@ -67,7 +69,8 @@ const render = async (
 ): Promise<TestRendererSetup> => {
   const { terminalWidth, terminalHeight, ...props } = overrides;
   const resolved: IMessageViewProps = {
-    messages, cursor: 0, focused: true, tokens, height: 10, width: 50, resolveSenderName, ...props,
+    messages, cursor: 0, focused: true, tokens, height: 10, width: 50, resolveSenderName,
+    revealedSpoilers: new Set(), ...props,
   };
   const renderer = await renderWithKeys(<MessageView {...resolved} />, {
     width: terminalWidth ?? resolved.width,
@@ -379,4 +382,168 @@ test('a message taller than the pane is anchored at its first row', async () => 
   expect(readGutter(rows[0]!)).toBe('2');
   expect(rows[0]!).toContain('word0');
   expect(rows.length).toBe(6);
+});
+
+// Task 4: entities render as themselves instead of plain characters.
+//
+// `revealedSpoilers` is added explicitly to every case here, including the
+// two the brief's own snippet omits it from (the link and long-wrap tests) --
+// the prop has no default in IMessageViewProps precisely so a call site
+// cannot forget it, and that has to hold for these call sites too or the
+// omission would be a typecheck failure, not a passing test.
+
+test('a link renders its text, and the URL is not printed inline', async () => {
+  const messages: IMessageRow[] = [{
+    peerId: 'u1', id: 1, fromId: 'u1', date: 100, out: 0, replyToMessageId: null,
+    text: 'see here', entities: [{ kind: 'textUrl', offset: 4, length: 4, url: 'https://example.com' }],
+  }];
+  const renderer = await renderWithKeys(
+    <MessageView messages={messages} cursor={0} focused tokens={tokens} height={6} width={50}
+                 resolveSenderName={resolveSenderName} revealedSpoilers={new Set()} />,
+    { width: 50, height: 6 },
+  );
+  await renderer.flush();
+  const frame = renderer.captureCharFrame();
+  expect(frame).toContain('see here');
+  expect(frame).not.toContain('https://example.com');
+});
+
+test('a link is coloured with textLink and underlined', async () => {
+  const messages: IMessageRow[] = [{
+    peerId: 'u1', id: 1, fromId: 'u1', date: 100, out: 0, replyToMessageId: null,
+    text: 'see here', entities: [{ kind: 'textUrl', offset: 4, length: 4, url: 'https://example.com' }],
+  }];
+  const renderer = await render({ messages, cursor: 0, width: 50, height: 6 });
+  const spans = readSpans(renderer, 0);
+  const linkSpan = spans.find(span => span.text === 'here');
+  expect(linkSpan?.foreground).toBe(tokens.textLink.toLowerCase());
+  expect(((linkSpan?.attributes ?? 0) & TextAttributes.UNDERLINE) !== 0).toBe(true);
+});
+
+test('a spoiler is hidden until revealed', async () => {
+  const messages: IMessageRow[] = [{
+    peerId: 'u1', id: 1, fromId: 'u1', date: 100, out: 0, replyToMessageId: null,
+    text: 'the answer is 42', entities: [{ kind: 'spoiler', offset: 14, length: 2 }],
+  }];
+  const renderer = await renderWithKeys(
+    <MessageView messages={messages} cursor={0} focused tokens={tokens} height={6} width={50}
+                 resolveSenderName={resolveSenderName} revealedSpoilers={new Set()} />,
+    { width: 50, height: 6 },
+  );
+  await renderer.flush();
+  expect(renderer.captureCharFrame()).not.toContain('42');
+  expect(renderer.captureCharFrame()).toContain('█');
+});
+
+test('a revealed spoiler shows its text', async () => {
+  const messages: IMessageRow[] = [{
+    peerId: 'u1', id: 1, fromId: 'u1', date: 100, out: 0, replyToMessageId: null,
+    text: 'the answer is 42', entities: [{ kind: 'spoiler', offset: 14, length: 2 }],
+  }];
+  const renderer = await renderWithKeys(
+    <MessageView messages={messages} cursor={0} focused tokens={tokens} height={6} width={50}
+                 resolveSenderName={resolveSenderName} revealedSpoilers={new Set([1])} />,
+    { width: 50, height: 6 },
+  );
+  await renderer.flush();
+  expect(renderer.captureCharFrame()).toContain('42');
+});
+
+// A CJK ideograph is one UTF-16 code unit but two display columns (the same
+// divergence text-width.ts's own tests are built around). Masking by
+// `.length` would count it as one and leave the block a column short,
+// dragging every column after it out of line with the rows above and below;
+// masking by display width gets the full four columns of "中AB" right.
+test('a spoiler mask is as wide as the hidden text, not as long', async () => {
+  const messages: IMessageRow[] = [{
+    peerId: 'u1', id: 1, fromId: 'u1', date: 100, out: 0, replyToMessageId: null,
+    text: 'secret 中AB done', entities: [{ kind: 'spoiler', offset: 7, length: 3 }],
+  }];
+  const renderer = await render({ messages, cursor: 0, revealedSpoilers: new Set(), width: 50, height: 6 });
+  const spans = readSpans(renderer, 0);
+  const masked = spans.find(span => span.text.startsWith('█'));
+  expect(masked?.text).toBe('████');
+  expect(masked?.width).toBe(4);
+});
+
+test('a code span is coloured with textCode', async () => {
+  const messages: IMessageRow[] = [{
+    peerId: 'u1', id: 1, fromId: 'u1', date: 100, out: 0, replyToMessageId: null,
+    text: 'run npm test now', entities: [{ kind: 'code', offset: 4, length: 8 }],
+  }];
+  const renderer = await render({ messages, cursor: 0, width: 50, height: 6 });
+  const spans = readSpans(renderer, 0);
+  const codeSpan = spans.find(span => span.text === 'npm test');
+  expect(codeSpan?.foreground).toBe(tokens.textCode.toLowerCase());
+});
+
+test('a bold span carries the bold attribute', async () => {
+  const messages: IMessageRow[] = [{
+    peerId: 'u1', id: 1, fromId: 'u1', date: 100, out: 0, replyToMessageId: null,
+    text: 'very bold move', entities: [{ kind: 'bold', offset: 5, length: 4 }],
+  }];
+  const renderer = await render({ messages, cursor: 0, width: 50, height: 6 });
+  const spans = readSpans(renderer, 0);
+  const boldSpan = spans.find(span => span.text === 'bold');
+  expect(boldSpan).toBeDefined();
+  expect((boldSpan!.attributes & TextAttributes.BOLD) !== 0).toBe(true);
+});
+
+test('a long styled message wraps into the content column, not to column zero', async () => {
+  const long = 'this is a deliberately long message that must wrap more than once inside the pane';
+  const messages: IMessageRow[] = [{
+    peerId: 'u1', id: 1, fromId: 'u1', date: 100, out: 0, replyToMessageId: null,
+    text: long, entities: [{ kind: 'bold', offset: 0, length: 4 }],
+  }];
+  const renderer = await renderWithKeys(
+    <MessageView messages={messages} cursor={0} focused tokens={tokens} height={8} width={50}
+                 resolveSenderName={resolveSenderName} revealedSpoilers={new Set()} />,
+    { width: 50, height: 8 },
+  );
+  await renderer.flush();
+  const lines = renderer.captureCharFrame().split('\n').filter(line => line.trim() !== '');
+  expect(lines.length).toBeGreaterThan(1);
+  // Continuation rows are indented to the content column, never flush left.
+  for (const line of lines.slice(1)) {
+    expect(line.startsWith(' ')).toBe(true);
+  }
+});
+
+// wrapSpans has no concept of a line break on its own (__tests__/tui/wrap-spans.test.ts
+// documents that boundary); message-view.tsx has to split on '\n' itself
+// before wrapping, the same job wrapText's toLogicalLines already did for the
+// plain-text path this replaces.
+test('a styled message carrying newlines still renders one row per line', async () => {
+  const renderer = await render({
+    messages: [{
+      peerId: 'u1', id: 1, fromId: 'a', date: 100, text: 'first\nsecond\nthird', out: 0,
+      entities: [{ kind: 'bold', offset: 0, length: 5 }], replyToMessageId: null,
+    }],
+    cursor: 0,
+    width: 60,
+    height: 6,
+  });
+  const rows = readRows(renderer);
+  expect(rows[0]!.slice(RAIL_COLUMNS).trimEnd()).toBe('first');
+  expect(rows[1]!.slice(RAIL_COLUMNS).trimEnd()).toBe('second');
+  expect(rows[2]!.slice(RAIL_COLUMNS).trimEnd()).toBe('third');
+});
+
+// Mirrors wrapText's own tab handling (src/tui/wrap-text.ts's toLogicalLines):
+// a raw tab reaching the terminal would expand at its own tab stop and desync
+// the column the rail depends on, so message-view.tsx normalises it to a
+// single space on the styled path the same way wrapText already did on the
+// plain-text path it replaces.
+test('a tab in a message becomes a single space', async () => {
+  const renderer = await render({
+    messages: [{
+      peerId: 'u1', id: 1, fromId: 'a', date: 100, text: 'a\tb', out: 0,
+      entities: [], replyToMessageId: null,
+    }],
+    cursor: 0,
+    width: 60,
+    height: 6,
+  });
+  const rows = readRows(renderer);
+  expect(rows[0]!.slice(RAIL_COLUMNS).trimEnd()).toBe('a b');
 });

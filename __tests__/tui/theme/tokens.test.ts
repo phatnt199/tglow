@@ -61,3 +61,15 @@ test('tokens resolve against whichever palette is chosen', () => {
   expect(buildTokens({ paletteName: 'ember' }).modeInsert).toBe(PALETTES.ember!.GOLD);
   expect(buildTokens({ paletteName: 'sage' }).modeInsert).toBe(PALETTES.sage!.GOLD);
 });
+
+// M1 spec §6 names both textCode and textLink; neither existed before the
+// message view had entities to render.
+test('textCode and textLink are derived from GREEN and SKY, for both shipped palettes', () => {
+  const sage = buildTokens({ paletteName: 'sage' });
+  expect(sage.textCode).toBe(PALETTES.sage!.GREEN);
+  expect(sage.textLink).toBe(PALETTES.sage!.SKY);
+
+  const ember = buildTokens({ paletteName: 'ember' });
+  expect(ember.textCode).toBe(PALETTES.ember!.GREEN);
+  expect(ember.textLink).toBe(PALETTES.ember!.SKY);
+});
