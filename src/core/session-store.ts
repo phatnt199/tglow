@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 const SESSION_FILE_MODE = 0o600;
@@ -20,6 +20,10 @@ export class SessionStoreService {
   save = (opts: { filePath: string; value: string }): void => {
     mkdirSync(dirname(opts.filePath), { recursive: true, mode: SESSION_DIRECTORY_MODE });
     writeFileSync(opts.filePath, opts.value, { mode: SESSION_FILE_MODE });
+    // writeFileSync's mode applies only when it creates the inode, so an
+    // existing file keeps whatever permissions it already had. Tighten
+    // unconditionally: this file is equivalent to a logged-in device.
+    chmodSync(opts.filePath, SESSION_FILE_MODE);
   };
 
   clear = (opts: { filePath: string }): void => {

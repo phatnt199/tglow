@@ -1,7 +1,7 @@
 import { test, expect } from 'bun:test';
-import { existsSync, mkdtempSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { SessionStoreService } from './session-store.ts';
 
@@ -47,4 +47,17 @@ test('surrounding whitespace is stripped on load', () => {
   const filePath = buildPath();
   service.save({ filePath, value: '  padded  ' });
   expect(service.load({ filePath })).toBe('padded');
+});
+
+// writeFileSync's mode is honoured only on creation, so overwriting a file that
+// already exists with looser permissions would silently leave it world-readable.
+test('saving over an existing loose-permission file tightens it to 0600', () => {
+  const filePath = buildPath();
+  mkdirSync(dirname(filePath), { recursive: true });
+  writeFileSync(filePath, 'stale', { mode: 0o644 });
+  expect(statSync(filePath).mode & 0o777).toBe(0o644);
+
+  service.save({ filePath, value: 'fresh' });
+  expect(statSync(filePath).mode & 0o777).toBe(0o600);
+  expect(service.load({ filePath })).toBe('fresh');
 });
