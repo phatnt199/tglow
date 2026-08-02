@@ -52,6 +52,16 @@ test('core/ never imports React or OpenTUI', async () => {
   expect(offenders).toEqual([]);
 });
 
+// cli/ owns the terminal before the renderer does, and the two cannot both own
+// it: an OpenTUI import here would mean the login prompts running inside the
+// alternate screen, where the scrollback they write to does not exist.
+test('cli/ never imports React or OpenTUI', async () => {
+  const offenders = (await collectImports('src/cli')).filter(
+    record => record.specifier === 'react' || record.specifier.startsWith('@opentui/'),
+  );
+  expect(offenders).toEqual([]);
+});
+
 test('tui/ never imports telegram', async () => {
   const offenders = (await collectImports('src/tui')).filter(record =>
     record.specifier.startsWith('telegram'),

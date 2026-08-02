@@ -1,6 +1,7 @@
 export * from './common/index.ts';
 export * from './application-store.ts';
 export * from './authentication.ts';
+export * from './authentication-gateway.ts';
 export * from './cache/index.ts';
 export * from './configuration.ts';
 export * from './dialog-service.ts';

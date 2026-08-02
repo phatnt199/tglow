@@ -7,15 +7,18 @@ import { AppContext, createRoot } from '@opentui/react';
 import { toError } from '@venizia/ignis-helpers';
 import { isApplicationError } from '@venizia/ignis-inversion';
 
+import { readLine, runInteractiveLogin } from './cli/index.ts';
 import { BindingKeys } from './common/index.ts';
 import { buildContainer } from './container.ts';
 import {
   ApplicationStoreService,
+  AuthenticationService,
   ConfigurationService,
   DatabaseService,
   DialogService,
   MessageService,
   SessionStoreService,
+  TelegramAuthenticationGateway,
   TelegramClientService,
   UpdateService,
   installFileLogger,
@@ -67,19 +70,29 @@ const main = async (): Promise<void> => {
     process.exit(1);
   }
 
+  // Before createCliRenderer on purpose: the prompts need a cooked terminal and
+  // the scrollback, neither of which survives the alternate screen. On success
+  // this falls straight through into the interface — no second launch.
   if (!authorized) {
-    process.stderr.write(
-      [
-        'Not logged in.',
-        '',
-        'M1a does not include the interactive login interface — that lands with',
-        'the auth panes in plan M1b. Authorise once with:',
-        '',
-        '  bun run scripts/login.ts',
-        '',
-      ].join('\n'),
-    );
-    process.exit(1);
+    if (!process.stdin.isTTY) {
+      process.stderr.write('Not logged in, and logging in needs an interactive terminal.\n');
+      process.exit(1);
+    }
+
+    process.stdout.write('Not logged in. Log in to Telegram to continue.\n\n');
+
+    try {
+      await runInteractiveLogin({
+        service: new AuthenticationService(new TelegramAuthenticationGateway(client)),
+        readLine,
+        write: (text: string): void => {
+          process.stdout.write(text);
+        },
+      });
+    } catch (error) {
+      process.stderr.write(`\nCould not log in: ${toError(error).message}\n`);
+      process.exit(1);
+    }
   }
 
   clientService.persistSession({ client, configuration });
