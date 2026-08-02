@@ -1,7 +1,10 @@
-import { readFileSync } from 'node:fs';
-
 import { Database } from 'bun:sqlite';
 import { getError } from '@venizia/ignis-inversion';
+import { and, desc, eq } from 'drizzle-orm';
+import { drizzle } from 'drizzle-orm/bun-sqlite';
+
+import { runMigrations } from './migrate.ts';
+import { dialogs, messages, peers, syncState } from './schema.ts';
 
 export interface IPeerInput {
   id: string;
@@ -46,12 +49,12 @@ export interface IMessageRow {
   out: number;
 }
 
-const SCHEMA_PATH = new URL('./schema.sql', import.meta.url).pathname;
+export type TDrizzleDatabase = ReturnType<typeof drizzle>;
 
 export class DatabaseService {
-  private _database: Database | null = null;
+  private _database: TDrizzleDatabase | null = null;
 
-  private require = (methodName: string): Database => {
+  private require = (methodName: string): TDrizzleDatabase => {
     if (!this._database) {
       throw getError({ message: `[DatabaseService][${methodName}] Database is not open` });
     }
@@ -60,116 +63,143 @@ export class DatabaseService {
 
   open = (opts: { filePath: string }): void => {
     this.close();
-    const database = new Database(opts.filePath);
-    database.run('PRAGMA journal_mode = WAL');
-    database.run('PRAGMA foreign_keys = ON');
-    database.run(readFileSync(SCHEMA_PATH, 'utf8'));
+    const connection = new Database(opts.filePath);
+    connection.run('PRAGMA journal_mode = WAL');
+    connection.run('PRAGMA foreign_keys = ON');
+    const database = drizzle(connection);
+    runMigrations({ database });
     this._database = database;
   };
 
   upsertPeer = (peer: IPeerInput): void => {
+    const updatedAt = Date.now();
     this.require('upsertPeer')
-      .prepare(
-        `INSERT INTO peers (id, type, access_hash, title, username, updated_at)
-         VALUES ($id, $type, $accessHash, $title, $username, $updatedAt)
-         ON CONFLICT(id) DO UPDATE SET
-           type = $type, access_hash = $accessHash, title = $title,
-           username = $username, updated_at = $updatedAt`,
-      )
-      .run({
-        $id: peer.id,
-        $type: peer.type,
-        $accessHash: peer.accessHash,
-        $title: peer.title,
-        $username: peer.username,
-        $updatedAt: Date.now(),
-      });
+      .insert(peers)
+      .values({
+        id: peer.id,
+        type: peer.type,
+        accessHash: peer.accessHash,
+        title: peer.title,
+        username: peer.username,
+        updatedAt,
+      })
+      .onConflictDoUpdate({
+        target: peers.id,
+        set: {
+          type: peer.type,
+          accessHash: peer.accessHash,
+          title: peer.title,
+          username: peer.username,
+          updatedAt,
+        },
+      })
+      .run();
   };
 
   upsertDialog = (dialog: IDialogInput): void => {
     this.require('upsertDialog')
-      .prepare(
-        `INSERT INTO dialogs (peer_id, pinned, unread_count, last_message_at, top_message_id)
-         VALUES ($peerId, $pinned, $unreadCount, $lastMessageAt, $topMessageId)
-         ON CONFLICT(peer_id) DO UPDATE SET
-           pinned = $pinned, unread_count = $unreadCount,
-           last_message_at = $lastMessageAt, top_message_id = $topMessageId`,
-      )
-      .run({
-        $peerId: dialog.peerId,
-        $pinned: dialog.pinned,
-        $unreadCount: dialog.unreadCount,
-        $lastMessageAt: dialog.lastMessageAt,
-        $topMessageId: dialog.topMessageId,
-      });
+      .insert(dialogs)
+      .values({
+        peerId: dialog.peerId,
+        pinned: dialog.pinned,
+        unreadCount: dialog.unreadCount,
+        lastMessageAt: dialog.lastMessageAt,
+        topMessageId: dialog.topMessageId,
+      })
+      .onConflictDoUpdate({
+        target: dialogs.peerId,
+        set: {
+          pinned: dialog.pinned,
+          unreadCount: dialog.unreadCount,
+          lastMessageAt: dialog.lastMessageAt,
+          topMessageId: dialog.topMessageId,
+        },
+      })
+      .run();
   };
 
   listDialogs = (): IDialogRow[] => {
     return this.require('listDialogs')
-      .prepare(
-        `SELECT d.peer_id AS peerId, p.title AS title, d.pinned AS pinned,
-                d.unread_count AS unreadCount, d.last_message_at AS lastMessageAt,
-                d.top_message_id AS topMessageId
-         FROM dialogs d
-         JOIN peers p ON p.id = d.peer_id
-         ORDER BY d.pinned DESC, d.last_message_at DESC`,
-      )
-      .all() as IDialogRow[];
+      .select({
+        peerId: dialogs.peerId,
+        title: peers.title,
+        pinned: dialogs.pinned,
+        unreadCount: dialogs.unreadCount,
+        lastMessageAt: dialogs.lastMessageAt,
+        topMessageId: dialogs.topMessageId,
+      })
+      .from(dialogs)
+      .innerJoin(peers, eq(peers.id, dialogs.peerId))
+      .orderBy(desc(dialogs.pinned), desc(dialogs.lastMessageAt))
+      .all();
   };
 
   insertMessages = (opts: { messages: IMessageInput[] }): void => {
-    const database = this.require('insertMessages');
-    const statement = database.prepare(
-      `INSERT INTO messages (peer_id, id, from_id, date, text, out)
-       VALUES ($peerId, $id, $fromId, $date, $text, $out)
-       ON CONFLICT(peer_id, id) DO UPDATE SET
-         from_id = $fromId, date = $date, text = $text, out = $out`,
-    );
-
-    database.transaction((messages: IMessageInput[]) => {
-      for (const message of messages) {
-        statement.run({
-          $peerId: message.peerId,
-          $id: message.id,
-          $fromId: message.fromId,
-          $date: message.date,
-          $text: message.text,
-          $out: message.out,
-        });
+    this.require('insertMessages').transaction(transaction => {
+      for (const message of opts.messages) {
+        transaction
+          .insert(messages)
+          .values({
+            peerId: message.peerId,
+            id: message.id,
+            fromId: message.fromId,
+            date: message.date,
+            text: message.text,
+            out: message.out,
+          })
+          .onConflictDoUpdate({
+            target: [messages.peerId, messages.id],
+            set: {
+              fromId: message.fromId,
+              date: message.date,
+              text: message.text,
+              out: message.out,
+            },
+          })
+          .run();
       }
-    })(opts.messages);
+    });
   };
 
   listMessages = (opts: { peerId: string; limit: number }): IMessageRow[] => {
+    // `text` is nullable at the schema level to leave room for media-only
+    // messages in a later milestone; M1a always writes a string, so the row
+    // shape here still promises non-null text to its caller.
     return this.require('listMessages')
-      .prepare(
-        `SELECT peer_id AS peerId, id, from_id AS fromId, date, text, out
-         FROM messages
-         WHERE peer_id = $peerId AND deleted = 0
-         ORDER BY date DESC, id DESC
-         LIMIT $limit`,
-      )
-      .all({ $peerId: opts.peerId, $limit: opts.limit }) as IMessageRow[];
+      .select({
+        peerId: messages.peerId,
+        id: messages.id,
+        fromId: messages.fromId,
+        date: messages.date,
+        text: messages.text,
+        out: messages.out,
+      })
+      .from(messages)
+      .where(and(eq(messages.peerId, opts.peerId), eq(messages.deleted, 0)))
+      .orderBy(desc(messages.date), desc(messages.id))
+      .limit(opts.limit)
+      .all() as IMessageRow[];
   };
 
   getSyncState = (opts: { key: string }): number | null => {
     const row = this.require('getSyncState')
-      .prepare('SELECT value FROM sync_state WHERE key = $key')
-      .get({ $key: opts.key }) as { value: number } | null;
+      .select({ value: syncState.value })
+      .from(syncState)
+      .where(eq(syncState.key, opts.key))
+      .get();
     return row ? row.value : null;
   };
 
   setSyncState = (opts: { key: string; value: number }): void => {
     this.require('setSyncState')
-      .prepare(
-        `INSERT INTO sync_state (key, value) VALUES ($key, $value)
-         ON CONFLICT(key) DO UPDATE SET value = $value`,
-      )
-      .run({ $key: opts.key, $value: opts.value });
+      .insert(syncState)
+      .values({ key: opts.key, value: opts.value })
+      .onConflictDoUpdate({ target: syncState.key, set: { value: opts.value } })
+      .run();
   };
 
   close = (): void => {
-    this._database?.close();
+    this._database?.$client.close();
     this._database = null;
   };
 }
