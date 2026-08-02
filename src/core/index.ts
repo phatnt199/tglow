@@ -5,6 +5,7 @@ export * from './authentication-gateway.ts';
 export * from './cache/index.ts';
 export * from './configuration.ts';
 export * from './dialog-service.ts';
+export * from './difference-service.ts';
 export * from './logger-provider.ts';
 export * from './message-service.ts';
 export * from './session-store.ts';

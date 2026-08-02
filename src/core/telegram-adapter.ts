@@ -1,3 +1,4 @@
+import { getError } from '@venizia/ignis-inversion';
 import { Api, utils } from 'telegram';
 import type { TelegramClient } from 'telegram';
 import { NewMessage } from 'telegram/events';
@@ -5,9 +6,16 @@ import type { NewMessageEvent } from 'telegram/events';
 
 import { EntityKinds, type ITelegramEntity, type TEntityKind } from './common/index.ts';
 import type { IDialogAdapter, IRawDialog } from './dialog-service.ts';
+import type { IDifferenceAdapter, IDifferenceResult, IUpdateState } from './difference-service.ts';
 import type { IMessageAdapter, IRawMessage } from './message-service.ts';
 
 const DIALOG_FETCH_LIMIT = 100;
+
+// A slice means "there is more", so following one is a loop, and a loop over a
+// server-controlled condition needs a bound. Reaching it is not an error and
+// not a loss: getDifference returns the last intermediate state it actually
+// reached, so the next catch-up resumes from exactly there.
+const MAXIMUM_DIFFERENCE_SLICES = 100;
 
 const resolvePeerType = (opts: { className: string }): IRawDialog['type'] => {
   switch (opts.className) {
@@ -89,6 +97,18 @@ const toRawMessage = (opts: { message: Api.Message }): IRawMessage => {
     entities: (message.entities ?? []).map(entity => toEntity({ entity })),
     replyToMessageId: message.replyTo?.replyToMsgId ?? null,
   };
+};
+
+/** newMessages is TypeMessage -- Message, MessageEmpty and MessageService all -- and only a real Message has text to cache, the same filter fetchHistory applies. */
+const toRawMessages = (opts: { messages: Api.TypeMessage[] }): IRawMessage[] => {
+  return opts.messages
+    .filter((message): message is Api.Message => message.className === 'Message')
+    .map(message => toRawMessage({ message }));
+};
+
+const toUpdateState = (opts: { state: Api.updates.State }): IUpdateState => {
+  const { state } = opts;
+  return { pts: state.pts, qts: state.qts, date: state.date, seq: state.seq };
 };
 
 /**
@@ -212,5 +232,68 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
     return (): void => {
       opts.client.removeEventHandler(handleEvent, eventBuilder);
     };
+  },
+});
+
+/**
+ * `updates.getDifference` returns one of four distinct classes, read from
+ * node_modules/telegram/tl/api.d.ts (lines 18586-18647) rather than guessed,
+ * and three of the four are easy to mistake for each other:
+ *
+ * - `updates.difference` (18598) carries `newMessages` and a final `state`.
+ *   The whole gap fitted in one response; this is the only "done, everything
+ *   is here" answer.
+ * - `updates.differenceSlice` (18618) carries the same `newMessages` but an
+ *   `intermediateState`, not a `state`. It means "there is more" -- ask again
+ *   from that intermediate state. Returning here instead of looping would
+ *   silently truncate a backfill, and re-asking with the *original* state
+ *   would spin on the same slice forever.
+ * - `updates.differenceEmpty` (18586) carries only `date` and `seq`. It has no
+ *   pts and no qts, so those must be carried over from the request rather than
+ *   defaulted -- writing a zero pts here would send the next catch-up back to
+ *   the beginning of the account.
+ * - `updates.differenceTooLong` (18638) carries only `pts`. The gap was too
+ *   large to enumerate; qts/date/seq are likewise carried over, and isTooLong
+ *   tells DifferenceService this is not a caught-up state.
+ */
+export const buildDifferenceAdapter = (opts: { client: TelegramClient }): IDifferenceAdapter => ({
+  getState: async (): Promise<IUpdateState> => {
+    return toUpdateState({ state: await opts.client.invoke(new Api.updates.GetState()) });
+  },
+
+  getDifference: async (differenceOpts: { state: IUpdateState }): Promise<IDifferenceResult> => {
+    const messages: IRawMessage[] = [];
+    let state = differenceOpts.state;
+
+    for (let attempt = 0; attempt < MAXIMUM_DIFFERENCE_SLICES; attempt += 1) {
+      // seq is not a getDifference parameter -- it is carried in IUpdateState
+      // only so the stored state stays whole for `updates.getState`'s sake.
+      const result = await opts.client.invoke(
+        new Api.updates.GetDifference({ pts: state.pts, date: state.date, qts: state.qts }),
+      );
+
+      switch (result.className) {
+        case 'updates.Difference': {
+          messages.push(...toRawMessages({ messages: result.newMessages }));
+          return { messages, state: toUpdateState({ state: result.state }), isTooLong: false };
+        }
+        case 'updates.DifferenceSlice': {
+          messages.push(...toRawMessages({ messages: result.newMessages }));
+          state = toUpdateState({ state: result.intermediateState });
+          break;
+        }
+        case 'updates.DifferenceEmpty': {
+          return { messages, state: { ...state, date: result.date, seq: result.seq }, isTooLong: false };
+        }
+        case 'updates.DifferenceTooLong': {
+          return { messages, state: { ...state, pts: result.pts }, isTooLong: true };
+        }
+        default: {
+          throw getError({ message: '[buildDifferenceAdapter][getDifference] Unrecognised difference result' });
+        }
+      }
+    }
+
+    return { messages, state, isTooLong: false };
   },
 });

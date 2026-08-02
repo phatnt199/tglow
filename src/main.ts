@@ -16,6 +16,7 @@ import {
   ConfigurationService,
   DatabaseService,
   DialogService,
+  DifferenceService,
   MessageService,
   SessionStoreService,
   TelegramAuthenticationGateway,
@@ -105,6 +106,7 @@ const main = async (): Promise<void> => {
   const dialogService = container.get<DialogService>({ key: BindingKeys.DIALOG_SERVICE });
   const messageService = container.get<MessageService>({ key: BindingKeys.MESSAGE_SERVICE });
   const updateService = container.get<UpdateService>({ key: BindingKeys.UPDATE_SERVICE });
+  const differenceService = container.get<DifferenceService>({ key: BindingKeys.DIFFERENCE_SERVICE });
 
   store.setState({ patch: { connection: 'connected' } });
   await dialogService.sync();
@@ -118,6 +120,21 @@ const main = async (): Promise<void> => {
   // first live message to arrive republishes against a cache and a store
   // that already reflect a full loadHistory rather than racing it from zero.
   const stopReceivingUpdates = updateService.start();
+
+  // Last of the startup steps, on purpose.
+  //
+  // After dialogService.sync(), because a recovered message can only be cached
+  // once its chat has a peers row, and sync() is what writes those.
+  //
+  // After updateService.start(), because catch-up hands every message it
+  // recovers to the same UpdateService.apply a live event goes through, so the
+  // open chat and the chat list pick it up exactly as they would a message
+  // arriving now -- and because nothing after this touches statusMessage, the
+  // "history may be missing" a too-long difference reports survives into the
+  // first frame instead of being cleared by a later fetch.
+  //
+  // Awaited, and unguarded: catchUp() does not reject.
+  await differenceService.catchUp();
 
   // Ctrl-C is a binding, not an exit: the renderer's own handler tears itself
   // down and leaves the database and the client open, and in INSERT it would

@@ -51,7 +51,19 @@ export class UpdateService {
     });
   };
 
-  private handleMessage = (message: IRawMessage): void => {
+  /**
+   * The one path a message takes into the cache and the store, whether it
+   * arrived live or was recovered by DifferenceService.catchUp() -- the same
+   * reasoning that made toRawMessage the one place a GramJS message becomes an
+   * IRawMessage. Two paths would let the same message be cached twice in two
+   * shapes.
+   *
+   * Returns whether the message actually landed. Catch-up needs that answer:
+   * it must not advance its stored pts past a message this swallowed, or that
+   * message is lost permanently. A live caller has nothing to do with the
+   * answer and ignores it.
+   */
+  apply = (message: IRawMessage): boolean => {
     try {
       // Always, whatever chat it belongs to -- the cache is the only place
       // de-duplication happens, and the chat-list refresh below depends on
@@ -95,17 +107,19 @@ export class UpdateService {
       }
 
       this._store.setState({ patch });
+      return true;
     } catch (error) {
-      // This runs on GramJS's event loop, invoked outside any promise chain
-      // tglow controls. An error escaping here is not caught by anything
-      // upstream -- it becomes an unhandled rejection and ends the process,
-      // the same failure mode App's `void onSend(...).catch(...)` exists to
-      // avoid on the send path.
-      this._logger.for(this.handleMessage.name).error('Could not handle live message | Reason: %s', error);
+      // On the live path this runs on GramJS's event loop, invoked outside any
+      // promise chain tglow controls. An error escaping here is not caught by
+      // anything upstream -- it becomes an unhandled rejection and ends the
+      // process, the same failure mode App's `void onSend(...).catch(...)`
+      // exists to avoid on the send path.
+      this._logger.for(this.apply.name).error('Could not apply message | Reason: %s', error);
+      return false;
     }
   };
 
   start = (): (() => void) => {
-    return this._adapter.subscribeToNewMessages({ onMessage: this.handleMessage });
+    return this._adapter.subscribeToNewMessages({ onMessage: this.apply });
   };
 }
