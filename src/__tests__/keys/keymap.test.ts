@@ -9,7 +9,7 @@ import { KeyNormalizerService } from '../../keys/key-normalizer.ts';
 import { KeymapService } from '../../keys/keymap.ts';
 import { VimEngineService } from '../../keys/vim-engine.ts';
 
-const build = (): { keymapService: KeymapService; engine: VimEngineService } => {
+const build = (): { keymapService: KeymapService; engine: VimEngineService; keyNormalizer: KeyNormalizerService } => {
   const container = new Container({ scope: 'KeymapTest' });
   container.bind({ key: BindingKeys.KEY_NORMALIZER }).toClass(KeyNormalizerService).setScope(BindingScopes.SINGLETON);
   container.bind({ key: BindingKeys.VIM_ENGINE }).toClass(VimEngineService).setScope(BindingScopes.SINGLETON);
@@ -17,6 +17,7 @@ const build = (): { keymapService: KeymapService; engine: VimEngineService } => 
   return {
     keymapService: container.get<KeymapService>({ key: BindingKeys.KEYMAP }),
     engine: container.get<VimEngineService>({ key: BindingKeys.VIM_ENGINE }),
+    keyNormalizer: container.get<KeyNormalizerService>({ key: BindingKeys.KEY_NORMALIZER }),
   };
 };
 
@@ -264,6 +265,13 @@ test('every binding the project promises the user is actually bound', () => {
     // The leader -- advertised in the status-bar hint and rendered, but
     // bound to nothing until this task.
     { context: '*', mode: VimModes.NORMAL, keys: '\\' },
+    // M1b-1 message actions -- spec §3.1/§3.2, promised in the README's key
+    // table. The same class of bug this whole guard exists for: each of
+    // these is one binding away from being silently left out of the table.
+    { context: '*', mode: VimModes.NORMAL, keys: 'zs' },
+    { context: '*', mode: VimModes.NORMAL, keys: 'r' },
+    { context: '*', mode: VimModes.NORMAL, keys: 'e' },
+    { context: '*', mode: VimModes.NORMAL, keys: 'dd' },
     // Mode changes
     { context: '*', mode: VimModes.NORMAL, keys: 'i' },
     { context: '*', mode: VimModes.NORMAL, keys: 'a' },
@@ -277,4 +285,23 @@ test('every binding the project promises the user is actually bound', () => {
   for (const binding of promised) {
     expect({ ...binding, bound: isBound(binding) }).toEqual({ ...binding, bound: true });
   }
+});
+
+// y and n cannot join the `promised` list above: they only mean anything
+// while IApplicationState.pendingConfirmation is set, so app.tsx intercepts
+// them directly, ahead of engine.resolve, the same way it already has to for
+// the which-key overlay's escape and the reply/edit escapes (see keymap.ts's
+// own comment on the dd binding). keymapService.getBindings() never contains
+// them, and isBound() would always report them missing -- not because the
+// promise is broken, but because it is kept somewhere this helper cannot
+// see. What this guards instead is the contract app.tsx's interception
+// actually depends on: it compares keyNormalizer.toCanonicalString(key)
+// against the literal strings 'y' and 'n', so a change to normalization that
+// altered how a bare letter stringifies (see the ignis-style note on
+// capital letters, for the shape such a change could take) would silently
+// break the delete confirmation with nothing else here to catch it.
+test('y and n normalize to the literal tokens the delete confirmation compares against', () => {
+  const { keyNormalizer } = build();
+  expect(keyNormalizer.toCanonicalString({ key: buildKey('y') })).toBe('y');
+  expect(keyNormalizer.toCanonicalString({ key: buildKey('n') })).toBe('n');
 });

@@ -111,6 +111,25 @@ const main = async (): Promise<void> => {
   store.setState({ patch: { connection: 'connected' } });
   await dialogService.sync();
 
+  // After dialogService.sync(), because a recovered message can only be
+  // cached once its chat has a peers row, and sync() is what writes those.
+  // Before firstDialog is read and before the first loadHistory() call below
+  // -- catch-up hands every message it recovers to the same
+  // UpdateService.apply a live event goes through, and that also touches
+  // this chat's dialog row (touchDialog), so a chat catch-up just heard from
+  // can still be the one firstDialog picks below, and opens already
+  // containing what was missed rather than needing a second fetch.
+  //
+  // Awaited, and unguarded: catchUp() does not reject. One tradeoff of
+  // running here rather than last: loadHistory()'s own success patch below
+  // unconditionally clears statusMessage, so a too-long difference's "some
+  // history may be missing" notice can be overwritten before the first frame
+  // rather than surviving to it. The messages themselves are not affected --
+  // loadHistory reads the peer's history back from the cache catch-up just
+  // populated -- only that specific notice is at risk, and preserving it
+  // through loadHistory's own patch is not this file's call to make.
+  await differenceService.catchUp();
+
   const firstDialog = store.getState().dialogs[0];
   if (firstDialog) {
     await messageService.loadHistory({ peerId: firstDialog.peerId, limit: HISTORY_LIMIT });
@@ -120,21 +139,6 @@ const main = async (): Promise<void> => {
   // first live message to arrive republishes against a cache and a store
   // that already reflect a full loadHistory rather than racing it from zero.
   const stopReceivingUpdates = updateService.start();
-
-  // Last of the startup steps, on purpose.
-  //
-  // After dialogService.sync(), because a recovered message can only be cached
-  // once its chat has a peers row, and sync() is what writes those.
-  //
-  // After updateService.start(), because catch-up hands every message it
-  // recovers to the same UpdateService.apply a live event goes through, so the
-  // open chat and the chat list pick it up exactly as they would a message
-  // arriving now -- and because nothing after this touches statusMessage, the
-  // "history may be missing" a too-long difference reports survives into the
-  // first frame instead of being cleared by a later fetch.
-  //
-  // Awaited, and unguarded: catchUp() does not reject.
-  await differenceService.catchUp();
 
   // Ctrl-C is a binding, not an exit: the renderer's own handler tears itself
   // down and leaves the database and the client open, and in INSERT it would
