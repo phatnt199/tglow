@@ -10,7 +10,7 @@ const buildState = (patch: Partial<IApplicationState> = {}): IApplicationState =
   store.setState({
     patch: {
       messages: [1, 2, 3, 4].map(id => ({
-        peerId: 'u1', id, fromId: 'u1', date: id * 100, text: `m${id}`, out: 0,
+        peerId: 'u1', id, fromId: 'u1', date: id * 100, text: `m${id}`, out: 0, entities: [], replyToMessageId: null,
       })),
       ...patch,
     },

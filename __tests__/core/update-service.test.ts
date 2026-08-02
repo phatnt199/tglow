@@ -7,11 +7,11 @@ import { buildMessageAdapter } from '../../src/core/telegram-adapter.ts';
 import { UpdateService } from '../../src/core/update-service.ts';
 
 const buildRawMessage = (overrides: Partial<IRawMessage> = {}): IRawMessage => ({
-  id: 1, peerId: 'u1', fromId: 'u1', date: 100, text: 'hi', out: 0, ...overrides,
+  id: 1, peerId: 'u1', fromId: 'u1', date: 100, text: 'hi', out: 0, entities: [], replyToMessageId: null, ...overrides,
 });
 
 const buildRow = (overrides: Partial<IMessageRow> = {}): IMessageRow => ({
-  peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'hi', out: 0, ...overrides,
+  peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'hi', out: 0, entities: [], replyToMessageId: null, ...overrides,
 });
 
 /** A fake IMessageAdapter that lets a test fire a "live" message on demand, exactly like DialogService/MessageService's own adapter fakes but with a subscription to drive instead of a promise to resolve. */

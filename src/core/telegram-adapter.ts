@@ -1,8 +1,9 @@
-import { utils } from 'telegram';
+import { Api, utils } from 'telegram';
 import type { TelegramClient } from 'telegram';
 import { NewMessage } from 'telegram/events';
 import type { NewMessageEvent } from 'telegram/events';
 
+import { EntityKinds, type ITelegramEntity, type TEntityKind } from './common/index.ts';
 import type { IDialogAdapter, IRawDialog } from './dialog-service.ts';
 import type { IMessageAdapter, IRawMessage } from './message-service.ts';
 
@@ -20,6 +21,74 @@ const resolvePeerType = (opts: { className: string }): IRawDialog['type'] => {
       return 'user';
     }
   }
+};
+
+// Class names read from node_modules/telegram/tl/api.d.ts rather than
+// guessed -- an unrecognised name must map to EntityKinds.UNKNOWN, never
+// throw, since a future GramJS version can add entity classes tglow has
+// never seen.
+const toEntityKind = (opts: { className: string }): TEntityKind => {
+  switch (opts.className) {
+    case 'MessageEntityBold': { return EntityKinds.BOLD; }
+    case 'MessageEntityItalic': { return EntityKinds.ITALIC; }
+    case 'MessageEntityUnderline': { return EntityKinds.UNDERLINE; }
+    case 'MessageEntityStrike': { return EntityKinds.STRIKE; }
+    case 'MessageEntityCode': { return EntityKinds.CODE; }
+    case 'MessageEntityPre': { return EntityKinds.PRE; }
+    case 'MessageEntitySpoiler': { return EntityKinds.SPOILER; }
+    case 'MessageEntityUrl': { return EntityKinds.URL; }
+    case 'MessageEntityTextUrl': { return EntityKinds.TEXT_URL; }
+    case 'MessageEntityMention': { return EntityKinds.MENTION; }
+    case 'MessageEntityHashtag': { return EntityKinds.HASHTAG; }
+    default: { return EntityKinds.UNKNOWN; }
+  }
+};
+
+/** Every MessageEntity* class shares offset/length; only MessageEntityTextUrl also carries a url. */
+const toEntity = (opts: { entity: Api.TypeMessageEntity }): ITelegramEntity => {
+  const { entity } = opts;
+  const kind = toEntityKind({ className: entity.className });
+  if ('url' in entity) {
+    return { kind, offset: entity.offset, length: entity.length, url: entity.url };
+  }
+  return { kind, offset: entity.offset, length: entity.length };
+};
+
+/**
+ * The one place a GramJS Api.Message -- fetched, just sent, or arrived live --
+ * becomes an IRawMessage. fetchHistory, send and subscribeToNewMessages all
+ * hand their message here rather than building the shape themselves:
+ * peerId in particular is derived identically for all three, where before
+ * fetchHistory and send trusted their caller's peerId argument and only the
+ * live path derived one from the message -- two paths that could silently
+ * drift apart from a single edit to either.
+ */
+const toRawMessage = (opts: { message: Api.Message }): IRawMessage => {
+  const { message } = opts;
+
+  // buildDialogAdapter derives a chat's peerId as `String(entity.id)` -- the
+  // raw, unmarked id GramJS puts on every User/Chat/Channel entity.
+  // utils.getPeerId(peer, false) computes that same unmarked id from a Peer
+  // union (PeerUser/PeerChat/PeerChannel), so this always lines up with the
+  // peerId buildDialogAdapter produced for the same chat. addMark defaults to
+  // true and would instead produce Bot-API-style marked ids (negative for
+  // chats, -100-prefixed for channels/supergroups) that never match an entity
+  // id -- confirmed by reading node_modules/telegram/Utils.js's getPeerId.
+  const peerId = utils.getPeerId(message.peerId, false);
+
+  return {
+    id: message.id,
+    peerId,
+    // fromId is 'me' for anything out, otherwise the chat's own peerId rather
+    // than the individual sender -- none of the three call sites has a
+    // per-message sender to hand over instead.
+    fromId: message.out ? 'me' : peerId,
+    date: message.date,
+    text: message.message ?? '',
+    out: message.out ? 1 : 0,
+    entities: (message.entities ?? []).map(entity => toEntity({ entity })),
+    replyToMessageId: message.replyTo?.replyToMsgId ?? null,
+  };
 };
 
 /**
@@ -54,26 +123,12 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
 
     return messages
       .filter(message => message.className === 'Message')
-      .map(message => ({
-        id: message.id,
-        peerId: historyOpts.peerId,
-        fromId: message.out ? 'me' : historyOpts.peerId,
-        date: message.date,
-        text: message.message ?? '',
-        out: message.out ? 1 : 0,
-      }));
+      .map(message => toRawMessage({ message }));
   },
 
   send: async (sendOpts: { peerId: string; text: string }): Promise<IRawMessage> => {
     const sent = await opts.client.sendMessage(sendOpts.peerId, { message: sendOpts.text });
-    return {
-      id: sent.id,
-      peerId: sendOpts.peerId,
-      fromId: 'me',
-      date: sent.date,
-      text: sendOpts.text,
-      out: 1,
-    };
+    return toRawMessage({ message: sent });
   },
 
   subscribeToNewMessages: (subscribeOpts: { onMessage: (message: IRawMessage) => void }): (() => void) => {
@@ -86,32 +141,7 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
     const eventBuilder = new NewMessage({});
 
     const handleEvent = (event: NewMessageEvent): void => {
-      const { message } = event;
-
-      // buildDialogAdapter derives a chat's peerId as `String(entity.id)` --
-      // the raw, unmarked id GramJS puts on every User/Chat/Channel entity.
-      // utils.getPeerId(peer, false) computes that same unmarked id from a
-      // Peer union (PeerUser/PeerChat/PeerChannel), so a live message's
-      // peerId lines up with the peerId fetchHistory was called with for the
-      // same chat. addMark defaults to true and would instead produce
-      // Bot-API-style marked ids (negative for chats, -100-prefixed for
-      // channels/supergroups) that never match an entity id -- confirmed by
-      // reading node_modules/telegram/Utils.js's getPeerId.
-      const peerId = utils.getPeerId(message.peerId, false);
-
-      subscribeOpts.onMessage({
-        id: message.id,
-        peerId,
-        // Mirrors fetchHistory's derivation exactly (see buildMessageAdapter
-        // above): fromId is 'me' for anything out, otherwise the chat's own
-        // peerId rather than the individual sender -- fetchHistory has no
-        // per-message sender either, and disagreeing here would make a live
-        // and a fetched copy of the same message look like different people.
-        fromId: message.out ? 'me' : peerId,
-        date: message.date,
-        text: message.message ?? '',
-        out: message.out ? 1 : 0,
-      });
+      subscribeOpts.onMessage(toRawMessage({ message: event.message }));
     };
 
     opts.client.addEventHandler(handleEvent, eventBuilder);

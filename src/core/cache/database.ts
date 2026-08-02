@@ -3,6 +3,7 @@ import { getError } from '@venizia/ignis-inversion';
 import { and, desc, eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/bun-sqlite';
 
+import type { ITelegramEntity } from '../common/index.ts';
 import { runMigrations } from './migrate.ts';
 import { dialogs, messages, peers, syncState } from './schema.ts';
 
@@ -29,6 +30,8 @@ export interface IMessageInput {
   date: number;
   text: string;
   out: number;
+  entities: ITelegramEntity[];
+  replyToMessageId: number | null;
 }
 
 export interface IDialogRow {
@@ -47,6 +50,8 @@ export interface IMessageRow {
   date: number;
   text: string;
   out: number;
+  entities: ITelegramEntity[];
+  replyToMessageId: number | null;
 }
 
 export type TDrizzleDatabase = ReturnType<typeof drizzle>;
@@ -146,6 +151,8 @@ export class DatabaseService {
             date: message.date,
             text: message.text,
             out: message.out,
+            entities: JSON.stringify(message.entities),
+            replyToMsgId: message.replyToMessageId,
           })
           .onConflictDoUpdate({
             target: [messages.peerId, messages.id],
@@ -154,6 +161,8 @@ export class DatabaseService {
               date: message.date,
               text: message.text,
               out: message.out,
+              entities: JSON.stringify(message.entities),
+              replyToMsgId: message.replyToMessageId,
             },
           })
           .run();
@@ -162,10 +171,7 @@ export class DatabaseService {
   };
 
   listMessages = (opts: { peerId: string; limit: number }): IMessageRow[] => {
-    // `text` is nullable at the schema level to leave room for media-only
-    // messages in a later milestone; M1a always writes a string, so the row
-    // shape here still promises non-null text to its caller.
-    return this.require('listMessages')
+    const rows = this.require('listMessages')
       .select({
         peerId: messages.peerId,
         id: messages.id,
@@ -173,12 +179,27 @@ export class DatabaseService {
         date: messages.date,
         text: messages.text,
         out: messages.out,
+        entities: messages.entities,
+        replyToMessageId: messages.replyToMsgId,
       })
       .from(messages)
       .where(and(eq(messages.peerId, opts.peerId), eq(messages.deleted, 0)))
       .orderBy(desc(messages.date), desc(messages.id))
       .limit(opts.limit)
-      .all() as IMessageRow[];
+      .all();
+
+    return rows.map(row => ({
+      ...row,
+      // `text` is nullable at the schema level to leave room for media-only
+      // messages in a later milestone; M1a always writes a string, so the row
+      // shape here still promises non-null text to its caller.
+      text: row.text as string,
+      // Written as JSON since M1a; nothing wrote it before this task, so an
+      // existing row's column reads back SQL NULL rather than '[]' -- callers
+      // downstream iterate this without a null check, so it must never surface
+      // as null here.
+      entities: row.entities ? (JSON.parse(row.entities) as ITelegramEntity[]) : [],
+    }));
   };
 
   getSyncState = (opts: { key: string }): number | null => {

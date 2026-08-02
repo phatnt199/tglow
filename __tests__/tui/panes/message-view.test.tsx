@@ -14,6 +14,7 @@ const resolveSenderName = (opts: { fromId: string | null }): string =>
 
 const messages: IMessageRow[] = [1, 2, 3, 4].map(id => ({
   peerId: 'u1', id, fromId: id === 3 ? 'me' : 'u1', date: id * 100, text: `msg${id}`, out: id === 3 ? 1 : 0,
+  entities: [], replyToMessageId: null,
 }));
 
 // Zero-padded so no assertion can be satisfied by a substring of a different
@@ -26,6 +27,8 @@ const history: IMessageRow[] = Array.from({ length: HISTORY_LENGTH }, (unused, i
   date: (index + 1) * 100,
   text: `msg${String(index + 1).padStart(3, '0')}`,
   out: 0,
+  entities: [],
+  replyToMessageId: null,
 }));
 
 // The rail, in display columns. Mirrors the constants in message-view.tsx:
@@ -181,6 +184,8 @@ const wordy: IMessageRow[] = MARKERS.map((marker, index) => ({
   date: (index + 1) * 10_000,
   text: Array.from({ length: WORD_COUNTS[index]! }, () => marker).join(' '),
   out: 0,
+  entities: [],
+  replyToMessageId: null,
 }));
 
 // Rail characters only -- digits, colons and spaces -- so stripping it needs
@@ -216,7 +221,7 @@ test('a pane far shorter than its content fills exactly its own height', async (
 test('a wrapped line hangs at the content column instead of returning to column 0', async () => {
   const long = 'the quick brown fox jumps over the lazy dog and then keeps on running for a good while yet';
   const renderer = await render({
-    messages: [{ peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: long, out: 0 }],
+    messages: [{ peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: long, out: 0, entities: [], replyToMessageId: null }],
     cursor: 0,
     width: 60,
     height: 8,
@@ -232,8 +237,8 @@ test('a wrapped line hangs at the content column instead of returning to column 
 test('a sender is given ten columns and is only ellipsised when genuinely longer', async () => {
   const renderer = await render({
     messages: [
-      { peerId: 'u1', id: 1, fromId: 'a', date: 100, text: 'short name', out: 0 },
-      { peerId: 'u1', id: 2, fromId: 'b', date: 100_000, text: 'long name', out: 0 },
+      { peerId: 'u1', id: 1, fromId: 'a', date: 100, text: 'short name', out: 0, entities: [], replyToMessageId: null },
+      { peerId: 'u1', id: 2, fromId: 'b', date: 100_000, text: 'long name', out: 0, entities: [], replyToMessageId: null },
     ],
     cursor: 0,
     resolveSenderName: opts => (opts.fromId === 'a' ? 'Alice Ng' : 'Alexandra Nguyen'),
@@ -246,9 +251,9 @@ test('a sender is given ten columns and is only ellipsised when genuinely longer
 
 test('consecutive messages from one sender show the name and time once', async () => {
   const grouped: IMessageRow[] = [
-    { peerId: 'u1', id: 1, fromId: 'a', date: 1_000, text: 'first', out: 0 },
-    { peerId: 'u1', id: 2, fromId: 'a', date: 1_060, text: 'second', out: 0 },
-    { peerId: 'u1', id: 3, fromId: 'a', date: 1_120, text: 'third', out: 0 },
+    { peerId: 'u1', id: 1, fromId: 'a', date: 1_000, text: 'first', out: 0, entities: [], replyToMessageId: null },
+    { peerId: 'u1', id: 2, fromId: 'a', date: 1_060, text: 'second', out: 0, entities: [], replyToMessageId: null },
+    { peerId: 'u1', id: 3, fromId: 'a', date: 1_120, text: 'third', out: 0, entities: [], replyToMessageId: null },
   ];
   const renderer = await render({ messages: grouped, cursor: 0, resolveSenderName: () => 'Alice' });
   const rows = readRows(renderer);
@@ -262,9 +267,9 @@ test('consecutive messages from one sender show the name and time once', async (
 
 test('a five minute gap starts a new group even from the same sender', async () => {
   const spaced: IMessageRow[] = [
-    { peerId: 'u1', id: 1, fromId: 'a', date: 1_000, text: 'first', out: 0 },
-    { peerId: 'u1', id: 2, fromId: 'a', date: 1_000 + 299, text: 'still together', out: 0 },
-    { peerId: 'u1', id: 3, fromId: 'a', date: 1_000 + 600, text: 'new group', out: 0 },
+    { peerId: 'u1', id: 1, fromId: 'a', date: 1_000, text: 'first', out: 0, entities: [], replyToMessageId: null },
+    { peerId: 'u1', id: 2, fromId: 'a', date: 1_000 + 299, text: 'still together', out: 0, entities: [], replyToMessageId: null },
+    { peerId: 'u1', id: 3, fromId: 'a', date: 1_000 + 600, text: 'new group', out: 0, entities: [], replyToMessageId: null },
   ];
   const renderer = await render({ messages: spaced, cursor: 0, resolveSenderName: () => 'Alice' });
   const rows = readRows(renderer);
@@ -275,7 +280,10 @@ test('a five minute gap starts a new group even from the same sender', async () 
 test('the time column is HH:MM in local time', async () => {
   const at = new Date(2026, 7, 1, 9, 14, 0);
   const renderer = await render({
-    messages: [{ peerId: 'u1', id: 1, fromId: 'a', date: Math.floor(at.getTime() / 1000), text: 'hello', out: 0 }],
+    messages: [{
+      peerId: 'u1', id: 1, fromId: 'a', date: Math.floor(at.getTime() / 1000), text: 'hello', out: 0,
+      entities: [], replyToMessageId: null,
+    }],
     cursor: 0,
     resolveSenderName: () => 'Alice',
   });
@@ -294,10 +302,10 @@ test('an own message is drawn in the own-message colour', async () => {
 // line for every wide glyph in it, which is how a rail stops being a rail.
 test('a wide or decomposed sender name keeps the content column aligned', async () => {
   const mixed: IMessageRow[] = [
-    { peerId: 'u1', id: 1, fromId: 'a', date: 1_000, text: 'plain', out: 0 },
-    { peerId: 'u1', id: 2, fromId: 'b', date: 100_000, text: 'wide', out: 0 },
-    { peerId: 'u1', id: 3, fromId: 'c', date: 200_000, text: 'decomposed', out: 0 },
-    { peerId: 'u1', id: 4, fromId: 'd', date: 300_000, text: 'emoji', out: 0 },
+    { peerId: 'u1', id: 1, fromId: 'a', date: 1_000, text: 'plain', out: 0, entities: [], replyToMessageId: null },
+    { peerId: 'u1', id: 2, fromId: 'b', date: 100_000, text: 'wide', out: 0, entities: [], replyToMessageId: null },
+    { peerId: 'u1', id: 3, fromId: 'c', date: 200_000, text: 'decomposed', out: 0, entities: [], replyToMessageId: null },
+    { peerId: 'u1', id: 4, fromId: 'd', date: 300_000, text: 'emoji', out: 0, entities: [], replyToMessageId: null },
   ];
   const names: Record<string, string> = {
     a: 'Alice', b: '张伟同学', c: 'Đức anh hoàng'.normalize('NFD'), d: '🔥 Em Việt Tú',
@@ -327,7 +335,10 @@ test('a wide or decomposed sender name keeps the content column aligned', async 
 
 test('a message carrying newlines still renders one row per line', async () => {
   const renderer = await render({
-    messages: [{ peerId: 'u1', id: 1, fromId: 'a', date: 100, text: 'first\nsecond\nthird', out: 0 }],
+    messages: [{
+      peerId: 'u1', id: 1, fromId: 'a', date: 100, text: 'first\nsecond\nthird', out: 0,
+      entities: [], replyToMessageId: null,
+    }],
     cursor: 0,
     width: 60,
     height: 6,
@@ -357,8 +368,8 @@ test('a message taller than the pane is anchored at its first row', async () => 
   const wall = Array.from({ length: 200 }, (unused, index) => `word${index}`).join(' ');
   const renderer = await render({
     messages: [
-      { peerId: 'u1', id: 1, fromId: 'a', date: 100, text: 'before', out: 0 },
-      { peerId: 'u1', id: 2, fromId: 'a', date: 200, text: wall, out: 0 },
+      { peerId: 'u1', id: 1, fromId: 'a', date: 100, text: 'before', out: 0, entities: [], replyToMessageId: null },
+      { peerId: 'u1', id: 2, fromId: 'a', date: 200, text: wall, out: 0, entities: [], replyToMessageId: null },
     ],
     cursor: 1,
     width: 60,

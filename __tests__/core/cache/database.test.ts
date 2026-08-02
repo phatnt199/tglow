@@ -39,9 +39,9 @@ test('messages are read back newest-first', () => {
   const database = buildDatabase();
   database.insertMessages({
     messages: [
-      { peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'morning!', out: 0 },
-      { peerId: 'u1', id: 2, fromId: 'u1', date: 200, text: 'ok ping me', out: 0 },
-      { peerId: 'u1', id: 3, fromId: 'me', date: 300, text: 'not yet', out: 1 },
+      { peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'morning!', out: 0, entities: [], replyToMessageId: null },
+      { peerId: 'u1', id: 2, fromId: 'u1', date: 200, text: 'ok ping me', out: 0, entities: [], replyToMessageId: null },
+      { peerId: 'u1', id: 3, fromId: 'me', date: 300, text: 'not yet', out: 1, entities: [], replyToMessageId: null },
     ],
   });
   expect(database.listMessages({ peerId: 'u1', limit: 10 }).map(message => message.text))
@@ -55,8 +55,8 @@ test('listMessages breaks a same-date tie by id, highest first', () => {
   const database = buildDatabase();
   database.insertMessages({
     messages: [
-      { peerId: 'u1', id: 5, fromId: 'u1', date: 100, text: 'sent first', out: 0 },
-      { peerId: 'u1', id: 7, fromId: 'u1', date: 100, text: 'sent second', out: 0 },
+      { peerId: 'u1', id: 5, fromId: 'u1', date: 100, text: 'sent first', out: 0, entities: [], replyToMessageId: null },
+      { peerId: 'u1', id: 7, fromId: 'u1', date: 100, text: 'sent second', out: 0, entities: [], replyToMessageId: null },
     ],
   });
   expect(database.listMessages({ peerId: 'u1', limit: 10 }).map(message => message.id)).toEqual([7, 5]);
@@ -65,7 +65,7 @@ test('listMessages breaks a same-date tie by id, highest first', () => {
 
 test('inserting the same message twice updates it', () => {
   const database = buildDatabase();
-  const message = { peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'hi', out: 0 };
+  const message = { peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'hi', out: 0, entities: [], replyToMessageId: null };
   database.insertMessages({ messages: [message] });
   database.insertMessages({ messages: [{ ...message, text: 'hi (edited)' }] });
   const rows = database.listMessages({ peerId: 'u1', limit: 10 });
@@ -78,9 +78,9 @@ test('listMessages honours its limit and scopes to one peer', () => {
   const database = buildDatabase();
   database.insertMessages({
     messages: [
-      { peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'a', out: 0 },
-      { peerId: 'u1', id: 2, fromId: 'u1', date: 200, text: 'b', out: 0 },
-      { peerId: 'u2', id: 1, fromId: 'u2', date: 150, text: 'other', out: 0 },
+      { peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'a', out: 0, entities: [], replyToMessageId: null },
+      { peerId: 'u1', id: 2, fromId: 'u1', date: 200, text: 'b', out: 0, entities: [], replyToMessageId: null },
+      { peerId: 'u2', id: 1, fromId: 'u2', date: 150, text: 'other', out: 0, entities: [], replyToMessageId: null },
     ],
   });
   expect(database.listMessages({ peerId: 'u1', limit: 1 }).map(message => message.text)).toEqual(['b']);
@@ -105,6 +105,32 @@ test('calling open twice does not leak the first handle and leaves a working dat
     database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 1, topMessageId: 1 });
   }).not.toThrow();
   expect(database.listDialogs()).toHaveLength(1);
+  database.close();
+});
+
+test('entities and reply id round-trip through the cache', () => {
+  const database = buildDatabase();
+  database.insertMessages({
+    messages: [{
+      peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'see docs', out: 0,
+      entities: [{ kind: 'textUrl', offset: 4, length: 4, url: 'https://example.com' }],
+      replyToMessageId: 7,
+    }],
+  });
+  const [row] = database.listMessages({ peerId: 'u1', limit: 10 });
+  expect(row!.entities).toEqual([{ kind: 'textUrl', offset: 4, length: 4, url: 'https://example.com' }]);
+  expect(row!.replyToMessageId).toBe(7);
+  database.close();
+});
+
+test('a message with no entities reads back as an empty array, not null', () => {
+  const database = buildDatabase();
+  database.insertMessages({
+    messages: [{ peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'plain', out: 0, entities: [], replyToMessageId: null }],
+  });
+  const [row] = database.listMessages({ peerId: 'u1', limit: 10 });
+  expect(row!.entities).toEqual([]);
+  expect(row!.replyToMessageId).toBeNull();
   database.close();
 });
 

@@ -27,7 +27,7 @@ const dialogs: IDialogRow[] = [
   { peerId: 'u1', title: 'Alice', pinned: 0, unreadCount: 2, lastMessageAt: 300, topMessageId: 3 },
 ];
 const messages: IMessageRow[] = [1, 2, 3, 4].map(id => ({
-  peerId: 'u1', id, fromId: 'u1', date: id * 100, text: `msg${id}`, out: 0,
+  peerId: 'u1', id, fromId: 'u1', date: id * 100, text: `msg${id}`, out: 0, entities: [], replyToMessageId: null,
 }));
 
 // What main.ts actually loads. Zero-padded so no assertion can be satisfied by
@@ -39,6 +39,8 @@ const history: IMessageRow[] = Array.from({ length: 200 }, (unused, index) => ({
   date: (index + 1) * 100,
   text: `msg${String(index + 1).padStart(3, '0')}`,
   out: 0,
+  entities: [],
+  replyToMessageId: null,
 }));
 
 // A lone \x1b could still open a CSI sequence, so OpenTUI's input parser holds

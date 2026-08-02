@@ -58,6 +58,8 @@ export class UpdateService {
           date: message.date,
           text: message.text,
           out: message.out,
+          entities: message.entities,
+          replyToMessageId: message.replyToMessageId,
         }],
       });
       this.touchDialog(message);

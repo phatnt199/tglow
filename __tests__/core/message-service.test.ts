@@ -5,7 +5,7 @@ import { DatabaseService } from '../../src/core/cache/index.ts';
 import { MessageService, type IMessageAdapter, type IRawMessage } from '../../src/core/message-service.ts';
 
 const buildRawMessage = (overrides: Partial<IRawMessage> = {}): IRawMessage => ({
-  id: 1, peerId: 'u1', fromId: 'u1', date: 100, text: 'hi', out: 0, ...overrides,
+  id: 1, peerId: 'u1', fromId: 'u1', date: 100, text: 'hi', out: 0, entities: [], replyToMessageId: null, ...overrides,
 });
 
 const buildService = (adapter: IMessageAdapter): { service: MessageService; database: DatabaseService; store: ApplicationStoreService } => {
@@ -55,8 +55,8 @@ test('a network failure falls back to the cache', async () => {
   );
   database.insertMessages({
     messages: [
-      { peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'cached first', out: 0 },
-      { peerId: 'u1', id: 2, fromId: 'u1', date: 200, text: 'cached second', out: 0 },
+      { peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'cached first', out: 0, entities: [], replyToMessageId: null },
+      { peerId: 'u1', id: 2, fromId: 'u1', date: 200, text: 'cached second', out: 0, entities: [], replyToMessageId: null },
     ],
   });
   await service.loadHistory({ peerId: 'u1', limit: 50 });
@@ -70,7 +70,7 @@ test('a network failure falls back to the cache', async () => {
 test('sending appends the message to the view and clears the composer', async () => {
   const { service, store, database } = buildService(buildAdapter());
   database.insertMessages({
-    messages: [{ peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'earlier', out: 0 }],
+    messages: [{ peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'earlier', out: 0, entities: [], replyToMessageId: null }],
   });
   store.setState({ patch: { activePeerId: 'u1', composerText: 'on my way' } });
   await service.send({ peerId: 'u1', text: 'on my way' });
@@ -108,7 +108,7 @@ test('a failed send keeps the composed text', async () => {
 test('send republishes using the limit from the last loadHistory call', async () => {
   const { service, store, database } = buildService(buildAdapter());
   database.insertMessages({
-    messages: [{ peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'earlier', out: 0 }],
+    messages: [{ peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'earlier', out: 0, entities: [], replyToMessageId: null }],
   });
   await service.loadHistory({ peerId: 'u1', limit: 1 });
   await service.send({ peerId: 'u1', text: 'on my way' });

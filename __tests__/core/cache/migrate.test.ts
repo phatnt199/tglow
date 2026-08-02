@@ -62,7 +62,9 @@ test('reopening an existing database preserves its rows and re-applies cleanly',
   first.open({ filePath });
   first.upsertPeer({ id: 'u1', type: 'user', accessHash: 'h', title: 'Alice', username: null });
   first.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 3, lastMessageAt: 100, topMessageId: 5 });
-  first.insertMessages({ messages: [{ peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'morning!', out: 0 }] });
+  first.insertMessages({
+    messages: [{ peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'morning!', out: 0, entities: [], replyToMessageId: null }],
+  });
   first.close();
 
   const second = new DatabaseService();
@@ -95,7 +97,9 @@ test('a database drizzle migrated is left alone', () => {
   const seeded = new DatabaseService();
   seeded.open({ filePath });
   seeded.upsertPeer({ id: 'u1', type: 'user', accessHash: 'h', title: 'Alice', username: null });
-  seeded.insertMessages({ messages: [{ peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'kept', out: 0 }] });
+  seeded.insertMessages({
+    messages: [{ peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'kept', out: 0, entities: [], replyToMessageId: null }],
+  });
   seeded.close();
 
   const before = readBookkeeping({ filePath });

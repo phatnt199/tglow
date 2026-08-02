@@ -4,6 +4,7 @@ import { ApplicationLogger, toError, type ILogger } from '@venizia/ignis-helpers
 import { BindingKeys } from '../common/index.ts';
 import type { ApplicationStoreService, IApplicationState } from './application-store.ts';
 import type { DatabaseService, IMessageRow } from './cache/index.ts';
+import type { ITelegramEntity } from './common/index.ts';
 
 const SEND_REFRESH_LIMIT = 200;
 
@@ -14,6 +15,8 @@ export interface IRawMessage {
   date: number;
   text: string;
   out: number;
+  entities: ITelegramEntity[];
+  replyToMessageId: number | null;
 }
 
 export interface IMessageAdapter {
@@ -55,6 +58,8 @@ export class MessageService {
           date: message.date,
           text: message.text,
           out: message.out,
+          entities: message.entities,
+          replyToMessageId: message.replyToMessageId,
         })),
       });
       this._store.setState({
@@ -120,6 +125,8 @@ export class MessageService {
           date: sent.date,
           text: sent.text,
           out: sent.out,
+          entities: sent.entities,
+          replyToMessageId: sent.replyToMessageId,
         }],
       });
 
