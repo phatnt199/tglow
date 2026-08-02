@@ -1,4 +1,4 @@
-import { useCallback, useSyncExternalStore } from 'react';
+import { useCallback, useRef, useSyncExternalStore } from 'react';
 
 import { useKeyboard, useTerminalDimensions } from '@opentui/react';
 import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
@@ -108,6 +108,13 @@ export const App = (props: IAppProps) => {
   const state = useSyncExternalStore(subscribe, store.getState, store.getState);
   const { width, height } = useTerminalDimensions();
 
+  // MessageService clears composerText only after its network round-trip
+  // resolves, so the composer sits populated with no in-flight indicator for
+  // that entire window. A ref, not state: the keyboard handler must see the
+  // current value on the very next synchronous key press, the same reason it
+  // already reads store.getState() fresh rather than a render's `state`.
+  const sendInFlightRef = useRef(false);
+
   useKeyboard(event => {
     // Read the store directly rather than closing over the render's `state`.
     // mockInput fires keypress events synchronously, and so does a real
@@ -183,9 +190,26 @@ export const App = (props: IAppProps) => {
           // nothing to retry and no copy of what they had written, and it
           // also made the service's "still what I sent?" check permanently
           // false, so its own clear never ran in production.
-          void onSend(accumulated.composerText).catch(error => {
-            logRejection({ method: 'onSend', error });
-          });
+          //
+          // That leaves a window, between dispatch and the round-trip
+          // resolving, where the composer still shows the sent text with
+          // nothing on screen to say a send is in flight. Without a guard, a
+          // second Enter in that window re-dispatches this case with the same
+          // non-empty string -- a duplicate send, which MessageService's own
+          // comment calls unrecoverable. Set before the call and cleared in
+          // `finally` so a rejected send releases it too; leaving it set on
+          // failure would make the composer permanently unable to send.
+          if (sendInFlightRef.current) {
+            break;
+          }
+          sendInFlightRef.current = true;
+          void onSend(accumulated.composerText)
+            .catch(error => {
+              logRejection({ method: 'onSend', error });
+            })
+            .finally(() => {
+              sendInFlightRef.current = false;
+            });
           break;
         }
         case ActionTypes.CHAT_OPEN: {

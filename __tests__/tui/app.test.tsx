@@ -40,6 +40,14 @@ const history: IMessageRow[] = Array.from({ length: 200 }, (unused, index) => ({
 // simply never reaches the handler and the test proves nothing.
 const ESCAPE_FLUSH_MILLISECONDS = 60;
 
+// Long enough that a synchronous onSend could never stand in for it: the bug
+// this guards against only exists in the gap between dispatch and resolution,
+// so the stub has to actually hold that gap open.
+const SEND_ROUND_TRIP_MILLISECONDS = 20;
+// Comfortably past the fake round-trip above, so an assertion taken after this
+// wait sees the state onSend's `.finally()` leaves behind, not a mid-flight one.
+const SEND_SETTLE_MILLISECONDS = SEND_ROUND_TRIP_MILLISECONDS + 10;
+
 const pressEscape = async (renderer: TestRendererSetup): Promise<void> => {
   await act(async () => {
     renderer.mockInput.pressEscape();
@@ -237,6 +245,88 @@ test('a send that fails leaves the typed text in the composer', async () => {
   await act(async () => { renderer.mockInput.pressEnter(); });
   await renderer.flush();
   expect(store.getState().composerText).toBe('hello');
+});
+
+// Regression from the C3 fix above: App stopped clearing the composer so
+// MessageService could own it, but the service clears only after the network
+// round-trip -- so for that whole window the composer still holds the text,
+// with nothing on screen to say a send is in flight. A second Enter before
+// the first resolves re-dispatches COMPOSER_SEND with the same non-empty
+// string, which MessageService's own comment calls unrecoverable. `store` is
+// assigned after `mount()` resolves but read inside `onSend`, which only
+// ever runs on a later Enter press -- by the time that happens the
+// assignment below has long since landed.
+test('a second Enter before the first send resolves does not send twice', async () => {
+  const sent: string[] = [];
+  let store!: ApplicationStoreService;
+  const onSend = async (text: string): Promise<void> => {
+    sent.push(text);
+    await new Promise(resolve => { setTimeout(resolve, SEND_ROUND_TRIP_MILLISECONDS); });
+    store.setState({ patch: { composerText: '' } });
+  };
+
+  const mounted = await mount({ onSend });
+  store = mounted.store;
+  const { renderer } = mounted;
+
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('hi'); });
+  await renderer.flush();
+
+  // Both presses land in the same synchronous burst, before onSend's timer
+  // has any chance to fire -- exactly the window the regression lives in.
+  await act(async () => {
+    renderer.mockInput.pressEnter();
+    renderer.mockInput.pressEnter();
+    await new Promise(resolve => { setTimeout(resolve, SEND_SETTLE_MILLISECONDS); });
+  });
+  await renderer.flush();
+
+  expect(sent).toEqual(['hi']);
+});
+
+// The other half of the guard: a flag that only ever gets set, never cleared
+// on the failure path, would leave the composer permanently unable to send
+// again -- worse than the duplicate it exists to prevent.
+test('a later Enter can send again after a send that rejects', async () => {
+  const sent: string[] = [];
+  let rejectNextSend = true;
+  let store!: ApplicationStoreService;
+  const onSend = async (text: string): Promise<void> => {
+    await new Promise(resolve => { setTimeout(resolve, SEND_ROUND_TRIP_MILLISECONDS); });
+    if (rejectNextSend) {
+      throw new Error('FLOOD_WAIT_30');
+    }
+    sent.push(text);
+    store.setState({ patch: { composerText: '' } });
+  };
+
+  const mounted = await mount({ onSend });
+  store = mounted.store;
+  const { renderer } = mounted;
+
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('hi'); });
+  await renderer.flush();
+
+  await act(async () => {
+    renderer.mockInput.pressEnter();
+    await new Promise(resolve => { setTimeout(resolve, SEND_SETTLE_MILLISECONDS); });
+  });
+  await renderer.flush();
+  expect(sent).toEqual([]);
+  expect(store.getState().composerText).toBe('hi');
+
+  rejectNextSend = false;
+  await act(async () => {
+    renderer.mockInput.pressEnter();
+    await new Promise(resolve => { setTimeout(resolve, SEND_SETTLE_MILLISECONDS); });
+  });
+  await renderer.flush();
+
+  expect(sent).toEqual(['hi']);
 });
 
 // Code review on Task 16: the printable check relied on !ctrl alone, but Tab

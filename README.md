@@ -40,7 +40,7 @@ by accident.
 | `i` / `a` | write a message |
 | `jk` or `Esc` | leave insert mode |
 | `Enter` (insert) | send |
-| `<C-c>` | quit |
+| `<C-c>` (normal) | quit |
 
 ## Security
 
