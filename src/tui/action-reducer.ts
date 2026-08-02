@@ -56,6 +56,13 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
       return { composerText: state.composerText.slice(0, -1) };
     }
 
+    case ActionTypes.OVERLAY_TOGGLE: {
+      // The same key that opens an overlay closes it again: pressing \\ a
+      // second time must return to null rather than re-opening the same
+      // overlay it already is.
+      return { overlay: state.overlay === action.overlay ? null : action.overlay };
+    }
+
     // Side-effecting actions are App's to perform; the reducer has no patch.
     case ActionTypes.CHAT_OPEN:
     case ActionTypes.COMPOSER_SEND:

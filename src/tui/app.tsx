@@ -12,6 +12,7 @@ import type { ApplicationStoreService, IApplicationState } from '../core/applica
 import { ActionTypes, VimContexts, VimModes } from '../keys/common/index.ts';
 import type { KeyNormalizerService, KeymapService, VimEngineService } from '../keys/index.ts';
 import { applyAction } from './action-reducer.ts';
+import { resolveWhichKeyHeight, WhichKey } from './overlays/index.ts';
 import { ChatList, Composer, MessageView, StatusLine } from './panes/index.ts';
 import type { ITokens } from './theme/index.ts';
 
@@ -30,12 +31,27 @@ export interface IAppProps {
 const SIDEBAR_WIDTH = 22;
 /** The composer's rule and prompt, then the status line. */
 const CHROME_HEIGHT = 3;
+/** The status line is always exactly one row, whichever chrome sits above it. */
+const STATUS_LINE_HEIGHT = 1;
 /**
  * `fillchars = "vert:│"`: splits are a single rule, not a box. Boxing the
  * panes also put a doubled `┐┌` seam where two of them met.
  */
 const RULE_WIDTH = 1;
 const VERTICAL_RULE = '│';
+
+/**
+ * The two keys the which-key overlay owns outright while it is open, in the
+ * same canonical form the keymap itself is authored in (key-normalizer.ts).
+ * <escape> is checked directly here, ahead of engine resolution, so closing
+ * the overlay cannot also run whatever <escape> otherwise means in the pane
+ * underneath it -- refocusing the messages pane from the chat list, for
+ * instance. The leader needs no such override: the engine already resolves
+ * it to OVERLAY_TOGGLE below, which the reducer toggles closed the same way
+ * it toggled open, so it is left to flow through the ordinary path.
+ */
+const OVERLAY_ESCAPE_TOKEN = '<escape>';
+const OVERLAY_LEADER_TOKEN = '\\';
 
 const CONTROL_CHARACTER_BOUNDARY = 0x20;
 const DELETE_CODE_POINT = 0x7f;
@@ -132,6 +148,22 @@ export const App = (props: IAppProps) => {
     // every setState, so reading it fresh here is always current.
     const current = store.getState();
     const key = keyNormalizer.normalize({ event });
+
+    // The overlay owns input while it is open. Everything except the two
+    // keys above is swallowed here, before the engine ever sees it, so a
+    // stray keystroke cannot move a cursor or seed a pending prefix the
+    // engine would still be holding once the overlay closes.
+    if (current.overlay !== null) {
+      const overlayToken = keyNormalizer.toCanonicalString({ key });
+      if (overlayToken === OVERLAY_ESCAPE_TOKEN) {
+        store.setState({ patch: { overlay: null } });
+        return;
+      }
+      if (overlayToken !== OVERLAY_LEADER_TOKEN) {
+        return;
+      }
+    }
+
     const keymap = keymapService.getBindings();
     let result = engine.resolve({ state: current.engine, key, keymap });
 
@@ -241,7 +273,19 @@ export const App = (props: IAppProps) => {
   });
 
   const activeDialog = state.dialogs.find(dialog => dialog.peerId === state.activePeerId);
-  const paneHeight = Math.max(1, height - CHROME_HEIGHT);
+  // describe() is cheap (a filter + map over a couple dozen bindings at
+  // most) and pure, so it costs nothing to compute unconditionally rather
+  // than branching on whether the overlay is actually open.
+  const whichKeyBindings = keymapService.describe({ mode: state.engine.mode, context: state.engine.context });
+  const isWhichKeyOpen = state.overlay === 'whichkey';
+  // The overlay replaces the composer and grows upward, so the panes above
+  // it must shrink by however many rows it actually renders -- Math.max(1, …)
+  // keeps at least one row for them even if a future binding table were long
+  // enough to ask for more than the terminal has.
+  const chromeHeight = isWhichKeyOpen
+    ? resolveWhichKeyHeight({ bindingCount: whichKeyBindings.length, width }) + STATUS_LINE_HEIGHT
+    : CHROME_HEIGHT;
+  const paneHeight = Math.max(1, height - chromeHeight);
   const messageWidth = Math.max(1, width - SIDEBAR_WIDTH - RULE_WIDTH);
 
   return (
@@ -277,13 +321,23 @@ export const App = (props: IAppProps) => {
         />
       </box>
 
-      <Composer
-        text={state.composerText}
-        mode={state.engine.mode}
-        focused={state.engine.context === VimContexts.COMPOSER}
-        tokens={tokens}
-        width={width}
-      />
+      {isWhichKeyOpen ? (
+        <WhichKey
+          bindings={whichKeyBindings}
+          mode={state.engine.mode}
+          context={state.engine.context}
+          tokens={tokens}
+          width={width}
+        />
+      ) : (
+        <Composer
+          text={state.composerText}
+          mode={state.engine.mode}
+          focused={state.engine.context === VimContexts.COMPOSER}
+          tokens={tokens}
+          width={width}
+        />
+      )}
 
       <StatusLine
         mode={state.engine.mode}

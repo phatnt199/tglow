@@ -40,6 +40,17 @@ export class KeymapService {
       context: '*', mode: VimModes.NORMAL, keys: 'nf', description: 'Focus chat list',
       action: () => [{ type: ActionTypes.FOCUS_SET, context: VimContexts.CHAT_LIST }],
     },
+    // <C-w>h/l echo vim's own window-navigation keys. Unlike nf (into the
+    // chat list only, one-way) these move in both directions and work from
+    // any context, so they double as the way out of the chat list too.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: '<C-w>h', description: 'Focus chat list',
+      action: () => [{ type: ActionTypes.FOCUS_SET, context: VimContexts.CHAT_LIST }],
+    },
+    {
+      context: '*', mode: VimModes.NORMAL, keys: '<C-w>l', description: 'Focus messages',
+      action: () => [{ type: ActionTypes.FOCUS_SET, context: VimContexts.MESSAGES }],
+    },
     {
       context: VimContexts.CHAT_LIST, mode: VimModes.NORMAL, keys: 'j', description: 'Next chat',
       action: count => [{ type: ActionTypes.CURSOR_MOVE, unit: 'chat', delta: count }],
@@ -54,6 +65,13 @@ export class KeymapService {
         { type: ActionTypes.CHAT_OPEN },
         { type: ActionTypes.FOCUS_SET, context: VimContexts.MESSAGES },
       ],
+    },
+    // The "I changed my mind" key: without it, landing in the chat list with
+    // nf had no way back except opening something with Enter. <C-w>l is the
+    // other way back, but a newcomer reaches for Escape first.
+    {
+      context: VimContexts.CHAT_LIST, mode: VimModes.NORMAL, keys: '<escape>', description: 'Back to messages',
+      action: () => [{ type: ActionTypes.FOCUS_SET, context: VimContexts.MESSAGES }],
     },
 
     // Mode changes
@@ -90,6 +108,14 @@ export class KeymapService {
     {
       context: '*', mode: VimModes.INSERT, keys: '<backspace>', description: 'Delete character',
       action: () => [{ type: ActionTypes.COMPOSER_BACKSPACE }],
+    },
+
+    // Overlays — leader is \, matching vim.g.mapleader (see spec §5). The
+    // status bar has advertised "\ for keys" since the redesign; this is what
+    // makes that true instead of a dead key.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: '\\', description: 'Show key bindings',
+      action: () => [{ type: ActionTypes.OVERLAY_TOGGLE, overlay: 'whichkey' }],
     },
 
     // Application

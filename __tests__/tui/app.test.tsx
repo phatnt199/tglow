@@ -433,3 +433,70 @@ test('<C-c> quits the application', async () => {
   await renderer.flush();
   expect(quit).toEqual([true]);
 });
+
+// The which-key popup: `\` was rendered as a promised hint on the status bar
+// ("\ for keys") while bound to nothing at all -- these four are the reported
+// bug and its fix, driven through real key presses rather than KeymapService
+// directly, because that is the layer the bug actually lived in.
+test('\\ opens the which-key overlay, showing bindings for the current mode and pane', async () => {
+  const { renderer } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('\\'); });
+  await renderer.flush();
+  expect(renderer.captureCharFrame()).toContain('Next message');
+});
+
+test('\\ a second time closes the overlay again', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('\\'); });
+  await renderer.flush();
+  expect(store.getState().overlay).toBe('whichkey');
+
+  await act(async () => { renderer.mockInput.pressKey('\\'); });
+  await renderer.flush();
+  expect(store.getState().overlay).toBeNull();
+  expect(renderer.captureCharFrame()).not.toContain('Next message');
+});
+
+test('escape closes the overlay', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('\\'); });
+  await renderer.flush();
+  expect(store.getState().overlay).toBe('whichkey');
+
+  await pressEscape(renderer);
+  expect(store.getState().overlay).toBeNull();
+});
+
+test('while the overlay is open, j does not move the message cursor', async () => {
+  const { renderer, store } = await mount();
+  expect(store.getState().messageCursor).toBe(0);
+
+  await act(async () => { renderer.mockInput.pressKey('\\'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('j'); });
+  await renderer.flush();
+
+  expect(store.getState().messageCursor).toBe(0);
+});
+
+// The chat list has its own <escape> binding (back to messages, added by
+// this same task). Closing the overlay must take priority over it outright,
+// not run alongside it -- otherwise dismissing the popup from the chat list
+// would also silently refocus the messages pane underneath it.
+test('escape closes the overlay without also refocusing the pane underneath it', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => {
+    renderer.mockInput.pressKey('n');
+    renderer.mockInput.pressKey('f');
+  });
+  await renderer.flush();
+  expect(store.getState().engine.context).toBe(VimContexts.CHAT_LIST);
+
+  await act(async () => { renderer.mockInput.pressKey('\\'); });
+  await renderer.flush();
+  expect(store.getState().overlay).toBe('whichkey');
+
+  await pressEscape(renderer);
+  expect(store.getState().overlay).toBeNull();
+  expect(store.getState().engine.context).toBe(VimContexts.CHAT_LIST);
+});

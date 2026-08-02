@@ -19,6 +19,8 @@ export interface IRawKeyEvent {
 
 export type TCursorUnit = 'message' | 'chat';
 export type TCursorEdge = 'first' | 'last';
+/** The only overlay that exists yet. A bare literal, like TCursorUnit/TCursorEdge above, not a class: nothing else keys off it. */
+export type TOverlay = 'whichkey';
 
 export type TAction =
   | { type: typeof ActionTypes.CURSOR_MOVE; unit: TCursorUnit; delta: number }
@@ -29,7 +31,8 @@ export type TAction =
   | { type: typeof ActionTypes.COMPOSER_SEND }
   | { type: typeof ActionTypes.COMPOSER_INSERT_TEXT; text: string }
   | { type: typeof ActionTypes.COMPOSER_BACKSPACE }
-  | { type: typeof ActionTypes.APPLICATION_QUIT };
+  | { type: typeof ActionTypes.APPLICATION_QUIT }
+  | { type: typeof ActionTypes.OVERLAY_TOGGLE; overlay: TOverlay };
 
 export interface IEngineState {
   mode: TVimMode;

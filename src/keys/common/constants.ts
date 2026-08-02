@@ -30,6 +30,7 @@ export class ActionTypes {
   static readonly COMPOSER_INSERT_TEXT = 'composer.insertText';
   static readonly COMPOSER_BACKSPACE = 'composer.backspace';
   static readonly APPLICATION_QUIT = 'application.quit';
+  static readonly OVERLAY_TOGGLE = 'overlay.toggle';
 }
 
 const SUPPORTED_MODES: readonly string[] = [

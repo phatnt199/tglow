@@ -1,6 +1,6 @@
 import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
 
-import { INITIAL_ENGINE_STATE, type IEngineState } from '../keys/common/index.ts';
+import { INITIAL_ENGINE_STATE, type IEngineState, type TOverlay } from '../keys/common/index.ts';
 import type { IDialogRow, IMessageRow } from './cache/index.ts';
 
 export type TConnectionState = 'offline' | 'connecting' | 'connected';
@@ -15,6 +15,8 @@ export interface IApplicationState {
   composerText: string;
   connection: TConnectionState;
   statusMessage: string | null;
+  /** Which full-pane overlay is showing, if any. Orthogonal to engine.context: opening one leaves mode and pane focus exactly as they were. */
+  overlay: TOverlay | null;
 }
 
 const INITIAL_STATE: IApplicationState = {
@@ -27,6 +29,7 @@ const INITIAL_STATE: IApplicationState = {
   composerText: '',
   connection: 'offline',
   statusMessage: null,
+  overlay: null,
 };
 
 export class ApplicationStoreService {
