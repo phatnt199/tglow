@@ -142,38 +142,42 @@ matters is the import restriction above, and Task 2's boundary test enforces it.
 
 ```
 src/
-├── keys/                    PURE — exhaustively unit-testable
-│   ├── types.ts             Mode, Context, Key, Action, Binding
-│   ├── engine.ts            resolve(state, key, keymap) → {state, actions}
-│   ├── keymap.ts            the binding table (single source of truth)
-│   ├── motions.ts           j k gg G { } <C-d> <C-u> H M L
-│   ├── operators.ts         d y c + counts, operator-pending state
-│   └── registers.ts         named registers, "+ via OSC 52
+├── common/
+│   └── binding-keys.ts       every DI key, one static-readonly class
 │
-├── core/                    Headless — runs and is tested without a terminal
-│   ├── client.ts            GramJS lifecycle, reconnect with backoff
-│   ├── auth.ts              phone → code → 2FA → ready (explicit state machine)
-│   ├── session.ts           session persistence, 0600, encrypted at rest
-│   ├── dialogs.ts           chat list: fetch, ordering, unread counts
-│   ├── messages.ts          history paging, send, edit, delete, reply
-│   ├── entities.ts          Telegram entities → styled spans
-│   ├── updates.ts           live update dispatch + pts gap recovery
-│   ├── store.ts             observable state + typed event bus
+├── keys/                    deterministic — no Telegram, React or I/O
+│   ├── common/              constants (VimModes, ActionTypes) + types
+│   ├── key-normalizer.ts    terminal event → canonical key string
+│   ├── vim-engine.ts        resolve(...) → { state, actions }
+│   └── keymap.ts            the binding table (single source of truth)
+│
+├── core/                    headless — runs and is tested without a terminal
+│   ├── common/              IApplicationConfiguration
+│   ├── configuration.ts     ~/.config/tglow/config.toml
+│   ├── logger-provider.ts   file-writing ILogger; keeps logs off stdout
+│   ├── session-store.ts     session persistence at 0600
+│   ├── telegram-client.ts   GramJS lifecycle
+│   ├── authentication.ts    phone → code → 2FA → ready state machine
+│   ├── application-store.ts observable state + subscribers
+│   ├── dialog-service.ts    chat list: fetch, cache, order
+│   ├── message-service.ts   history paging, send
+│   ├── telegram-adapter.ts  the only file that knows GramJS shapes
 │   └── cache/
 │       ├── schema.ts        Drizzle table definitions
 │       ├── migrate.ts       applies generated migrations on open
 │       └── database.ts      DatabaseService over drizzle-orm/bun-sqlite
 │
 ├── tui/                     OpenTUI React — dumb by design
-│   ├── App.tsx
-│   ├── panes/               ChatList · MessageView · Composer · StatusLine
-│   ├── overlays/            WhichKey(\) · Picker(<C-p>) · Search(/) · Cmdline(:)
-│   ├── theme/
-│   │   ├── palettes/        all 12 devglow palettes as typed objects
-│   │   └── tokens.ts        semantic mapping (palette → UI role)
-│   └── hooks/               useStore, useKeys, useDimensions
+│   ├── panes/               status-line · chat-list · message-view · composer
+│   ├── theme/               devglow palettes → semantic tokens
+│   ├── action-reducer.ts
+│   └── app.tsx
 │
+├── container.ts             builds the IGNIS container
 └── main.ts
+
+__tests__/                   mirrors src/; source dirs hold only source
+drizzle/                     generated migrations, committed
 ```
 
 ### Data flow
