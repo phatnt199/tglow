@@ -31,6 +31,15 @@ export interface IMessageViewProps {
    * is exactly the bug a required prop catches at compile time.
    */
   revealedSpoilers: Set<number>;
+  /**
+   * The open chat's dialog.readOutboxMaxId -- the highest id of the user's
+   * own messages the other side has read. Drives the tick shown on own
+   * messages; a message that is not the user's own never reads this. No
+   * default, same reasoning as revealedSpoilers above: a caller that forgot
+   * it would otherwise show every own message as read (0 is a valid, if
+   * misleading, number) rather than fail to compile.
+   */
+  readOutboxMaxId: number;
 }
 
 /** Reserved and always blank: the cursorline shows position, not an arrow. */
@@ -38,8 +47,10 @@ const MARKER_WIDTH = 1;
 const GUTTER_WIDTH = 4;
 const TIME_WIDTH = 5;
 const SENDER_WIDTH = 10;
-/** marker, gutter, time and sender, each followed by a single blank column. */
-const RAIL_WIDTH = MARKER_WIDTH + GUTTER_WIDTH + 1 + TIME_WIDTH + 1 + SENDER_WIDTH + 1;
+/** Two columns: both ticks once read, one tick and a blank while only sent, or fully blank when the message is not the user's own. */
+const TICK_WIDTH = 2;
+/** marker, gutter, time, sender and tick, each followed by a single blank column. */
+const RAIL_WIDTH = MARKER_WIDTH + GUTTER_WIDTH + 1 + TIME_WIDTH + 1 + SENDER_WIDTH + 1 + TICK_WIDTH + 1;
 /** Below this the rail is worth more than the sliver of text it would leave. */
 const MINIMUM_CONTENT_WIDTH = 8;
 
@@ -53,6 +64,12 @@ const MARKER = ' '.repeat(MARKER_WIDTH);
 const BLANK_GUTTER = ' '.repeat(GUTTER_WIDTH);
 const BLANK_TIME = ' '.repeat(TIME_WIDTH);
 const BLANK_SENDER = ' '.repeat(SENDER_WIDTH);
+const BLANK_TICK = ' '.repeat(TICK_WIDTH);
+// The single "sent" tick sits in the same first column the read state's own
+// first ✓ occupies, so a message going from sent to read never shifts the
+// tick already on screen -- only fills in the second column beside it.
+const TICK_SENT = '✓ ';
+const TICK_READ = '✓✓';
 
 /** The kinds the M1 spec renders as coloured, underlined text rather than a modifier tag. */
 const LINK_KINDS: readonly TEntityKind[] = [
@@ -67,10 +84,25 @@ interface IRenderedRow {
   gutter: string;
   time: string;
   sender: string;
+  tick: string;
   content: IStyledSpan[];
   own: boolean;
   revealed: boolean;
 }
+
+/**
+ * Ticks are per-message, unlike time/sender which show once per consecutive
+ * group (startsGroup below) -- two own messages sent seconds apart can still
+ * disagree on whether the other side has read them yet, so each needs its own
+ * mark rather than inheriting its group's.
+ */
+const resolveTick = (opts: { own: boolean; messageId: number; readOutboxMaxId: number }): string => {
+  const { own, messageId, readOutboxMaxId } = opts;
+  if (!own) {
+    return BLANK_TICK;
+  }
+  return messageId <= readOutboxMaxId ? TICK_READ : TICK_SENT;
+};
 
 /** `date` is a Unix timestamp in seconds -- what telegram-adapter.ts stores. */
 const formatTime = (opts: { date: number }): string => {
@@ -286,8 +318,9 @@ const buildRows = (opts: {
   contentWidth: number;
   resolveSenderName: (opts: { fromId: string | null }) => string;
   revealedSpoilers: Set<number>;
+  readOutboxMaxId: number;
 }): IRenderedRow[] => {
-  const { messages, cursor, contentWidth, resolveSenderName, revealedSpoilers } = opts;
+  const { messages, cursor, contentWidth, resolveSenderName, revealedSpoilers, readOutboxMaxId } = opts;
   const rows: IRenderedRow[] = [];
 
   messages.forEach((message, index) => {
@@ -297,6 +330,8 @@ const buildRows = (opts: {
     // absolute index, every other row its distance from the cursor.
     const gutter = index === cursor ? String(index + 1) : String(Math.abs(index - cursor));
     const revealed = revealedSpoilers.has(message.id);
+    const own = message.out === 1;
+    const tick = resolveTick({ own, messageId: message.id, readOutboxMaxId });
 
     // Pushed before the message's own content rows, so it sits directly above
     // them and, sharing this message's `messageIndex`, scrolls and highlights
@@ -312,11 +347,12 @@ const buildRows = (opts: {
         gutter: BLANK_GUTTER,
         time: BLANK_TIME,
         sender: BLANK_SENDER,
+        tick: BLANK_TICK,
         content: padRowContent({
           spans: [{ text: truncateToWidth({ text: quoteText, width: contentWidth }), kinds: [], url: null }],
           width: contentWidth,
         }),
-        own: message.out === 1,
+        own,
         revealed,
       });
     }
@@ -340,8 +376,11 @@ const buildRows = (opts: {
           opensMessage && opensGroup
             ? padToWidth({ text: truncateToWidth({ text: senderName, width: SENDER_WIDTH }), width: SENDER_WIDTH })
             : BLANK_SENDER,
+        // Every own message's own row, not gated on opensGroup the way
+        // time/sender are -- see resolveTick's own comment above.
+        tick: opensMessage ? tick : BLANK_TICK,
         content: padRowContent({ spans: rowSpans, width: contentWidth }),
-        own: message.out === 1,
+        own,
         revealed,
       });
     });
@@ -351,7 +390,7 @@ const buildRows = (opts: {
 };
 
 export const MessageView = (props: IMessageViewProps) => {
-  const { messages, cursor, focused, tokens, height, width, resolveSenderName, revealedSpoilers } = props;
+  const { messages, cursor, focused, tokens, height, width, resolveSenderName, revealedSpoilers, readOutboxMaxId } = props;
 
   if (messages.length === 0) {
     return (
@@ -362,7 +401,7 @@ export const MessageView = (props: IMessageViewProps) => {
   }
 
   const contentWidth = Math.max(MINIMUM_CONTENT_WIDTH, width - RAIL_WIDTH);
-  const rows = buildRows({ messages, cursor, contentWidth, resolveSenderName, revealedSpoilers });
+  const rows = buildRows({ messages, cursor, contentWidth, resolveSenderName, revealedSpoilers, readOutboxMaxId });
 
   // A cursor pointing past the end of the history would otherwise anchor the
   // window at -1 and scroll the pane off its own top.
@@ -388,7 +427,7 @@ export const MessageView = (props: IMessageViewProps) => {
             bg={highlighted ? tokens.messageCursor : undefined}
           >
             <span fg={highlighted ? tokens.chatUnread : tokens.dim}>{`${MARKER}${row.gutter} `}</span>
-            <span fg={tokens.dim}>{`${row.time} ${row.sender} `}</span>
+            <span fg={tokens.dim}>{`${row.time} ${row.sender} ${row.tick} `}</span>
             {row.kind === 'quote' ? (
               <span fg={tokens.dim}>{row.content[0]?.text ?? ''}</span>
             ) : (

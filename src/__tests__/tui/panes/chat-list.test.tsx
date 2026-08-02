@@ -12,9 +12,9 @@ import { ChatList, type IChatListProps } from '../../../tui/panes/chat-list.tsx'
 const tokens = buildTokens({ paletteName: 'sage' });
 
 const dialogs: IDialogRow[] = [
-  { peerId: 'u1', title: 'Alice', pinned: 0, unreadCount: 2, lastMessageAt: 300, topMessageId: 9 },
-  { peerId: 'u2', title: 'Bob', pinned: 0, unreadCount: 0, lastMessageAt: 200, topMessageId: 4 },
-  { peerId: 'c1', title: 'devs', pinned: 0, unreadCount: 7, lastMessageAt: 100, topMessageId: 2 },
+  { peerId: 'u1', title: 'Alice', pinned: 0, unreadCount: 2, lastMessageAt: 300, topMessageId: 9, readOutboxMaxId: 0 },
+  { peerId: 'u2', title: 'Bob', pinned: 0, unreadCount: 0, lastMessageAt: 200, topMessageId: 4, readOutboxMaxId: 0 },
+  { peerId: 'c1', title: 'devs', pinned: 0, unreadCount: 7, lastMessageAt: 100, topMessageId: 2, readOutboxMaxId: 0 },
 ];
 
 const toHex = (colour: Parameters<typeof rgbToHex>[0]): string => rgbToHex(colour).toLowerCase();
@@ -121,6 +121,7 @@ test('the visible window follows the cursor through a long chat list', async () 
     unreadCount: 0,
     lastMessageAt: index,
     topMessageId: index,
+    readOutboxMaxId: 0,
   }));
   const frame = (await render({ dialogs: many, cursor: 39, height: 6, terminalHeight: 10 })).captureCharFrame();
   expect(frame).toContain('chat39');
@@ -136,10 +137,10 @@ test('renders an empty list without crashing', async () => {
 // and leaves the column ragged.
 test('Vietnamese and CJK names are truncated by column, not by code point', async () => {
   const wide: IDialogRow[] = [
-    { peerId: 'v1', title: 'Đức anh hoàng', pinned: 0, unreadCount: 3, lastMessageAt: 5, topMessageId: 1 },
-    { peerId: 'v2', title: 'Em Việt Tú'.normalize('NFD'), pinned: 0, unreadCount: 0, lastMessageAt: 4, topMessageId: 1 },
-    { peerId: 'c2', title: '张伟同学的群聊天室', pinned: 0, unreadCount: 12, lastMessageAt: 3, topMessageId: 1 },
-    { peerId: 'e1', title: '🔥🔥🔥 hot takes only, no exceptions', pinned: 0, unreadCount: 0, lastMessageAt: 2, topMessageId: 1 },
+    { peerId: 'v1', title: 'Đức anh hoàng', pinned: 0, unreadCount: 3, lastMessageAt: 5, topMessageId: 1, readOutboxMaxId: 0 },
+    { peerId: 'v2', title: 'Em Việt Tú'.normalize('NFD'), pinned: 0, unreadCount: 0, lastMessageAt: 4, topMessageId: 1, readOutboxMaxId: 0 },
+    { peerId: 'c2', title: '张伟同学的群聊天室', pinned: 0, unreadCount: 12, lastMessageAt: 3, topMessageId: 1, readOutboxMaxId: 0 },
+    { peerId: 'e1', title: '🔥🔥🔥 hot takes only, no exceptions', pinned: 0, unreadCount: 0, lastMessageAt: 2, topMessageId: 1, readOutboxMaxId: 0 },
   ];
   const PANE_WIDTH = 22;
   const BADGE_COLUMNS = 4;
@@ -164,7 +165,7 @@ test('Vietnamese and CJK names are truncated by column, not by code point', asyn
 
 test('a name too long for the pane is ellipsised rather than clipped silently', async () => {
   const rows = readRows(await render({
-    dialogs: [{ peerId: 'x', title: 'a name far too long for this sidebar', pinned: 0, unreadCount: 0, lastMessageAt: 1, topMessageId: 1 }],
+    dialogs: [{ peerId: 'x', title: 'a name far too long for this sidebar', pinned: 0, unreadCount: 0, lastMessageAt: 1, topMessageId: 1, readOutboxMaxId: 0 }],
     width: 20,
   }));
   expect(rows[0]!.trimEnd()).toBe(' a name far to…');
@@ -172,7 +173,7 @@ test('a name too long for the pane is ellipsised rather than clipped silently', 
 
 test('an unread count past four digits is abbreviated so the column holds', async () => {
   const rows = readRows(await render({
-    dialogs: [{ peerId: 'x', title: 'busy channel', pinned: 0, unreadCount: 12_034, lastMessageAt: 1, topMessageId: 1 }],
+    dialogs: [{ peerId: 'x', title: 'busy channel', pinned: 0, unreadCount: 12_034, lastMessageAt: 1, topMessageId: 1, readOutboxMaxId: 0 }],
     width: 20,
   }));
   expect(rows[0]!).toBe(' busy channel   999+');

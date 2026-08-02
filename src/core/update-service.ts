@@ -33,6 +33,11 @@ export class UpdateService {
    * zero-valued defaults a chat that has never had a dialogs row would have)
    * as the baseline. Own messages -- out, whether sent from this device or
    * another -- never count as unread, matching Telegram's own convention.
+   * readOutboxMaxId is carried over unchanged: a live message event carries no
+   * read-receipt information of its own (that is a distinct update type this
+   * task does not subscribe to), so only DialogService.sync's own server
+   * fetch ever advances it -- same reasoning as pinned, just preserved rather
+   * than defaulted forward.
    */
   private touchDialog = (message: IRawMessage): void => {
     const existing = this._database.listDialogs().find(dialog => dialog.peerId === message.peerId);
@@ -42,6 +47,7 @@ export class UpdateService {
       unreadCount: message.out ? (existing?.unreadCount ?? 0) : (existing?.unreadCount ?? 0) + 1,
       lastMessageAt: message.date,
       topMessageId: message.id,
+      readOutboxMaxId: existing?.readOutboxMaxId ?? 0,
     });
   };
 

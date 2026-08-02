@@ -187,6 +187,14 @@ const main = async (): Promise<void> => {
         onOpenChat: async (opts: { peerId: string }): Promise<void> => {
           await messageService.loadHistory({ peerId: opts.peerId, limit: HISTORY_LIMIT });
         },
+        // A direct pass-through: App already decides *when* a chat has been
+        // read (opening one, or the cursor reaching its newest message) and
+        // hands over exactly the peerId/maxId markRead needs -- there is
+        // nothing left here for main.ts to resolve off the store closure the
+        // way onSend/onEdit/onDelete do above.
+        onMarkRead: async (opts: { peerId: string; maxId: number }): Promise<void> => {
+          await messageService.markRead(opts);
+        },
       }),
     ),
   );

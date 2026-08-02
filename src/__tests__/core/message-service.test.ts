@@ -21,6 +21,7 @@ const buildAdapter = (overrides: Partial<IMessageAdapter> = {}): IMessageAdapter
   send: async opts => buildRawMessage({ id: 99, peerId: opts.peerId, text: opts.text, out: 1, date: 999 }),
   edit: async opts => buildRawMessage({ id: opts.messageId, peerId: opts.peerId, text: opts.text, out: 1 }),
   delete: async (): Promise<void> => {},
+  markRead: async (): Promise<void> => {},
   // MessageService never calls this -- UpdateService (src/__tests__/core/update-service.test.ts)
   // is what exercises it -- but IMessageAdapter requires it, so a stub keeps this fake whole.
   subscribeToNewMessages: () => (): void => {},
@@ -324,5 +325,61 @@ test('a failed delete reports failure and leaves the message cached', async () =
   await harness.service.delete({ peerId: 'u1', messageId: 5 });
   expect(harness.store.getState().statusMessage).toContain('MESSAGE_DELETE_FORBIDDEN');
   expect(harness.database.listMessages({ peerId: 'u1', limit: 10 }).map(row => row.text)).toEqual(['oops']);
+  harness.database.close();
+});
+
+// Task 9: mark as read. markRead is deliberately not called by loadHistory
+// itself (see the next test) -- App decides when the user has actually seen
+// the newest message, and calls this separately once it has.
+test('opening a chat marks its newest message read', async () => {
+  const read: Array<{ peerId: string; maxId: number }> = [];
+  const harness = buildService(buildAdapter({ markRead: async opts => { read.push(opts); } }));
+  await harness.service.loadHistory({ peerId: 'u1', limit: 50 });
+  await harness.service.markRead({ peerId: 'u1', maxId: 9 });
+  expect(read).toEqual([{ peerId: 'u1', maxId: 9 }]);
+  harness.database.close();
+});
+
+// Reading is an explicit act. Auto-reading what the user has not seen is how a
+// client loses trust. Load-bearing: verified (see task-9-report.md) that this
+// genuinely fails if loadHistory is made to call markRead on its own --
+// fetchHistory is given a real message on purpose, not left at buildAdapter's
+// empty default, so a hypothetical regression gated on "is there anything to
+// mark" cannot slip past this test the way an empty history would let it.
+test('a chat merely present in the list is never marked read', async () => {
+  const read: unknown[] = [];
+  const harness = buildService(buildAdapter({
+    fetchHistory: async () => [buildRawMessage({ id: 9, date: 100, text: 'hi' })],
+    markRead: async opts => { read.push(opts); },
+  }));
+  await harness.service.loadHistory({ peerId: 'u1', limit: 50 });
+  expect(read).toEqual([]);
+  harness.database.close();
+});
+
+test('marking read twice within the debounce window calls the adapter once', async () => {
+  const read: unknown[] = [];
+  const harness = buildService(buildAdapter({ markRead: async opts => { read.push(opts); } }));
+  await harness.service.markRead({ peerId: 'u1', maxId: 9 });
+  await harness.service.markRead({ peerId: 'u1', maxId: 9 });
+  expect(read).toHaveLength(1);
+  harness.database.close();
+});
+
+// The debounce is keyed per peer, not a single shared timestamp -- reading
+// one chat must not silently swallow a mark-read for a different one that
+// happens to land in the same two-second window.
+test('the debounce is scoped per peer, not shared across every chat', async () => {
+  const read: Array<{ peerId: string; maxId: number }> = [];
+  const harness = buildService(buildAdapter({ markRead: async opts => { read.push(opts); } }));
+  await harness.service.markRead({ peerId: 'u1', maxId: 9 });
+  await harness.service.markRead({ peerId: 'u2', maxId: 3 });
+  expect(read).toEqual([{ peerId: 'u1', maxId: 9 }, { peerId: 'u2', maxId: 3 }]);
+  harness.database.close();
+});
+
+test('a failed markRead is logged and does not reject', async () => {
+  const harness = buildService(buildAdapter({ markRead: async () => { throw new Error('offline'); } }));
+  await expect(harness.service.markRead({ peerId: 'u1', maxId: 9 })).resolves.toBeUndefined();
   harness.database.close();
 });

@@ -32,13 +32,18 @@ const history: IMessageRow[] = Array.from({ length: HISTORY_LENGTH }, (unused, i
 }));
 
 // The rail, in display columns. Mirrors the constants in message-view.tsx:
-// marker(1) gutter(4) space time(5) space sender(10) space.
+// marker(1) gutter(4) space time(5) space sender(10) space tick(2) space.
 const MARKER_COLUMNS = 1;
 const GUTTER_COLUMNS = 4;
-const RAIL_COLUMNS = 23;
+const TICK_COLUMNS = 2;
+const RAIL_COLUMNS = 26;
+/** Where the two-column tick field starts: marker+gutter+sep+time+sep+sender+sep. */
+const TICK_START = 1 + 4 + 1 + 5 + 1 + 10 + 1;
 
 const readGutter = (line: string): string =>
   line.slice(MARKER_COLUMNS, MARKER_COLUMNS + GUTTER_COLUMNS).trim();
+
+const readTick = (line: string): string => line.slice(TICK_START, TICK_START + TICK_COLUMNS);
 
 const toHex = (colour: Parameters<typeof rgbToHex>[0]): string => rgbToHex(colour).toLowerCase();
 
@@ -70,7 +75,7 @@ const render = async (
   const { terminalWidth, terminalHeight, ...props } = overrides;
   const resolved: IMessageViewProps = {
     messages, cursor: 0, focused: true, tokens, height: 10, width: 50, resolveSenderName,
-    revealedSpoilers: new Set(), ...props,
+    revealedSpoilers: new Set(), readOutboxMaxId: 0, ...props,
   };
   const renderer = await renderWithKeys(<MessageView {...resolved} />, {
     width: terminalWidth ?? resolved.width,
@@ -399,7 +404,7 @@ test('a link renders its text, and the URL is not printed inline', async () => {
   }];
   const renderer = await renderWithKeys(
     <MessageView messages={messages} cursor={0} focused tokens={tokens} height={6} width={50}
-                 resolveSenderName={resolveSenderName} revealedSpoilers={new Set()} />,
+                 resolveSenderName={resolveSenderName} revealedSpoilers={new Set()} readOutboxMaxId={0} />,
     { width: 50, height: 6 },
   );
   await renderer.flush();
@@ -427,7 +432,7 @@ test('a spoiler is hidden until revealed', async () => {
   }];
   const renderer = await renderWithKeys(
     <MessageView messages={messages} cursor={0} focused tokens={tokens} height={6} width={50}
-                 resolveSenderName={resolveSenderName} revealedSpoilers={new Set()} />,
+                 resolveSenderName={resolveSenderName} revealedSpoilers={new Set()} readOutboxMaxId={0} />,
     { width: 50, height: 6 },
   );
   await renderer.flush();
@@ -442,7 +447,7 @@ test('a revealed spoiler shows its text', async () => {
   }];
   const renderer = await renderWithKeys(
     <MessageView messages={messages} cursor={0} focused tokens={tokens} height={6} width={50}
-                 resolveSenderName={resolveSenderName} revealedSpoilers={new Set([1])} />,
+                 resolveSenderName={resolveSenderName} revealedSpoilers={new Set([1])} readOutboxMaxId={0} />,
     { width: 50, height: 6 },
   );
   await renderer.flush();
@@ -497,7 +502,7 @@ test('a long styled message wraps into the content column, not to column zero', 
   }];
   const renderer = await renderWithKeys(
     <MessageView messages={messages} cursor={0} focused tokens={tokens} height={8} width={50}
-                 resolveSenderName={resolveSenderName} revealedSpoilers={new Set()} />,
+                 resolveSenderName={resolveSenderName} revealedSpoilers={new Set()} readOutboxMaxId={0} />,
     { width: 50, height: 8 },
   );
   await renderer.flush();
@@ -543,7 +548,11 @@ test('a message with a reply target shows a dimmed quote row above it, at the co
     { peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'original text here', out: 0, entities: [], replyToMessageId: null },
     { peerId: 'u1', id: 2, fromId: 'me', date: 200, text: 'my reply', out: 1, entities: [], replyToMessageId: 1 },
   ];
-  const renderer = await render({ messages: withReply, cursor: 1, width: 60, height: 8 });
+  // width 63, not 60: the quote text is exactly 37 characters, tuned to fit
+  // the content column with nothing to spare -- RAIL_WIDTH grew by 3 columns
+  // in Task 9 (the new tick field), so width grows by the same 3 to keep
+  // that content column exactly as wide as this fixture was written for.
+  const renderer = await render({ messages: withReply, cursor: 1, width: 63, height: 8 });
   const rows = readRows(renderer);
   const quoteRowIndex = rows.findIndex(row => row.includes('Replying to'));
   expect(quoteRowIndex).toBeGreaterThanOrEqual(0);
@@ -600,4 +609,60 @@ test('a tab in a message becomes a single space', async () => {
   });
   const rows = readRows(renderer);
   expect(rows[0]!.slice(RAIL_COLUMNS).trimEnd()).toBe('a b');
+});
+
+// Task 9: read receipts. Column-sliced with readTick rather than a substring
+// check on the whole frame -- Task 4 found three tests that passed against
+// the old code because they only looked for text that was present either way,
+// and '✓' alone cannot tell one tick from two.
+test('an own message at readOutboxMaxId shows two ticks', async () => {
+  const own: IMessageRow[] = [
+    { peerId: 'u1', id: 5, fromId: 'me', date: 100, text: 'seen', out: 1, entities: [], replyToMessageId: null },
+  ];
+  const renderer = await render({ messages: own, cursor: 0, readOutboxMaxId: 5 });
+  expect(readTick(readRows(renderer)[0]!)).toBe('✓✓');
+});
+
+test('an own message below readOutboxMaxId shows two ticks', async () => {
+  const own: IMessageRow[] = [
+    { peerId: 'u1', id: 5, fromId: 'me', date: 100, text: 'seen', out: 1, entities: [], replyToMessageId: null },
+  ];
+  const renderer = await render({ messages: own, cursor: 0, readOutboxMaxId: 9 });
+  expect(readTick(readRows(renderer)[0]!)).toBe('✓✓');
+});
+
+test('an own message above readOutboxMaxId shows one tick', async () => {
+  const own: IMessageRow[] = [
+    { peerId: 'u1', id: 5, fromId: 'me', date: 100, text: 'not seen yet', out: 1, entities: [], replyToMessageId: null },
+  ];
+  const renderer = await render({ messages: own, cursor: 0, readOutboxMaxId: 4 });
+  const tick = readTick(readRows(renderer)[0]!);
+  expect(tick).toContain('✓');
+  expect(tick).not.toBe('✓✓');
+});
+
+test("a message that is not the user's own shows no tick, however readOutboxMaxId compares", async () => {
+  const theirs: IMessageRow[] = [
+    { peerId: 'u1', id: 5, fromId: 'u1', date: 100, text: 'hi', out: 0, entities: [], replyToMessageId: null },
+  ];
+  const readRenderer = await render({ messages: theirs, cursor: 0, readOutboxMaxId: 9 });
+  expect(readTick(readRows(readRenderer)[0]!)).toBe('  ');
+
+  const unreadRenderer = await render({ messages: theirs, cursor: 0, readOutboxMaxId: 0 });
+  expect(readTick(readRows(unreadRenderer)[0]!)).toBe('  ');
+});
+
+// Each own message carries its own read state independent of grouping --
+// unlike the sender name and time, which show once per consecutive group
+// (see 'consecutive messages from one sender show the name and time once'
+// above), a tick must appear on every own message's own row.
+test('two consecutive own messages each show their own tick, independent of grouping', async () => {
+  const own: IMessageRow[] = [
+    { peerId: 'u1', id: 5, fromId: 'me', date: 100, text: 'first', out: 1, entities: [], replyToMessageId: null },
+    { peerId: 'u1', id: 6, fromId: 'me', date: 130, text: 'second', out: 1, entities: [], replyToMessageId: null },
+  ];
+  const renderer = await render({ messages: own, cursor: 0, readOutboxMaxId: 5 });
+  const rows = readRows(renderer);
+  expect(readTick(rows[0]!)).toBe('✓✓');
+  expect(readTick(rows[1]!)).toBe('✓ ');
 });

@@ -7,6 +7,10 @@ import type { DatabaseService, IMessageRow } from './cache/index.ts';
 import type { ITelegramEntity } from './common/index.ts';
 
 const REPUBLISH_LIMIT = 200;
+// Telegram rate-limits ReadHistory the same as everything else; a cursor
+// resting on the newest message would otherwise call markRead on every
+// keystroke and earn a self-inflicted FLOOD_WAIT.
+const MARK_READ_DEBOUNCE_MILLISECONDS = 2000;
 
 export interface IRawMessage {
   id: number;
@@ -24,6 +28,7 @@ export interface IMessageAdapter {
   send(opts: { peerId: string; text: string; replyToMessageId?: number }): Promise<IRawMessage>;
   edit(opts: { peerId: string; messageId: number; text: string }): Promise<IRawMessage>;
   delete(opts: { peerId: string; messageId: number; forEveryone: boolean }): Promise<void>;
+  markRead(opts: { peerId: string; maxId: number }): Promise<void>;
   subscribeToNewMessages(opts: { onMessage: (message: IRawMessage) => void }): () => void;
 }
 
@@ -34,6 +39,12 @@ export class MessageService {
   // than a hardcoded one -- see REPUBLISH_LIMIT, its fallback before
   // loadHistory has ever run.
   private _historyLimit: number | null = null;
+  // When markRead last ran for a given peer, keyed so reading one chat can
+  // never suppress a mark-read for a different one landing in the same
+  // window. Set before the adapter call, not after it resolves: two overlapping
+  // calls for the same peer must both see the timestamp already claimed, or
+  // both would slip past the check before either finishes.
+  private readonly _lastMarkReadAt = new Map<string, number>();
 
   constructor(
     @inject({ key: BindingKeys.MESSAGE_ADAPTER }) private readonly _adapter: IMessageAdapter,
@@ -278,6 +289,43 @@ export class MessageService {
       this._store.setState({
         patch: { statusMessage: `Deleted, but could not update the local cache: ${toError(error).message}` },
       });
+    }
+  };
+
+  /**
+   * A courtesy call to the server, not a local state change -- markRead
+   * writes no row and publishes no patch; the tick shown for an already-sent
+   * own message comes from the dialog's readOutboxMaxId, refreshed the next
+   * time DialogService.sync() runs.
+   *
+   * Deliberately not called from loadHistory(): fetching a chat's history is
+   * not the same fact as the user having read it, and the two must stay
+   * decoupled so a caller has to ask for this separately, on purpose, once it
+   * actually knows the user reached the newest message. See app.tsx's
+   * CHAT_OPEN/CURSOR_MOVE/CURSOR_EDGE handling for the two moments that
+   * qualify.
+   *
+   * Debounced per peer rather than per call: App fires this on every
+   * qualifying cursor move with no debounce of its own (see app.tsx), relying
+   * entirely on this one window so a cursor resting on the newest message
+   * cannot hammer the server on every keystroke.
+   */
+  markRead = async (opts: { peerId: string; maxId: number }): Promise<void> => {
+    const { peerId, maxId } = opts;
+    const now = Date.now();
+    const last = this._lastMarkReadAt.get(peerId);
+    if (last !== undefined && now - last < MARK_READ_DEBOUNCE_MILLISECONDS) {
+      return;
+    }
+    this._lastMarkReadAt.set(peerId, now);
+
+    try {
+      await this._adapter.markRead({ peerId, maxId });
+    } catch (error) {
+      // Never rethrown: this is attached to whatever read path called it
+      // (opening a chat, moving the cursor), and a flaky mark-read must not
+      // take that down.
+      this._logger.for(this.markRead.name).error('Could not mark read | Reason: %s', error);
     }
   };
 }

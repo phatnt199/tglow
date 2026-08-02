@@ -24,7 +24,7 @@ const SIDEBAR_WIDTH = 22;
 const CHROME_HEIGHT = 3;
 
 const dialogs: IDialogRow[] = [
-  { peerId: 'u1', title: 'Alice', pinned: 0, unreadCount: 2, lastMessageAt: 300, topMessageId: 3 },
+  { peerId: 'u1', title: 'Alice', pinned: 0, unreadCount: 2, lastMessageAt: 300, topMessageId: 3, readOutboxMaxId: 0 },
 ];
 const messages: IMessageRow[] = [1, 2, 3, 4].map(id => ({
   peerId: 'u1', id, fromId: 'u1', date: id * 100, text: `msg${id}`, out: 0, entities: [], replyToMessageId: null,
@@ -57,6 +57,12 @@ const SEND_ROUND_TRIP_MILLISECONDS = 20;
 // wait sees the state onSend's `.finally()` leaves behind, not a mid-flight one.
 const SEND_SETTLE_MILLISECONDS = SEND_ROUND_TRIP_MILLISECONDS + 10;
 
+// CHAT_OPEN chains onMarkRead onto onOpenChat's own promise (read the
+// just-loaded messages, then mark the newest one read), which is one more
+// microtask hop than a bare await captures reliably -- this real wait is what
+// lets that chain actually settle before an assertion reads `marked`.
+const MARK_READ_SETTLE_MILLISECONDS = 20;
+
 const pressEscape = async (renderer: TestRendererSetup): Promise<void> => {
   await act(async () => {
     renderer.mockInput.pressEscape();
@@ -70,6 +76,7 @@ const mount = async (opts: {
   onSend?: (text: string) => Promise<void>;
   onEdit?: (edit: { messageId: number; text: string }) => Promise<void>;
   onDelete?: (deletion: { messageId: number }) => Promise<void>;
+  onOpenChat?: (chat: { peerId: string }) => Promise<void>;
 } = {}) => {
   const container = new Container({ scope: 'AppTest' });
   container.bind({ key: BindingKeys.KEY_NORMALIZER }).toClass(KeyNormalizerService).setScope(BindingScopes.SINGLETON);
@@ -127,6 +134,20 @@ const mount = async (opts: {
     deleted.push(deletion);
   });
 
+  const onOpenChat = opts.onOpenChat ?? (async (chat: { peerId: string }): Promise<void> => {
+    opened.push(chat.peerId);
+  });
+
+  // Stands in for MessageService.markRead. Unlike onSend/onEdit/onDelete this
+  // fake never mutates the store -- App itself decides, from state already
+  // there, when a chat has been opened or the cursor has reached the newest
+  // message; markRead is purely a courtesy call outward, so nothing here
+  // needs to be read back.
+  const marked: Array<{ peerId: string; maxId: number }> = [];
+  const onMarkRead = async (read: { peerId: string; maxId: number }): Promise<void> => {
+    marked.push(read);
+  };
+
   const renderer = await renderWithKeys(
     <App
       store={store}
@@ -139,12 +160,13 @@ const mount = async (opts: {
       onEdit={onEdit}
       onDelete={onDelete}
       onQuit={() => { quit.push(true); }}
-      onOpenChat={async chat => { opened.push(chat.peerId); }}
+      onOpenChat={onOpenChat}
+      onMarkRead={onMarkRead}
     />,
     { width: TERMINAL_WIDTH, height: TERMINAL_HEIGHT },
   );
   await renderer.flush();
-  return { renderer, store, sent, composerAtSend, edited, deleted, opened, quit };
+  return { renderer, store, sent, composerAtSend, edited, deleted, opened, marked, quit };
 };
 
 test('starts in NORMAL mode with both panes on screen', async () => {
@@ -706,6 +728,64 @@ test('return in the chat list opens the chat and moves focus to messages', async
   expect(store.getState().engine.context).toBe(VimContexts.MESSAGES);
 });
 
+// Task 9: mark as read. onMarkRead is chained onto onOpenChat's own promise
+// and reads the store afresh once it resolves -- this onOpenChat fake
+// populates a distinct message list from what mount() seeded, so a pass here
+// proves App reads the post-load messages, not a stale pre-open snapshot.
+test('opening a chat marks its newest message read', async () => {
+  const loaded: IMessageRow[] = [1, 2].map(id => ({
+    peerId: 'u1', id, fromId: 'u1', date: id * 100, text: `loaded${id}`, out: 0, entities: [], replyToMessageId: null,
+  }));
+  const { renderer, store, marked } = await mount({
+    onOpenChat: async chat => {
+      store.setState({ patch: { messages: loaded, activePeerId: chat.peerId } });
+    },
+  });
+  await act(async () => {
+    renderer.mockInput.pressKey('n');
+    renderer.mockInput.pressKey('f');
+  });
+  await renderer.flush();
+  await act(async () => {
+    renderer.mockInput.pressEnter();
+    await new Promise(resolve => { setTimeout(resolve, MARK_READ_SETTLE_MILLISECONDS); });
+  });
+  await renderer.flush();
+  expect(marked).toEqual([{ peerId: 'u1', maxId: 2 }]);
+});
+
+// The behaviour that matters most: reading is an explicit act, and the chat
+// list is not the chat. A stray j/k while browsing chats -- never opening one
+// -- must not mark anything read.
+test('moving the cursor within the chat list does not mark anything read', async () => {
+  const { renderer, marked } = await mount();
+  await act(async () => {
+    renderer.mockInput.pressKey('n');
+    renderer.mockInput.pressKey('f');
+  });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('j'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('k'); });
+  await renderer.flush();
+  expect(marked).toEqual([]);
+});
+
+test('opening a chat with no messages yet does not mark anything read', async () => {
+  const { renderer, marked } = await mount({ messages: [], onOpenChat: async () => {} });
+  await act(async () => {
+    renderer.mockInput.pressKey('n');
+    renderer.mockInput.pressKey('f');
+  });
+  await renderer.flush();
+  await act(async () => {
+    renderer.mockInput.pressEnter();
+    await new Promise(resolve => { setTimeout(resolve, MARK_READ_SETTLE_MILLISECONDS); });
+  });
+  await renderer.flush();
+  expect(marked).toEqual([]);
+});
+
 // Final review, Critical 2: the panes rendered every row and App never told
 // them how many rows they had, so main.ts's 200-message history went into
 // roughly ten. The pane tests cover the window itself; this one covers the
@@ -723,6 +803,50 @@ test('a history longer than the pane scrolls to keep the cursor on screen', asyn
   const frame = renderer.captureCharFrame();
   expect(frame).toContain('msg200');
   expect(frame).not.toContain('msg001');
+});
+
+test('<S-g> jumps to the newest message and marks it read', async () => {
+  const { renderer, marked } = await mount({ messages: history });
+  await act(async () => { renderer.mockInput.pressKey('g', { shift: true }); });
+  await renderer.flush();
+  expect(marked).toEqual([{ peerId: 'u1', maxId: history.length }]);
+});
+
+// Cursor movement inside the open chat, landing on its newest message, is the
+// other of the two triggers -- distinct from CHAT_OPEN above (no chat is
+// (re)opened here at all).
+test('moving the cursor to the newest message marks it read', async () => {
+  const { renderer, store, marked } = await mount();
+  expect(store.getState().messageCursor).toBe(0);
+  await act(async () => {
+    renderer.mockInput.pressKey('j');
+    renderer.mockInput.pressKey('j');
+    renderer.mockInput.pressKey('j');
+  });
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(3);
+  // Only the final press actually lands on the newest (last) message --
+  // the two before it must not have fired.
+  expect(marked).toEqual([{ peerId: 'u1', maxId: 4 }]);
+});
+
+// Debounce lives on MessageService (Task 9's brief), not here -- App fires
+// onMarkRead every qualifying time, relying on the service to collapse
+// repeats, the same split the brief draws between "when" and "how often".
+test('the cursor already at the newest message marks it read again on the next qualifying move', async () => {
+  const { renderer, marked } = await mount();
+  await act(async () => {
+    renderer.mockInput.pressKey('j');
+    renderer.mockInput.pressKey('j');
+    renderer.mockInput.pressKey('j');
+  });
+  await renderer.flush();
+  expect(marked).toHaveLength(1);
+
+  await act(async () => { renderer.mockInput.pressKey('j'); });
+  await renderer.flush();
+  expect(marked).toHaveLength(2);
+  expect(marked[1]).toEqual({ peerId: 'u1', maxId: 4 });
 });
 
 test('<C-c> quits the application', async () => {

@@ -6,7 +6,7 @@ import { DialogService, type IDialogAdapter, type IRawDialog } from '../../core/
 
 const buildRawDialog = (overrides: Partial<IRawDialog> = {}): IRawDialog => ({
   peerId: 'u1', type: 'user', accessHash: 'h', title: 'Alice', username: 'alice',
-  pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 1, ...overrides,
+  pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 1, readOutboxMaxId: 0, ...overrides,
 });
 
 const buildService = (adapter: IDialogAdapter): { service: DialogService; database: DatabaseService; store: ApplicationStoreService } => {
@@ -74,12 +74,25 @@ test('a network failure leaves the cached list visible', async () => {
   // cache -- not one that merely leaves the store's previous state alone --
   // can make it appear below.
   database.upsertPeer({ id: 'u2', type: 'user', accessHash: 'h2', title: 'Bob', username: 'bob' });
-  database.upsertDialog({ peerId: 'u2', pinned: 0, unreadCount: 0, lastMessageAt: 50, topMessageId: 2 });
+  database.upsertDialog({ peerId: 'u2', pinned: 0, unreadCount: 0, lastMessageAt: 50, topMessageId: 2, readOutboxMaxId: 0 });
 
   shouldFail = true;
   await service.sync();
   expect(store.getState().dialogs).toHaveLength(2);
   expect(store.getState().statusMessage).toContain('network down');
+  database.close();
+});
+
+// Task 9: read receipts. read_outbox_max_id existed in the schema unused
+// before this task -- this is what actually threads a synced value through
+// to the cached row the tick in message-view.tsx reads.
+test("a dialog's readOutboxMaxId is cached from the sync", async () => {
+  const { service, store, database } = buildService({
+    fetchDialogs: async () => [buildRawDialog({ readOutboxMaxId: 42 })],
+  });
+  await service.sync();
+  expect(store.getState().dialogs[0]!.readOutboxMaxId).toBe(42);
+  expect(database.listDialogs()[0]!.readOutboxMaxId).toBe(42);
   database.close();
 });
 

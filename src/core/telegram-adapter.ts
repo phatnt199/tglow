@@ -112,6 +112,13 @@ export const buildDialogAdapter = (opts: { client: TelegramClient }): IDialogAda
         unreadCount: dialog.unreadCount ?? 0,
         lastMessageAt: dialog.message?.date ?? 0,
         topMessageId: dialog.message?.id ?? 0,
+        // readOutboxMaxId lives only on the raw TL object GramJS's own Dialog
+        // wrapper carries at `.dialog` -- unlike pinned/unreadCount/message,
+        // it is not promoted onto the wrapper itself (confirmed against
+        // node_modules/telegram/tl/custom/dialog.d.ts's own property list,
+        // which has no such field, versus node_modules/telegram/tl/api.d.ts's
+        // `class Dialog`, which declares `readOutboxMaxId: int` at line 2455).
+        readOutboxMaxId: dialog.dialog.readOutboxMaxId ?? 0,
       };
     });
   },
@@ -167,6 +174,25 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
   // on that default, is what MessageService.delete's own forEveryone decides.
   delete: async (deleteOpts: { peerId: string; messageId: number; forEveryone: boolean }): Promise<void> => {
     await opts.client.deleteMessages(deleteOpts.peerId, [deleteOpts.messageId], { revoke: deleteOpts.forEveryone });
+  },
+
+  // GramJS's own signature (client.markAsRead, declared at
+  // node_modules/telegram/client/TelegramClient.d.ts:658, backed by the free
+  // function at node_modules/telegram/client/messages.d.ts:253) takes a
+  // **max id**, not a set of ids the way delete's messageIds is: the third
+  // parameter is MarkAsReadParams (messages.d.ts:213-225), whose `maxId` field
+  // is documented right there as "Until which message should the read
+  // acknowledge be sent for. This has priority over the `message` parameter" --
+  // read from the .d.ts rather than guessed, the same discipline send's
+  // replyTo, edit's message and delete's messageIds above each followed.
+  // `message` itself is left undefined so maxId is the only thing deciding how
+  // far the receipt reaches, matching IMessageAdapter.markRead's own opts.maxId
+  // exactly. Confirmed at the implementation too (messages.js:760-787): with
+  // markAsReadParams.maxId set, GramJS skips the mention-clearing branch
+  // entirely and calls Api.channels.ReadHistory (channels) or
+  // Api.messages.ReadHistory (everything else) with that maxId directly.
+  markRead: async (markReadOpts: { peerId: string; maxId: number }): Promise<void> => {
+    await opts.client.markAsRead(markReadOpts.peerId, undefined, { maxId: markReadOpts.maxId });
   },
 
   subscribeToNewMessages: (subscribeOpts: { onMessage: (message: IRawMessage) => void }): (() => void) => {

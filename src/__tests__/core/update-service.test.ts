@@ -25,6 +25,9 @@ const buildAdapter = (): { adapter: IMessageAdapter; emit: (message: IRawMessage
     // message-service.test.ts) is what exercises it -- but IMessageAdapter
     // requires it, so a stub keeps this fake whole.
     delete: async (): Promise<void> => {},
+    // Same reasoning as delete above -- MessageService.markRead (see
+    // message-service.test.ts) is what exercises this.
+    markRead: async (): Promise<void> => {},
     subscribeToNewMessages: subscribeOpts => {
       onMessage = subscribeOpts.onMessage;
       return (): void => {

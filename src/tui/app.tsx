@@ -28,6 +28,14 @@ export interface IAppProps {
   onDelete: (opts: { messageId: number }) => Promise<void>;
   onQuit: () => void;
   onOpenChat: (opts: { peerId: string }) => Promise<void>;
+  /**
+   * Called only for the two moments Task 9's brief names: once a chat is open
+   * and its newest message is showing, and again whenever the cursor reaches
+   * that newest message afterward. Never for chat-list movement -- reading is
+   * an explicit act, not a side effect of browsing. Fired on every qualifying
+   * move with no debounce of its own; MessageService.markRead owns that.
+   */
+  onMarkRead: (opts: { peerId: string; maxId: number }) => Promise<void>;
 }
 
 const SIDEBAR_WIDTH = 22;
@@ -119,7 +127,7 @@ const toFlushedText = (opts: { pending: string[] }): string => {
 export const App = (props: IAppProps) => {
   const {
     store, engine, keymapService, keyNormalizer, tokens, resolveSenderName,
-    onSend, onEdit, onDelete, onQuit, onOpenChat,
+    onSend, onEdit, onDelete, onQuit, onOpenChat, onMarkRead,
   } = props;
 
   // useSyncExternalStore re-subscribes whenever the `subscribe` argument's
@@ -340,8 +348,45 @@ export const App = (props: IAppProps) => {
         case ActionTypes.CHAT_OPEN: {
           const target = accumulated.dialogs[accumulated.chatCursor];
           if (target) {
-            void onOpenChat({ peerId: target.peerId }).catch(error => {
-              logRejection({ method: 'onOpenChat', error });
+            const { peerId } = target;
+            // onMarkRead is chained onto onOpenChat's own resolution, not
+            // fired alongside it: onOpenChat is what actually loads the
+            // chat's messages (MessageService.loadHistory), so only once it
+            // resolves does the store hold the newest message to mark --
+            // reading store.getState() here, before that lands, would still
+            // see whatever chat was open previously.
+            void onOpenChat({ peerId })
+              .then(() => {
+                const { messages } = store.getState();
+                const newest = messages[messages.length - 1];
+                if (!newest) {
+                  return;
+                }
+                void onMarkRead({ peerId, maxId: newest.id }).catch(error => {
+                  logRejection({ method: 'onMarkRead', error });
+                });
+              })
+              .catch(error => {
+                logRejection({ method: 'onOpenChat', error });
+              });
+          }
+          break;
+        }
+        case ActionTypes.CURSOR_MOVE:
+        case ActionTypes.CURSOR_EDGE: {
+          // The other of the two moments Task 9's brief names markRead for.
+          // Gated on unit === 'message' specifically so chat-list movement
+          // (unit: 'chat') can never reach this at all -- not suppressed by a
+          // debounce or a flag, structurally excluded.
+          const { activePeerId, messages } = accumulated;
+          if (action.unit !== 'message' || !activePeerId) {
+            break;
+          }
+          const newCursor = patch.messageCursor ?? accumulated.messageCursor;
+          const newest = messages[messages.length - 1];
+          if (newest && newCursor === messages.length - 1) {
+            void onMarkRead({ peerId: activePeerId, maxId: newest.id }).catch(error => {
+              logRejection({ method: 'onMarkRead', error });
             });
           }
           break;
@@ -447,6 +492,7 @@ export const App = (props: IAppProps) => {
           height={paneHeight}
           resolveSenderName={resolveSenderName}
           revealedSpoilers={state.revealedSpoilers}
+          readOutboxMaxId={activeDialog?.readOutboxMaxId ?? 0}
         />
       </box>
 

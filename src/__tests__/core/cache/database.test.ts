@@ -12,15 +12,25 @@ const buildDatabase = (): DatabaseService => {
 
 test('peers and dialogs round-trip', () => {
   const database = buildDatabase();
-  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 2, lastMessageAt: 100, topMessageId: 5 });
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 2, lastMessageAt: 100, topMessageId: 5, readOutboxMaxId: 0 });
   expect(database.listDialogs()[0]!.title).toBe('Alice');
+  database.close();
+});
+
+// read_outbox_max_id existed in the schema unused before Task 9 -- this is
+// what proves upsertDialog actually writes it and listDialogs reads it back,
+// which is what the tick in message-view.tsx depends on end to end.
+test("a dialog's readOutboxMaxId round-trips through the cache", () => {
+  const database = buildDatabase();
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 5, readOutboxMaxId: 17 });
+  expect(database.listDialogs()[0]!.readOutboxMaxId).toBe(17);
   database.close();
 });
 
 test('upsertPeer updates rather than duplicating', () => {
   const database = buildDatabase();
   database.upsertPeer({ id: 'u1', type: 'user', accessHash: 'h1', title: 'Alice Smith', username: 'alice' });
-  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 1, topMessageId: 1 });
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 1, topMessageId: 1, readOutboxMaxId: 0 });
   const dialogs = database.listDialogs();
   expect(dialogs).toHaveLength(1);
   expect(dialogs[0]!.title).toBe('Alice Smith');
@@ -29,8 +39,8 @@ test('upsertPeer updates rather than duplicating', () => {
 
 test('dialogs sort pinned first, then by recency', () => {
   const database = buildDatabase();
-  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 300, topMessageId: 9 });
-  database.upsertDialog({ peerId: 'u2', pinned: 1, unreadCount: 0, lastMessageAt: 100, topMessageId: 4 });
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 300, topMessageId: 9, readOutboxMaxId: 0 });
+  database.upsertDialog({ peerId: 'u2', pinned: 1, unreadCount: 0, lastMessageAt: 100, topMessageId: 4, readOutboxMaxId: 0 });
   expect(database.listDialogs().map(dialog => dialog.peerId)).toEqual(['u2', 'u1']);
   database.close();
 });
@@ -102,7 +112,7 @@ test('calling open twice does not leak the first handle and leaves a working dat
   database.open({ filePath: ':memory:' });
   expect(() => {
     database.upsertPeer({ id: 'u1', type: 'user', accessHash: null, title: 'Alice', username: null });
-    database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 1, topMessageId: 1 });
+    database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 1, topMessageId: 1, readOutboxMaxId: 0 });
   }).not.toThrow();
   expect(database.listDialogs()).toHaveLength(1);
   database.close();
@@ -138,7 +148,7 @@ test('every method rejects use before open, naming itself in the error', () => {
   const database = new DatabaseService();
   const attempts: Array<{ method: string; call: () => unknown }> = [
     { method: 'upsertPeer', call: () => database.upsertPeer({ id: 'u1', type: 'user', accessHash: null, title: 'A', username: null }) },
-    { method: 'upsertDialog', call: () => database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 1, topMessageId: 1 }) },
+    { method: 'upsertDialog', call: () => database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 1, topMessageId: 1, readOutboxMaxId: 0 }) },
     { method: 'listDialogs', call: () => database.listDialogs() },
     { method: 'insertMessages', call: () => database.insertMessages({ messages: [] }) },
     { method: 'listMessages', call: () => database.listMessages({ peerId: 'u1', limit: 1 }) },

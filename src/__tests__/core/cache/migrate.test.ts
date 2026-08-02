@@ -61,7 +61,7 @@ test('reopening an existing database preserves its rows and re-applies cleanly',
   const first = new DatabaseService();
   first.open({ filePath });
   first.upsertPeer({ id: 'u1', type: 'user', accessHash: 'h', title: 'Alice', username: null });
-  first.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 3, lastMessageAt: 100, topMessageId: 5 });
+  first.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 3, lastMessageAt: 100, topMessageId: 5, readOutboxMaxId: 0 });
   first.insertMessages({
     messages: [{ peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'morning!', out: 0, entities: [], replyToMessageId: null }],
   });

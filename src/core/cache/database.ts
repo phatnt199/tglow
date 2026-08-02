@@ -21,6 +21,8 @@ export interface IDialogInput {
   unreadCount: number;
   lastMessageAt: number;
   topMessageId: number;
+  /** The highest id of the user's own messages the other side has read. Drives the tick in message-view.tsx; unrelated to markRead, which moves the inbox pointer instead. */
+  readOutboxMaxId: number;
 }
 
 export interface IMessageInput {
@@ -41,6 +43,8 @@ export interface IDialogRow {
   unreadCount: number;
   lastMessageAt: number | null;
   topMessageId: number | null;
+  /** See IDialogInput.readOutboxMaxId. */
+  readOutboxMaxId: number;
 }
 
 export interface IMessageRow {
@@ -110,6 +114,7 @@ export class DatabaseService {
         unreadCount: dialog.unreadCount,
         lastMessageAt: dialog.lastMessageAt,
         topMessageId: dialog.topMessageId,
+        readOutboxMaxId: dialog.readOutboxMaxId,
       })
       .onConflictDoUpdate({
         target: dialogs.peerId,
@@ -118,6 +123,7 @@ export class DatabaseService {
           unreadCount: dialog.unreadCount,
           lastMessageAt: dialog.lastMessageAt,
           topMessageId: dialog.topMessageId,
+          readOutboxMaxId: dialog.readOutboxMaxId,
         },
       })
       .run();
@@ -132,6 +138,7 @@ export class DatabaseService {
         unreadCount: dialogs.unreadCount,
         lastMessageAt: dialogs.lastMessageAt,
         topMessageId: dialogs.topMessageId,
+        readOutboxMaxId: dialogs.readOutboxMaxId,
       })
       .from(dialogs)
       .innerJoin(peers, eq(peers.id, dialogs.peerId))
