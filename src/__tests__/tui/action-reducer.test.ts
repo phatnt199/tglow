@@ -204,6 +204,58 @@ test('confirmation.cancel clears the pending confirmation and the prompt', () =>
   expect(patch.statusMessage).toBeNull();
 });
 
+// Gap 4b (task-11-report.md): "url, text_url -- the URL shown on K" (spec
+// §3.1). K reads the message under the cursor, same as SPOILER_REVEAL and the
+// other message-scoped keys above.
+test('link.show puts the url in the status line when the message has exactly one link', () => {
+  const state = buildState({
+    messageCursor: 0,
+    messages: [{
+      peerId: 'u1', id: 9, fromId: 'u1', date: 900, out: 0, replyToMessageId: null,
+      text: 'see docs', entities: [{ kind: 'textUrl', offset: 4, length: 4, url: 'https://example.com' }],
+    }],
+  });
+  const patch = applyAction({ state, action: { type: ActionTypes.LINK_SHOW } });
+  expect(patch.statusMessage).toBe('https://example.com');
+});
+
+test('link.show says how many more when the message has several links', () => {
+  const text = 'first https://a.example second https://b.example';
+  const state = buildState({
+    messageCursor: 0,
+    messages: [{
+      peerId: 'u1', id: 9, fromId: 'u1', date: 900, out: 0, replyToMessageId: null,
+      text,
+      entities: [
+        { kind: 'url', offset: 6, length: 17 },
+        { kind: 'url', offset: 31, length: 17 },
+      ],
+    }],
+  });
+  const patch = applyAction({ state, action: { type: ActionTypes.LINK_SHOW } });
+  expect(patch.statusMessage).toBe('https://a.example (+1 more)');
+});
+
+// A key that appears to do nothing reads as broken -- silence is not an
+// acceptable response to "no link here".
+test('link.show says so when the message has no link, rather than staying silent', () => {
+  const state = buildState({
+    messageCursor: 0,
+    messages: [{
+      peerId: 'u1', id: 9, fromId: 'u1', date: 900, out: 0, replyToMessageId: null, text: 'no links here', entities: [],
+    }],
+  });
+  const patch = applyAction({ state, action: { type: ActionTypes.LINK_SHOW } });
+  expect(patch.statusMessage).toBeTruthy();
+  expect(patch.statusMessage).not.toContain('http');
+});
+
+test('link.show with no messages is harmless', () => {
+  const state = buildState({ messages: [], messageCursor: 0 });
+  expect(() => applyAction({ state, action: { type: ActionTypes.LINK_SHOW } })).not.toThrow();
+  expect(applyAction({ state, action: { type: ActionTypes.LINK_SHOW } })).toEqual({});
+});
+
 test('an unknown action type is rejected rather than ignored', () => {
   expect(() =>
     applyAction({ state: buildState(), action: { type: 'nonsense' } as never }),

@@ -40,7 +40,8 @@ export type TAction =
   | { type: typeof ActionTypes.EDIT_CANCEL }
   | { type: typeof ActionTypes.DELETE_REQUEST }
   | { type: typeof ActionTypes.CONFIRM }
-  | { type: typeof ActionTypes.CANCEL_CONFIRMATION };
+  | { type: typeof ActionTypes.CANCEL_CONFIRMATION }
+  | { type: typeof ActionTypes.LINK_SHOW };
 
 export interface IEngineState {
   mode: TVimMode;

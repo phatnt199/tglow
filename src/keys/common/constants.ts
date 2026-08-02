@@ -39,6 +39,7 @@ export class ActionTypes {
   static readonly DELETE_REQUEST = 'delete.request';
   static readonly CONFIRM = 'confirmation.confirm';
   static readonly CANCEL_CONFIRMATION = 'confirmation.cancel';
+  static readonly LINK_SHOW = 'link.show';
 }
 
 const SUPPORTED_MODES: readonly string[] = [

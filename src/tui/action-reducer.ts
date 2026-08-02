@@ -7,6 +7,7 @@ import { getError } from '@venizia/ignis-inversion';
 // because that is where IApplicationState is actually defined.
 import type { IApplicationState } from '../core/application-store.ts';
 import { ActionTypes, VimContexts, VimModes, type TAction } from '../keys/common/index.ts';
+import { extractLinkUrls } from './entities.ts';
 
 const clamp = (opts: { value: number; maximum: number }): number => {
   if (opts.maximum < 0) {
@@ -74,6 +75,25 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
       // masked on screen even though state.revealedSpoilers itself now has
       // the id in it.
       return { revealedSpoilers: new Set(state.revealedSpoilers).add(message.id) };
+    }
+
+    // Spec §3.1: "url, text_url -- the URL shown on K". A key that appears to
+    // do nothing reads as broken, so a message with no link says so rather
+    // than leaving the status line untouched -- the same reasoning
+    // EDIT_START's refusal branch already applies below.
+    case ActionTypes.LINK_SHOW: {
+      const message = state.messages[state.messageCursor];
+      if (!message) {
+        return {};
+      }
+      const urls = extractLinkUrls({ text: message.text, entities: message.entities });
+      if (urls.length === 0) {
+        return { statusMessage: 'No link in this message' };
+      }
+      if (urls.length === 1) {
+        return { statusMessage: urls[0] };
+      }
+      return { statusMessage: `${urls[0]} (+${urls.length - 1} more)` };
     }
 
     case ActionTypes.REPLY_START: {

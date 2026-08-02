@@ -1,7 +1,7 @@
 import { test, expect } from 'bun:test';
 
 import { EntityKinds, type TEntityKind } from '../../core/common/index.ts';
-import { toStyledSpans } from '../../tui/entities.ts';
+import { extractLinkUrls, toStyledSpans } from '../../tui/entities.ts';
 
 test('text with no entities is one plain span', () => {
   expect(toStyledSpans({ text: 'hello', entities: [] }))
@@ -145,4 +145,74 @@ test('a url on an unknown-kind entity is dropped along with the kind', () => {
     entities: [{ kind: EntityKinds.UNKNOWN, offset: 0, length: 5, url: 'https://example.com' }],
   });
   expect(spans).toEqual([{ text: 'hello', kinds: [], url: null }]);
+});
+
+// Gap 4b (task-11-report.md): "the URL shown on K" -- extractLinkUrls is what
+// `K`'s reducer case reads. A text_url entity's covered text is the display
+// text, not the destination, so its separate `.url` field is the only source
+// of the URL for that kind.
+test('extractLinkUrls reads a text_url entity from its own url field', () => {
+  const urls = extractLinkUrls({
+    text: 'see docs', entities: [{ kind: EntityKinds.TEXT_URL, offset: 4, length: 4, url: 'https://example.com' }],
+  });
+  expect(urls).toEqual(['https://example.com']);
+});
+
+// A bare `url` entity carries no `.url` of its own -- the text it covers
+// already is the URL, so the source has to be the message text at that
+// entity's own offset/length, not a field that is simply absent.
+test('extractLinkUrls reads a bare url entity from the covered text', () => {
+  const urls = extractLinkUrls({
+    text: 'go to https://example.com now', entities: [{ kind: EntityKinds.URL, offset: 6, length: 19 }],
+  });
+  expect(urls).toEqual(['https://example.com']);
+});
+
+// offset/length are UTF-16 code units, exactly what String.prototype.slice
+// indexes by -- unlike toStyledSpans, recovering a bare url's covered text
+// needs no grapheme conversion, but it still must not be thrown off by a
+// multi-unit character earlier in the string.
+test('extractLinkUrls slices a bare url correctly past a preceding emoji', () => {
+  const text = '🔥 see https://example.com';
+  const urls = extractLinkUrls({ text, entities: [{ kind: EntityKinds.URL, offset: 7, length: 19 }] });
+  expect(urls).toEqual(['https://example.com']);
+});
+
+test('extractLinkUrls returns an empty array when the message has no link entity', () => {
+  expect(extractLinkUrls({ text: 'plain text', entities: [] })).toEqual([]);
+  expect(extractLinkUrls({ text: 'bold text', entities: [{ kind: EntityKinds.BOLD, offset: 0, length: 4 }] })).toEqual([]);
+});
+
+// Order of appearance, not entity array order -- Telegram usually sends them
+// in order already, but nothing here should depend on that.
+test('extractLinkUrls returns multiple links in text order', () => {
+  const text = 'first https://a.example second https://b.example';
+  const urls = extractLinkUrls({
+    text,
+    entities: [
+      { kind: EntityKinds.URL, offset: 31, length: 18 },
+      { kind: EntityKinds.URL, offset: 6, length: 17 },
+    ],
+  });
+  expect(urls).toEqual(['https://a.example', 'https://b.example']);
+});
+
+// mention/hashtag render with the same link colour in message-view.tsx, but
+// the spec's own rendering table only promises the URL on K for url/text_url
+// -- a mention or hashtag must not show up here.
+test('extractLinkUrls ignores mention and hashtag entities', () => {
+  const urls = extractLinkUrls({
+    text: '@alice #tglow', entities: [
+      { kind: EntityKinds.MENTION, offset: 0, length: 6 },
+      { kind: EntityKinds.HASHTAG, offset: 7, length: 6 },
+    ],
+  });
+  expect(urls).toEqual([]);
+});
+
+// Malformed entities (negative offset, zero/negative length) must not crash
+// or leak a garbage slice -- same usability guard toStyledSpans applies.
+test('extractLinkUrls ignores an unusable entity', () => {
+  expect(extractLinkUrls({ text: 'hi', entities: [{ kind: EntityKinds.URL, offset: 0, length: 0 }] })).toEqual([]);
+  expect(extractLinkUrls({ text: 'hi', entities: [{ kind: EntityKinds.URL, offset: -1, length: 2 }] })).toEqual([]);
 });

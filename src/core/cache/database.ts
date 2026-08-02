@@ -129,6 +129,23 @@ export class DatabaseService {
       .run();
   };
 
+  /**
+   * A direct UPDATE rather than a read-modify-write through upsertDialog:
+   * the caller (MessageService.markRead) has no reason to know or preserve
+   * pinned/lastMessageAt/topMessageId/readOutboxMaxId just to zero one
+   * column, and a read-then-write would cost a round trip this doesn't need.
+   * A peer with no dialog row yet -- markRead racing ahead of
+   * DialogService.sync()'s first fetch -- matches zero rows and is a no-op,
+   * not an error.
+   */
+  clearUnreadCount = (opts: { peerId: string }): void => {
+    this.require('clearUnreadCount')
+      .update(dialogs)
+      .set({ unreadCount: 0 })
+      .where(eq(dialogs.peerId, opts.peerId))
+      .run();
+  };
+
   listDialogs = (): IDialogRow[] => {
     return this.require('listDialogs')
       .select({

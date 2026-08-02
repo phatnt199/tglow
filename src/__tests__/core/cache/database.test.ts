@@ -144,6 +144,44 @@ test('a message with no entities reads back as an empty array, not null', () => 
   database.close();
 });
 
+// Gap 4d (task-11-report.md): markRead writes nowhere -- this is the write
+// side of clearing a dialog's badge (spec §3.3: "clears locally and in the
+// chat list"). A direct UPDATE rather than a read-modify-write through
+// upsertDialog: MessageService.markRead has no reason to know or preserve
+// pinned/lastMessageAt/topMessageId/readOutboxMaxId just to zero one column.
+test("clearUnreadCount zeroes a dialog's unread count without touching its other fields", () => {
+  const database = buildDatabase();
+  database.upsertDialog({ peerId: 'u1', pinned: 1, unreadCount: 7, lastMessageAt: 500, topMessageId: 12, readOutboxMaxId: 3 });
+  database.clearUnreadCount({ peerId: 'u1' });
+  const dialog = database.listDialogs().find(row => row.peerId === 'u1');
+  expect(dialog?.unreadCount).toBe(0);
+  expect(dialog?.pinned).toBe(1);
+  expect(dialog?.lastMessageAt).toBe(500);
+  expect(dialog?.topMessageId).toBe(12);
+  expect(dialog?.readOutboxMaxId).toBe(3);
+  database.close();
+});
+
+test('clearUnreadCount only affects the named peer', () => {
+  const database = buildDatabase();
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 3, lastMessageAt: 100, topMessageId: 1, readOutboxMaxId: 0 });
+  database.upsertDialog({ peerId: 'u2', pinned: 0, unreadCount: 4, lastMessageAt: 200, topMessageId: 2, readOutboxMaxId: 0 });
+  database.clearUnreadCount({ peerId: 'u1' });
+  const dialogs = database.listDialogs();
+  expect(dialogs.find(row => row.peerId === 'u1')?.unreadCount).toBe(0);
+  expect(dialogs.find(row => row.peerId === 'u2')?.unreadCount).toBe(4);
+  database.close();
+});
+
+// markRead can race a dialog row that has not been synced yet (a chat opened
+// before DialogService.sync() has ever populated it) -- this must not throw,
+// the same tolerance an UPDATE matching zero rows already has in SQL itself.
+test('clearUnreadCount on a peer with no dialog row is a harmless no-op', () => {
+  const database = buildDatabase();
+  expect(() => database.clearUnreadCount({ peerId: 'u1' })).not.toThrow();
+  database.close();
+});
+
 test('every method rejects use before open, naming itself in the error', () => {
   const database = new DatabaseService();
   const attempts: Array<{ method: string; call: () => unknown }> = [
@@ -155,6 +193,7 @@ test('every method rejects use before open, naming itself in the error', () => {
     { method: 'deleteMessage', call: () => database.deleteMessage({ peerId: 'u1', id: 1 }) },
     { method: 'getSyncState', call: () => database.getSyncState({ key: 'pts' }) },
     { method: 'setSyncState', call: () => database.setSyncState({ key: 'pts', value: 1 }) },
+    { method: 'clearUnreadCount', call: () => database.clearUnreadCount({ peerId: 'u1' }) },
   ];
 
   for (const attempt of attempts) {

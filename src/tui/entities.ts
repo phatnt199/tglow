@@ -64,6 +64,29 @@ const styleSignature = (style: { kinds: TEntityKind[]; url: string | null }): st
   return `${[...style.kinds].sort().join(',')}|${style.url ?? ''}`;
 };
 
+const LINK_ENTITY_KINDS: readonly TEntityKind[] = [EntityKinds.URL, EntityKinds.TEXT_URL];
+
+/**
+ * The URLs carried by a message's `url`/`text_url` entities, in the order
+ * they appear -- what `K` shows on the status line (spec §3.1). A `url`
+ * entity carries no `.url` of its own: the text it covers already is the
+ * URL, so recovering it reads `text` at the entity's own offset/length rather
+ * than a field that is simply absent for that kind. A `text_url` entity's
+ * covered text is the display text, not the destination, so its separate
+ * `.url` is the only source for that kind. Offsets are UTF-16 code units --
+ * exactly what `String.prototype.slice` indexes by -- so, unlike rendering,
+ * this needs no grapheme conversion to stay correct across an emoji or a
+ * combining mark elsewhere in the message.
+ */
+export const extractLinkUrls = (opts: { text: string; entities: ITelegramEntity[] }): string[] => {
+  const { text, entities } = opts;
+  return entities
+    .filter(isUsable)
+    .filter(entity => LINK_ENTITY_KINDS.includes(entity.kind))
+    .sort((a, b) => a.offset - b.offset)
+    .map(entity => entity.url ?? text.slice(entity.offset, entity.offset + entity.length));
+};
+
 /**
  * Splits `text` into runs of uniform styling. Every grapheme from the
  * boundary table is appended to exactly one span, so concatenating the

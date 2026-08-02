@@ -293,10 +293,22 @@ export class MessageService {
   };
 
   /**
-   * A courtesy call to the server, not a local state change -- markRead
-   * writes no row and publishes no patch; the tick shown for an already-sent
-   * own message comes from the dialog's readOutboxMaxId, refreshed the next
-   * time DialogService.sync() runs.
+   * A call to the server that, once it actually succeeds, also clears the
+   * dialog's unread badge locally (spec §3.3: "clears locally and in the chat
+   * list") -- the tick shown for an already-sent own message is a separate
+   * fact, still driven by the dialog's readOutboxMaxId and still only ever
+   * refreshed by DialogService.sync().
+   *
+   * The clear is unconditional (zero, not a decrement), and it only ever runs
+   * after this method's own adapter call resolves -- never from a cursor
+   * merely passing over a chat in the list, since nothing but this method and
+   * DialogService.sync() ever calls clearUnreadCount/upsertDialog with an
+   * unread figure that moves backward. That keeps a message arriving mid-read
+   * correct rather than resurrecting whatever the count was before the clear:
+   * UpdateService.touchDialog increments from whatever clearUnreadCount just
+   * wrote, a real re-read of the cache, not a stale in-memory figure, so a
+   * live arrival after the badge clears becomes a fresh, accurate 1 rather
+   * than the old count coming back.
    *
    * Deliberately not called from loadHistory(): fetching a chat's history is
    * not the same fact as the user having read it, and the two must stay
@@ -308,7 +320,9 @@ export class MessageService {
    * Debounced per peer rather than per call: App fires this on every
    * qualifying cursor move with no debounce of its own (see app.tsx), relying
    * entirely on this one window so a cursor resting on the newest message
-   * cannot hammer the server on every keystroke.
+   * cannot hammer the server on every keystroke. A debounced-away call skips
+   * both the network round trip and the clear below -- the prior successful
+   * call already cleared the count, so there is nothing left to do.
    */
   markRead = async (opts: { peerId: string; maxId: number }): Promise<void> => {
     const { peerId, maxId } = opts;
@@ -324,8 +338,19 @@ export class MessageService {
     } catch (error) {
       // Never rethrown: this is attached to whatever read path called it
       // (opening a chat, moving the cursor), and a flaky mark-read must not
-      // take that down.
+      // take that down. The badge stays as it was -- nothing was actually
+      // read as far as the server is concerned.
       this._logger.for(this.markRead.name).error('Could not mark read | Reason: %s', error);
+      return;
+    }
+
+    try {
+      this._database.clearUnreadCount({ peerId });
+      this._store.setState({ patch: { dialogs: this._database.listDialogs() } });
+    } catch (error) {
+      // The server has already marked this read; only the local mirror of
+      // that fact failed to update. Not rethrown, same reasoning as above.
+      this._logger.for(this.markRead.name).error('Could not clear the local unread count | Reason: %s', error);
     }
   };
 }

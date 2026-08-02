@@ -494,6 +494,156 @@ test('a bold span carries the bold attribute', async () => {
   expect((boldSpan!.attributes & TextAttributes.BOLD) !== 0).toBe(true);
 });
 
+// Gap 4a (task-11-report.md): EntityKinds.STRIKE survives toStyledSpans but
+// message-view.tsx never rendered it -- a frame-text check alone would pass
+// either way (Task 4's own lesson), so this reads the real style bits via
+// captureSpans() instead. OpenTUI has no dedicated strike JSX tag the way it
+// does <b>/<i>/<u>; it expresses strikethrough as a bit in the numeric
+// `attributes` field (TextAttributes.STRIKETHROUGH), set via the `attributes`
+// prop every span-like component accepts.
+test('a strike span carries the strikethrough attribute', async () => {
+  const messages: IMessageRow[] = [{
+    peerId: 'u1', id: 1, fromId: 'u1', date: 100, out: 0, replyToMessageId: null,
+    text: 'this is struck out', entities: [{ kind: 'strike', offset: 8, length: 6 }],
+  }];
+  const renderer = await render({ messages, cursor: 0, width: 50, height: 6 });
+  const spans = readSpans(renderer, 0);
+  const strikeSpan = spans.find(span => span.text === 'struck');
+  expect(strikeSpan).toBeDefined();
+  expect((strikeSpan!.attributes & TextAttributes.STRIKETHROUGH) !== 0).toBe(true);
+});
+
+// The other half of "real style bits, not text": a strike span must not also
+// carry bold/italic/underline just because they share the attributes bitmask
+// -- proving the new bit is additive, not a copy-paste of an existing one.
+test('a strike span carries no other style attribute', async () => {
+  const messages: IMessageRow[] = [{
+    peerId: 'u1', id: 1, fromId: 'u1', date: 100, out: 0, replyToMessageId: null,
+    text: 'this is struck out', entities: [{ kind: 'strike', offset: 8, length: 6 }],
+  }];
+  const renderer = await render({ messages, cursor: 0, width: 50, height: 6 });
+  const strikeSpan = readSpans(renderer, 0).find(span => span.text === 'struck');
+  expect(strikeSpan).toBeDefined();
+  expect((strikeSpan!.attributes & TextAttributes.BOLD) !== 0).toBe(false);
+  expect((strikeSpan!.attributes & TextAttributes.ITALIC) !== 0).toBe(false);
+  expect((strikeSpan!.attributes & TextAttributes.UNDERLINE) !== 0).toBe(false);
+});
+
+// bold + strike together, both real attribute bits set on the same span --
+// the combination the spec's rendering table groups under one row
+// ("bold / italic / underline / strike").
+test('a span that is both bold and struck carries both attributes', async () => {
+  const messages: IMessageRow[] = [{
+    peerId: 'u1', id: 1, fromId: 'u1', date: 100, out: 0, replyToMessageId: null,
+    text: 'important notice', entities: [
+      { kind: 'bold', offset: 0, length: 9 },
+      { kind: 'strike', offset: 0, length: 9 },
+    ],
+  }];
+  const renderer = await render({ messages, cursor: 0, width: 50, height: 6 });
+  const span = readSpans(renderer, 0).find(candidate => candidate.text === 'important');
+  expect(span).toBeDefined();
+  expect((span!.attributes & TextAttributes.BOLD) !== 0).toBe(true);
+  expect((span!.attributes & TextAttributes.STRIKETHROUGH) !== 0).toBe(true);
+});
+
+// Gap 4c (task-11-report.md): "code, pre -- text.code; pre on its own rows
+// with a left rule" (spec §3.1). Before this, pre rendered identically to
+// inline code. A pre-only message is the realistic shape (Telegram sends pre
+// as a whole code block, not interleaved with plain text on the same line),
+// so this is the primary case; the row-safety test further down covers what
+// happens when a pre block does not fit the pane.
+test('a pre message renders on its own row, prefixed with a left rule in tokens.border', async () => {
+  const messages: IMessageRow[] = [{
+    peerId: 'u1', id: 1, fromId: 'u1', date: 100, out: 0, replyToMessageId: null,
+    text: 'const x = 1', entities: [{ kind: 'pre', offset: 0, length: 11 }],
+  }];
+  const renderer = await render({ messages, cursor: 0, width: 50, height: 6 });
+  const frame = renderer.captureCharFrame();
+  expect(frame).toContain('const x = 1');
+
+  const spans = readSpans(renderer, 0);
+  // The rule is a distinct span in tokens.border, not folded into the code
+  // span's own colour -- resolveContentColour's textCode is untouched.
+  // Found by colour rather than position: spans[0]/[1] are the rail's own
+  // marker+gutter and time+sender+tick spans, ahead of anything this pane
+  // renders for message content.
+  const rule = spans.find(span => span.foreground === tokens.border.toLowerCase());
+  expect(rule).toBeDefined();
+  expect(rule!.text.trim()).not.toBe('');
+  expect(rule!.text).not.toContain('const');
+
+  const codeSpan = spans.find(span => span.text.includes('const x = 1'));
+  expect(codeSpan).toBeDefined();
+  expect(codeSpan!.foreground).toBe(tokens.textCode.toLowerCase());
+
+  // Every rendered row must still sum to exactly the pane's width, or the
+  // cursorline background stops short of the pane's edge (padRowContent's own
+  // invariant, unchanged by adding the rule).
+  expect(spans.reduce((total, span) => total + span.width, 0)).toBe(50);
+});
+
+// Locks down the distinction the gap is about: only pre gets the rule:
+// code stays inline, sharing its row with the surrounding plain text.
+test('inline code shares its row with surrounding text and carries no rule', async () => {
+  const messages: IMessageRow[] = [{
+    peerId: 'u1', id: 1, fromId: 'u1', date: 100, out: 0, replyToMessageId: null,
+    text: 'run npm test now', entities: [{ kind: 'code', offset: 4, length: 8 }],
+  }];
+  const renderer = await render({ messages, cursor: 0, width: 50, height: 6 });
+  const rows = readRows(renderer);
+  // "run", the code span and "now" are all on the same physical row.
+  const codeRowIndex = rows.findIndex(row => row.includes('npm test'));
+  expect(rows[codeRowIndex]).toContain('run');
+  expect(rows[codeRowIndex]).toContain('now');
+
+  const spans = readSpans(renderer, codeRowIndex);
+  expect(spans.some(span => span.foreground === tokens.border.toLowerCase())).toBe(false);
+});
+
+test('a pre block spanning multiple rows repeats the left rule on every row', async () => {
+  const long = Array.from({ length: 20 }, (unused, index) => `token${index}`).join(' ');
+  const messages: IMessageRow[] = [{
+    peerId: 'u1', id: 1, fromId: 'u1', date: 100, out: 0, replyToMessageId: null,
+    text: long, entities: [{ kind: 'pre', offset: 0, length: long.length }],
+  }];
+  const renderer = await render({ messages, cursor: 0, width: 30, height: 8 });
+  const rows = readRows(renderer).filter(row => row.trim() !== '');
+  expect(rows.length).toBeGreaterThan(1);
+  for (let row = 0; row < rows.length; row += 1) {
+    const spans = readSpans(renderer, row);
+    const hasRule = spans.some(span => span.foreground === tokens.border.toLowerCase());
+    expect({ row, hasRule }).toEqual({ row, hasRule: true });
+  }
+});
+
+// The row-based viewport is load-bearing (M1a's overdraw bug): a `pre` block
+// must produce exactly as many IRenderedRows as it occupies, in a pane too
+// short to show everything, or two messages' text ends up sharing a row --
+// the same failure the 'no rendered row draws two messages into the same
+// line' test above guards for plain text.
+test('a pre block in a pane too short for it does not interleave with another message', async () => {
+  const preText = Array.from({ length: 24 }, () => 'zulu').join(' ');
+  const preMessages: IMessageRow[] = [
+    {
+      peerId: 'u1', id: 1, fromId: 'u1', date: 100, out: 0, replyToMessageId: null,
+      text: preText, entities: [{ kind: 'pre', offset: 0, length: preText.length }],
+    },
+    {
+      peerId: 'u1', id: 2, fromId: 'u1', date: 200, out: 0, replyToMessageId: null,
+      text: Array.from({ length: 24 }, () => 'yankee').join(' '), entities: [],
+    },
+  ];
+  const renderer = await render({ messages: preMessages, cursor: 0, width: 30, height: 6 });
+  const rows = readRows(renderer);
+  expect(rows.length).toBe(6);
+  for (const row of rows) {
+    const hasZulu = row.includes('zulu');
+    const hasYankee = row.includes('yankee');
+    expect({ row, mixed: hasZulu && hasYankee }).toEqual({ row, mixed: false });
+  }
+});
+
 test('a long styled message wraps into the content column, not to column zero', async () => {
   const long = 'this is a deliberately long message that must wrap more than once inside the pane';
   const messages: IMessageRow[] = [{

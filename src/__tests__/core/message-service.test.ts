@@ -3,6 +3,7 @@ import { test, expect } from 'bun:test';
 import { ApplicationStoreService } from '../../core/application-store.ts';
 import { DatabaseService } from '../../core/cache/index.ts';
 import { MessageService, type IMessageAdapter, type IRawMessage } from '../../core/message-service.ts';
+import { UpdateService } from '../../core/update-service.ts';
 
 const buildRawMessage = (overrides: Partial<IRawMessage> = {}): IRawMessage => ({
   id: 1, peerId: 'u1', fromId: 'u1', date: 100, text: 'hi', out: 0, entities: [], replyToMessageId: null, ...overrides,
@@ -381,5 +382,63 @@ test('the debounce is scoped per peer, not shared across every chat', async () =
 test('a failed markRead is logged and does not reject', async () => {
   const harness = buildService(buildAdapter({ markRead: async () => { throw new Error('offline'); } }));
   await expect(harness.service.markRead({ peerId: 'u1', maxId: 9 })).resolves.toBeUndefined();
+  harness.database.close();
+});
+
+// Gap 4d (task-11-report.md): spec §3.3, "the dialog's unread count clears
+// locally and in the chat list" -- both the cache (what the next
+// listDialogs() reads) and the store (what the sidebar is currently
+// rendering from) have to move, or the badge sits stale until the next
+// restart the way it did before this task.
+test("a successful markRead clears the dialog's unread count in the cache and republishes the dialog list", async () => {
+  const harness = buildService(buildAdapter({ markRead: async (): Promise<void> => {} }));
+  harness.database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 5, lastMessageAt: 100, topMessageId: 3, readOutboxMaxId: 0 });
+  await harness.service.markRead({ peerId: 'u1', maxId: 3 });
+
+  expect(harness.database.listDialogs().find(dialog => dialog.peerId === 'u1')?.unreadCount).toBe(0);
+  expect(harness.store.getState().dialogs.find(dialog => dialog.peerId === 'u1')?.unreadCount).toBe(0);
+  harness.database.close();
+});
+
+// The clear is conditioned on the network call actually succeeding -- a
+// markRead that never reached the server has not made anything read, so the
+// badge staying up is correct, not a bug.
+test('a failed markRead leaves the unread count untouched', async () => {
+  const harness = buildService(buildAdapter({ markRead: async () => { throw new Error('offline'); } }));
+  harness.database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 5, lastMessageAt: 100, topMessageId: 3, readOutboxMaxId: 0 });
+  await harness.service.markRead({ peerId: 'u1', maxId: 3 });
+
+  expect(harness.database.listDialogs().find(dialog => dialog.peerId === 'u1')?.unreadCount).toBe(5);
+  harness.database.close();
+});
+
+// A dialog markRead is called for before DialogService.sync() has ever
+// populated its row must not throw -- clearUnreadCount's own no-op-on-missing-row
+// behaviour (database.test.ts) has to actually reach all the way through here.
+test('markRead for a peer with no dialog row yet does not throw', async () => {
+  const harness = buildService(buildAdapter({ markRead: async (): Promise<void> => {} }));
+  await expect(harness.service.markRead({ peerId: 'u1', maxId: 3 })).resolves.toBeUndefined();
+  harness.database.close();
+});
+
+// The chosen behaviour for "a message arrives while you're reading": the
+// clear is an unconditional zero, not a decrement or a remembered delta, so a
+// live arrival afterward increments from that real, freshly-read baseline
+// (UpdateService.touchDialog re-reads the cache, not a stale snapshot) rather
+// than resurrecting whatever the count was before the clear. Chains a real
+// UpdateService onto the same database/store MessageService just wrote to --
+// exactly how main.ts wires the two -- rather than asserting the reasoning
+// on paper without exercising the real cross-service path.
+test('a message arriving after a chat is marked read counts as a fresh unread, not a resurrected one', async () => {
+  const harness = buildService(buildAdapter({ markRead: async (): Promise<void> => {} }));
+  harness.database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 5, lastMessageAt: 100, topMessageId: 3, readOutboxMaxId: 0 });
+  await harness.service.markRead({ peerId: 'u1', maxId: 3 });
+  expect(harness.database.listDialogs().find(dialog => dialog.peerId === 'u1')?.unreadCount).toBe(0);
+
+  const updateService = new UpdateService(buildAdapter(), harness.database, harness.store);
+  updateService.apply(buildRawMessage({ id: 4, peerId: 'u1', date: 200, text: 'new one' }));
+
+  expect(harness.database.listDialogs().find(dialog => dialog.peerId === 'u1')?.unreadCount).toBe(1);
+  expect(harness.store.getState().dialogs.find(dialog => dialog.peerId === 'u1')?.unreadCount).toBe(1);
   harness.database.close();
 });

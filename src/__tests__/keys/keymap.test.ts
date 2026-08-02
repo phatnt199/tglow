@@ -138,6 +138,30 @@ test('e starts an edit of the message under the cursor', () => {
   expect(result.actions).toEqual([{ type: ActionTypes.EDIT_START }]);
 });
 
+// Gap 4b (task-11-report.md): "the URL shown on K" (spec §3.1). K is already
+// this project's LSP-hover-style key (M1 spec §5), and OpenTUI reports a
+// shifted letter lowercased with shift set separately (ignis-style.md), so
+// the binding has to be <S-k>, never a bare 'K'.
+test('<S-k> shows the link under the cursor', () => {
+  const { keymapService, engine } = build();
+  const result = engine.resolve({
+    state: INITIAL_ENGINE_STATE,
+    key: buildKey('k', { shift: true }),
+    keymap: keymapService.getBindings(),
+  });
+  expect(result.status).toBe('resolved');
+  expect(result.actions).toEqual([{ type: ActionTypes.LINK_SHOW }]);
+});
+
+// A bare 'K' can never arrive from a real key press (ignis-style.md's own
+// warning: OpenTUI lowercases a shifted letter into `name`), so a binding
+// written that way would be permanently dead -- the same class of bug the
+// promised-keys guard below exists to catch, pinned here at the source.
+test('bare K is not bound -- only <S-k>, so it stays reachable', () => {
+  const { keymapService } = build();
+  expect(keymapService.getBindings().some(binding => binding.keys === 'K')).toBe(false);
+});
+
 test('dd asks to delete the message under the cursor', () => {
   const { keymapService, engine } = build();
   const keymap = keymapService.getBindings();
@@ -272,6 +296,10 @@ test('every binding the project promises the user is actually bound', () => {
     { context: '*', mode: VimModes.NORMAL, keys: 'r' },
     { context: '*', mode: VimModes.NORMAL, keys: 'e' },
     { context: '*', mode: VimModes.NORMAL, keys: 'dd' },
+    // Task 12 (task-11-report.md gap 4b): K shows a link's URL on the status
+    // line -- promised by the design spec's own rendering table and, like the
+    // row above, one binding away from being silently left out.
+    { context: '*', mode: VimModes.NORMAL, keys: '<S-k>' },
     // Mode changes
     { context: '*', mode: VimModes.NORMAL, keys: 'i' },
     { context: '*', mode: VimModes.NORMAL, keys: 'a' },

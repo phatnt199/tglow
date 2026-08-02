@@ -46,6 +46,15 @@ export class KeymapService {
     // can see, so App intercepts it directly (app.tsx) the same way it
     // already does for the which-key overlay's own escape, rather than a
     // second binding here.
+    // K is already this project's LSP-hover-style key (M1 spec §5: "message
+    // details / sender info"); showing a link's URL is the natural first
+    // occupant. Capital letters arrive as <S-x>, never a bare 'X'
+    // (ignis-style.md) -- OpenTUI lowercases a shifted letter into `name` and
+    // reports the shift separately, so a bare 'K' binding would be dead.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: '<S-k>', description: 'Show link URL',
+      action: () => [{ type: ActionTypes.LINK_SHOW }],
+    },
     {
       context: '*', mode: VimModes.NORMAL, keys: 'r', description: 'Reply to message',
       action: () => [{ type: ActionTypes.REPLY_START }],

@@ -84,6 +84,7 @@ by accident.
 | `gg` / `G` | oldest loaded / newest |
 | `<C-d>` / `<C-u>` | half page down / up |
 | `zs` | reveal a spoiler under the cursor |
+| `K` | show the URL of a link under the cursor |
 | `r` | reply to the message under the cursor |
 | `e` | edit your own message under the cursor |
 | `dd` | delete the message under the cursor (asks `y`/`n` to confirm) |

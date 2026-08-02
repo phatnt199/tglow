@@ -265,6 +265,31 @@ test('zs reveals the spoiler under the cursor', async () => {
   expect(frame).not.toContain('█');
 });
 
+// Gap 4b (task-11-report.md): "the URL shown on K" (spec §3.1), and M1a's own
+// lesson that a guarantee tested only at the reducer layer can be defeated
+// one layer up -- this exercises the real key press, not applyAction directly.
+test('<S-k> shows the url of the link under the cursor on the status line', async () => {
+  const linkMessages: IMessageRow[] = [{
+    peerId: 'u1', id: 1, fromId: 'u1', date: 100, out: 0, replyToMessageId: null,
+    text: 'see docs', entities: [{ kind: 'textUrl', offset: 4, length: 4, url: 'https://example.com' }],
+  }];
+  const { renderer, store } = await mount({ messages: linkMessages });
+  await act(async () => { renderer.mockInput.pressKey('k', { shift: true }); });
+  await renderer.flush();
+  expect(store.getState().statusMessage).toBe('https://example.com');
+  expect(renderer.captureCharFrame()).toContain('https://example.com');
+});
+
+// A key that appears to do nothing reads as broken -- <S-k> on a message with
+// no link must say so, not sit silent the way a missing binding would.
+test('<S-k> says so, rather than doing nothing, when the message under the cursor has no link', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('k', { shift: true }); });
+  await renderer.flush();
+  expect(store.getState().statusMessage).toBeTruthy();
+  expect(store.getState().statusMessage).not.toContain('http');
+});
+
 test('r starts a reply and the composer shows the quoted message', async () => {
   const { renderer, store } = await mount();
   await act(async () => { renderer.mockInput.pressKey('r'); });

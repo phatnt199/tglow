@@ -1,5 +1,7 @@
 import type { ReactNode } from 'react';
 
+import { TextAttributes } from '@opentui/core';
+
 import type { IMessageRow } from '../../core/cache/index.ts';
 import { EntityKinds, type TEntityKind } from '../../core/common/index.ts';
 import { toStyledSpans, type IStyledSpan } from '../entities.ts';
@@ -53,6 +55,15 @@ const TICK_WIDTH = 2;
 const RAIL_WIDTH = MARKER_WIDTH + GUTTER_WIDTH + 1 + TIME_WIDTH + 1 + SENDER_WIDTH + 1 + TICK_WIDTH + 1;
 /** Below this the rail is worth more than the sliver of text it would leave. */
 const MINIMUM_CONTENT_WIDTH = 8;
+/**
+ * `pre`'s left rule: the character plus one separator column, echoing the
+ * rail fields above (a fixed-width field followed by a blank column). Reuses
+ * the same glyph as app.tsx's own VERTICAL_RULE (pane divider) rather than
+ * inventing a second rule character for what is, visually, the same idea --
+ * a vertical line marking a block's edge.
+ */
+const PRE_RULE = '│ ';
+const PRE_RULE_WIDTH = measureTextWidth({ text: PRE_RULE });
 
 /** A gap this long starts a new group even from the same sender. */
 const GROUP_GAP_SECONDS = 300;
@@ -88,6 +99,8 @@ interface IRenderedRow {
   content: IStyledSpan[];
   own: boolean;
   revealed: boolean;
+  /** True for a row carrying `pre` content -- prefixed with PRE_RULE ahead of `content` at render time. Always false for a quote row. */
+  rulePrefix: boolean;
 }
 
 /**
@@ -198,6 +211,56 @@ const toLogicalSpanLines = (opts: { spans: IStyledSpan[] }): IStyledSpan[][] => 
 };
 
 const isPlainSpan = (span: IStyledSpan): boolean => span.kinds.length === 0;
+const isPreSpan = (span: IStyledSpan): boolean => span.kinds.includes(EntityKinds.PRE);
+
+interface IWrappedRow {
+  spans: IStyledSpan[];
+  isPre: boolean;
+}
+
+/**
+ * Splits one logical line (already newline-free, from toLogicalSpanLines)
+ * into consecutive runs that agree on pre-ness, so a `pre` span's boundary is
+ * never straddled by a run mixing it with plain content -- a `code` span
+ * (inline, spec §3.1) is deliberately excluded and stays free to share a row.
+ * Real Telegram sends `pre` as a whole block rather than interleaved with
+ * other text on the same line, so in practice every run here is either the
+ * entire line or none of it; splitting defensively rather than assuming that
+ * shape costs nothing and does not misrender the ordinary case.
+ */
+const splitPreRuns = (opts: { spans: IStyledSpan[] }): IWrappedRow[] => {
+  const runs: IWrappedRow[] = [];
+  let current: IStyledSpan[] = [];
+  let currentIsPre: boolean | null = null;
+
+  for (const span of opts.spans) {
+    const spanIsPre = isPreSpan(span);
+    if (currentIsPre !== null && spanIsPre !== currentIsPre) {
+      runs.push({ spans: current, isPre: currentIsPre });
+      current = [];
+    }
+    current.push(span);
+    currentIsPre = spanIsPre;
+  }
+  if (current.length > 0) {
+    runs.push({ spans: current, isPre: currentIsPre! });
+  }
+  return runs;
+};
+
+/**
+ * One logical line to the rows it wraps into, each tagged with whether it
+ * came from a `pre` run -- a `pre` run wraps narrower, leaving room for
+ * PRE_RULE, so the row it produces can carry the rule without overrunning
+ * contentWidth once padRowContent pads it back out.
+ */
+const wrapLogicalLine = (opts: { spans: IStyledSpan[]; contentWidth: number; preContentWidth: number }): IWrappedRow[] => {
+  const { spans, contentWidth, preContentWidth } = opts;
+  return splitPreRuns({ spans }).flatMap(run =>
+    wrapSpans({ spans: run.spans, width: run.isPre ? preContentWidth : contentWidth })
+      .map(rowSpans => ({ spans: rowSpans, isPre: run.isPre })),
+  );
+};
 
 /**
  * `messages` here is `props.messages` -- everything this pane currently
@@ -287,6 +350,21 @@ const wrapWithModifiers = (opts: { text: string; kinds: TEntityKind[] }): ReactN
   return node;
 };
 
+/**
+ * Strike has no dedicated JSX tag the way bold/italic/underline do -- OpenTUI's
+ * component catalogue offers only span/b/strong/i/em/u/br/a
+ * (@opentui/react's components/index.ts) -- so it is carried as a bit in the
+ * numeric `attributes` field every span-like renderable accepts instead
+ * (TextAttributes.STRIKETHROUGH, @opentui/core). Set on the outer `<span>`
+ * rather than the modifiers themselves: TextNodeRenderable.mergeStyles ORs a
+ * node's own attributes with whatever it inherits (`this._attributes |
+ * parentStyle.attributes`, verified in @opentui/core's compiled
+ * TextNodeRenderable), so a strike-and-bold span still ends up with both bits
+ * set on its innermost text node.
+ */
+const resolveAttributes = (opts: { kinds: TEntityKind[] }): number | undefined =>
+  opts.kinds.includes(EntityKinds.STRIKE) ? TextAttributes.STRIKETHROUGH : undefined;
+
 const renderContentSpan = (opts: {
   span: IStyledSpan;
   own: boolean;
@@ -297,7 +375,7 @@ const renderContentSpan = (opts: {
   const { span, own, revealed, tokens, spanKey } = opts;
   const fg = resolveContentColour({ kinds: span.kinds, revealed, own, tokens });
   return (
-    <span key={spanKey} fg={fg}>
+    <span key={spanKey} fg={fg} attributes={resolveAttributes({ kinds: span.kinds })}>
       {wrapWithModifiers({ text: span.text, kinds: span.kinds })}
     </span>
   );
@@ -322,6 +400,9 @@ const buildRows = (opts: {
 }): IRenderedRow[] => {
   const { messages, cursor, contentWidth, resolveSenderName, revealedSpoilers, readOutboxMaxId } = opts;
   const rows: IRenderedRow[] = [];
+  // Never below 1: a pane so narrow that contentWidth itself sits at
+  // MINIMUM_CONTENT_WIDTH still leaves splitLongWord something to cut into.
+  const preContentWidth = Math.max(1, contentWidth - PRE_RULE_WIDTH);
 
   messages.forEach((message, index) => {
     const senderName = resolveSenderName({ fromId: message.fromId });
@@ -354,6 +435,7 @@ const buildRows = (opts: {
         }),
         own,
         revealed,
+        rulePrefix: false,
       });
     }
 
@@ -362,10 +444,11 @@ const buildRows = (opts: {
       revealed,
     });
     const wrappedRows = toLogicalSpanLines({ spans: styled })
-      .flatMap(line => wrapSpans({ spans: line, width: contentWidth }));
+      .flatMap(line => wrapLogicalLine({ spans: line, contentWidth, preContentWidth }));
 
-    wrappedRows.forEach((rowSpans, lineIndex) => {
+    wrappedRows.forEach(({ spans: rowSpans, isPre }, lineIndex) => {
       const opensMessage = lineIndex === 0;
+      const rowWidth = isPre ? preContentWidth : contentWidth;
       rows.push({
         key: `${message.id}:${lineIndex}`,
         messageIndex: index,
@@ -379,9 +462,10 @@ const buildRows = (opts: {
         // Every own message's own row, not gated on opensGroup the way
         // time/sender are -- see resolveTick's own comment above.
         tick: opensMessage ? tick : BLANK_TICK,
-        content: padRowContent({ spans: rowSpans, width: contentWidth }),
+        content: padRowContent({ spans: rowSpans, width: rowWidth }),
         own,
         revealed,
+        rulePrefix: isPre,
       });
     });
   });
@@ -431,9 +515,12 @@ export const MessageView = (props: IMessageViewProps) => {
             {row.kind === 'quote' ? (
               <span fg={tokens.dim}>{row.content[0]?.text ?? ''}</span>
             ) : (
-              row.content.map((span, spanIndex) =>
-                renderContentSpan({ span, own: row.own, revealed: row.revealed, tokens, spanKey: `${row.key}:${spanIndex}` }),
-              )
+              <>
+                {row.rulePrefix && <span key={`${row.key}:rule`} fg={tokens.border}>{PRE_RULE}</span>}
+                {row.content.map((span, spanIndex) =>
+                  renderContentSpan({ span, own: row.own, revealed: row.revealed, tokens, spanKey: `${row.key}:${spanIndex}` }),
+                )}
+              </>
             )}
           </text>
         );
