@@ -16,5 +16,5 @@
     "noEmit": true,
     "types": ["bun-types", "react"]
   },
-  "include": ["src", "__tests__"]
+  "include": ["src", "__tests__", "scripts"]
 }
