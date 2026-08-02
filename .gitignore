@@ -19,7 +19,9 @@ session
 *.sqlite
 *.sqlite-journal
 *.sqlite-wal
-cache/
+# Anchored to repo root: unanchored `cache/` also matched src/core/cache/,
+# the SQLite cache *source* directory, hiding it from `git status` entirely.
+/cache/
 
 # Editor / OS
 .DS_Store
