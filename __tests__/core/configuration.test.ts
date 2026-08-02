@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { ConfigurationService } from './configuration.ts';
+import { ConfigurationService } from '../../src/core/configuration.ts';
 
 const writeConfiguration = (body: string): string => {
   const filePath = join(mkdtempSync(join(tmpdir(), 'tglow-')), 'config.toml');

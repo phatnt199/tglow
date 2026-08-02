@@ -1,7 +1,7 @@
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { installFileLogger } from '../core/logger-provider.ts';
+import { installFileLogger } from '../src/core/logger-provider.ts';
 
 // Registers a logger provider once per test process. Without it, any test whose
 // code-under-test logs in a catch block dies -- IGNIS defaults to winston, an

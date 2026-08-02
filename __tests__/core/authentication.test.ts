@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test';
 
-import { AuthenticationService, type IAuthenticationGateway } from './authentication.ts';
+import { AuthenticationService, type IAuthenticationGateway } from '../../src/core/authentication.ts';
 
 const buildGateway = (overrides: Partial<IAuthenticationGateway> = {}): IAuthenticationGateway => ({
   sendCode: async () => {},

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, statSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { SessionStoreService } from './session-store.ts';
+import { SessionStoreService } from '../../src/core/session-store.ts';
 
 const service = new SessionStoreService();
 const buildPath = (): string => join(mkdtempSync(join(tmpdir(), 'tglow-')), 'nested', 'session');

@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test';
 
-import { KeyNormalizerService } from './key-normalizer.ts';
+import { KeyNormalizerService } from '../../src/keys/key-normalizer.ts';
 
 const service = new KeyNormalizerService();
 

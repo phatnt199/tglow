@@ -1,7 +1,7 @@
 import { test, expect } from 'bun:test';
 
-import { VimModes } from '../keys/common/index.ts';
-import { ApplicationStoreService } from './application-store.ts';
+import { VimModes } from '../../src/keys/common/index.ts';
+import { ApplicationStoreService } from '../../src/core/application-store.ts';
 
 test('starts with sensible defaults', () => {
   const store = new ApplicationStoreService();

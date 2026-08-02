@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test';
 
-import { BindingKeys } from './binding-keys.ts';
+import { BindingKeys } from '../../src/common/binding-keys.ts';
 
 test('every binding key uses the @tglow namespace', () => {
   const values = Object.values(BindingKeys) as string[];

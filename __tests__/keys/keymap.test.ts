@@ -2,12 +2,12 @@ import { test, expect } from 'bun:test';
 
 import { Container, BindingScopes } from '@venizia/ignis-inversion';
 
-import { BindingKeys } from '../common/index.ts';
-import { ActionTypes, INITIAL_ENGINE_STATE, VimContexts, VimModes } from './common/index.ts';
-import type { IEngineState, IKey } from './common/index.ts';
-import { KeyNormalizerService } from './key-normalizer.ts';
-import { KeymapService } from './keymap.ts';
-import { VimEngineService } from './vim-engine.ts';
+import { BindingKeys } from '../../src/common/index.ts';
+import { ActionTypes, INITIAL_ENGINE_STATE, VimContexts, VimModes } from '../../src/keys/common/index.ts';
+import type { IEngineState, IKey } from '../../src/keys/common/index.ts';
+import { KeyNormalizerService } from '../../src/keys/key-normalizer.ts';
+import { KeymapService } from '../../src/keys/keymap.ts';
+import { VimEngineService } from '../../src/keys/vim-engine.ts';
 
 const build = (): { keymapService: KeymapService; engine: VimEngineService } => {
   const container = new Container({ scope: 'KeymapTest' });

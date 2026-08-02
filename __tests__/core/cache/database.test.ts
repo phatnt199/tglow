@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test';
 
-import { DatabaseService } from './database.ts';
+import { DatabaseService } from '../../../src/core/cache/database.ts';
 
 const buildDatabase = (): DatabaseService => {
   const database = new DatabaseService();

@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { DatabaseService } from './database.ts';
+import { DatabaseService } from '../../../src/core/cache/database.ts';
 
 const buildPath = (): string => join(mkdtempSync(join(tmpdir(), 'tglow-db-')), 'cache.sqlite');
 

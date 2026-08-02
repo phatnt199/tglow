@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 import { ApplicationLogger } from '@venizia/ignis-helpers';
 
-import { buildFileLoggerProvider, installFileLogger } from './logger-provider.ts';
+import { buildFileLoggerProvider, installFileLogger } from '../../src/core/logger-provider.ts';
 
 const buildLogPath = (): string => join(mkdtempSync(join(tmpdir(), 'tglow-log-')), 'tglow.log');
 

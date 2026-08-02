@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test';
 
-import { VimModes, VimContexts, ActionTypes, isVimMode } from './constants.ts';
+import { VimModes, VimContexts, ActionTypes, isVimMode } from '../../../src/keys/common/constants.ts';
 
 test('VimModes exposes every supported mode', () => {
   expect(VimModes.NORMAL).toBe('normal');
