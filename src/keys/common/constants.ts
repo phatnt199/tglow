@@ -34,6 +34,8 @@ export class ActionTypes {
   static readonly SPOILER_REVEAL = 'spoiler.reveal';
   static readonly REPLY_START = 'reply.start';
   static readonly REPLY_CANCEL = 'reply.cancel';
+  static readonly EDIT_START = 'edit.start';
+  static readonly EDIT_CANCEL = 'edit.cancel';
 }
 
 const SUPPORTED_MODES: readonly string[] = [

@@ -65,7 +65,11 @@ const pressEscape = async (renderer: TestRendererSetup): Promise<void> => {
   await renderer.flush();
 };
 
-const mount = async (opts: { messages?: IMessageRow[]; onSend?: (text: string) => Promise<void> } = {}) => {
+const mount = async (opts: {
+  messages?: IMessageRow[];
+  onSend?: (text: string) => Promise<void>;
+  onEdit?: (edit: { messageId: number; text: string }) => Promise<void>;
+} = {}) => {
   const container = new Container({ scope: 'AppTest' });
   container.bind({ key: BindingKeys.KEY_NORMALIZER }).toClass(KeyNormalizerService).setScope(BindingScopes.SINGLETON);
   container.bind({ key: BindingKeys.VIM_ENGINE }).toClass(VimEngineService).setScope(BindingScopes.SINGLETON);
@@ -101,6 +105,18 @@ const mount = async (opts: { messages?: IMessageRow[]; onSend?: (text: string) =
     }
   });
 
+  // Stands in for MessageService.edit, the same way onSend above stands in for
+  // MessageService.send: clears composerText and editingMessageId together,
+  // and only if the composer still holds exactly what was sent for editing.
+  const edited: Array<{ messageId: number; text: string }> = [];
+  const onEdit = opts.onEdit ?? (async (edit: { messageId: number; text: string }): Promise<void> => {
+    edited.push(edit);
+    await Promise.resolve();
+    if (store.getState().composerText === edit.text) {
+      store.setState({ patch: { composerText: '', editingMessageId: null } });
+    }
+  });
+
   const renderer = await renderWithKeys(
     <App
       store={store}
@@ -110,13 +126,14 @@ const mount = async (opts: { messages?: IMessageRow[]; onSend?: (text: string) =
       tokens={tokens}
       resolveSenderName={() => 'Alice'}
       onSend={onSend}
+      onEdit={onEdit}
       onQuit={() => { quit.push(true); }}
       onOpenChat={async chat => { opened.push(chat.peerId); }}
     />,
     { width: TERMINAL_WIDTH, height: TERMINAL_HEIGHT },
   );
   await renderer.flush();
-  return { renderer, store, sent, composerAtSend, opened, quit };
+  return { renderer, store, sent, composerAtSend, edited, opened, quit };
 };
 
 test('starts in NORMAL mode with both panes on screen', async () => {
@@ -250,6 +267,131 @@ test('starting a reply shrinks the message pane so the status line stays on its 
   // pushed down by one without app.tsx ever finding out.
   expect(rows[TERMINAL_HEIGHT - 1]).toContain('NORMAL');
   expect(rows[TERMINAL_HEIGHT - 1]).toContain(`1/${store.getState().messages.length}`);
+});
+
+// Task 7: editing. A single message the user sent themselves -- out: 1 --
+// used by every test below that needs something editable.
+const ownMessage: IMessageRow = {
+  peerId: 'u1', id: 1, fromId: 'me', date: 100, text: 'typo here', out: 1, entities: [], replyToMessageId: null,
+};
+
+test('e on an own message loads its text into the composer and enters insert mode', async () => {
+  const { renderer, store } = await mount({ messages: [ownMessage] });
+  await act(async () => { renderer.mockInput.pressKey('e'); });
+  await renderer.flush();
+  expect(store.getState().composerText).toBe('typo here');
+  expect(store.getState().editingMessageId).toBe(1);
+  expect(store.getState().engine.mode).toBe('insert');
+  expect(store.getState().engine.context).toBe(VimContexts.COMPOSER);
+  expect(renderer.captureCharFrame()).toContain('Editing message');
+});
+
+test("e on someone else's message does nothing and sets a status message", async () => {
+  // The default `messages` fixture (module scope, above) is out: 0
+  // throughout -- not the user's own.
+  const { renderer, store } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('e'); });
+  await renderer.flush();
+  expect(store.getState().composerText).toBe('');
+  expect(store.getState().editingMessageId).toBeNull();
+  expect(store.getState().engine.mode).toBe('normal');
+  expect(store.getState().statusMessage).toBeTruthy();
+});
+
+// The class of bug this guards against: an accidental `e` must not cost the
+// user whatever draft they already had, the same way a failed send must not.
+test('escape cancels editing and restores the composer to what it held before it started', async () => {
+  const { renderer, store } = await mount({ messages: [ownMessage] });
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('draft'); });
+  await renderer.flush();
+  await pressEscape(renderer);
+  expect(store.getState().composerText).toBe('draft');
+
+  await act(async () => { renderer.mockInput.pressKey('e'); });
+  await renderer.flush();
+  expect(store.getState().composerText).toBe('typo here');
+
+  await pressEscape(renderer);
+  expect(store.getState().composerText).toBe('draft');
+  expect(store.getState().editingMessageId).toBeNull();
+  expect(store.getState().engine.mode).toBe('normal');
+});
+
+// Mirrors "starting a reply shrinks..." above: the composer grows by one row
+// while editing too (its own "Editing message" indicator), and if
+// chromeHeight did not grow to match, the status line would lose its own row
+// to the composer's new one, silently, rather than failing loudly.
+test('starting an edit shrinks the message pane so the status line stays on its own row, uncorrupted', async () => {
+  const { renderer, store } = await mount({ messages: [ownMessage] });
+  await act(async () => { renderer.mockInput.pressKey('e'); });
+  await renderer.flush();
+  const rows = renderer.captureCharFrame().split('\n');
+  expect(rows[TERMINAL_HEIGHT - 1]).toContain('INSERT');
+  expect(rows[TERMINAL_HEIGHT - 1]).toContain(`1/${store.getState().messages.length}`);
+});
+
+test('Enter in INSERT while editing replaces the message instead of sending a new one', async () => {
+  const { renderer, store, sent, edited } = await mount({ messages: [ownMessage] });
+  await act(async () => { renderer.mockInput.pressKey('e'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText(' fixed'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+  expect(edited).toEqual([{ messageId: 1, text: 'typo here fixed' }]);
+  expect(sent).toEqual([]);
+  expect(store.getState().composerText).toBe('');
+  expect(store.getState().editingMessageId).toBeNull();
+});
+
+// Same regression class as "a send that fails leaves the typed text in the
+// composer": a failed edit must not cost the user their edit either.
+test('an edit that fails leaves the typed text in the composer', async () => {
+  const { renderer, store } = await mount({
+    messages: [ownMessage],
+    onEdit: async (): Promise<void> => { throw new Error('MESSAGE_NOT_MODIFIED'); },
+  });
+  await act(async () => { renderer.mockInput.pressKey('e'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText(' fixed'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+  expect(store.getState().composerText).toBe('typo here fixed');
+  expect(store.getState().editingMessageId).toBe(1);
+});
+
+// Same regression class as "a second Enter before the first send resolves
+// does not send twice": editing shares App's single in-flight guard rather
+// than needing a second one of its own.
+test('a second Enter before the first edit resolves does not edit twice', async () => {
+  const edited: Array<{ messageId: number; text: string }> = [];
+  let store!: ApplicationStoreService;
+  const onEdit = async (edit: { messageId: number; text: string }): Promise<void> => {
+    edited.push(edit);
+    await new Promise(resolve => { setTimeout(resolve, SEND_ROUND_TRIP_MILLISECONDS); });
+    store.setState({ patch: { composerText: '', editingMessageId: null } });
+  };
+
+  const mounted = await mount({ messages: [ownMessage], onEdit });
+  store = mounted.store;
+  const { renderer } = mounted;
+
+  await act(async () => { renderer.mockInput.pressKey('e'); });
+  await renderer.flush();
+
+  // Both presses land in the same synchronous burst, before onEdit's timer
+  // has any chance to fire -- exactly the window the regression lives in.
+  await act(async () => {
+    renderer.mockInput.pressEnter();
+    renderer.mockInput.pressEnter();
+    await new Promise(resolve => { setTimeout(resolve, SEND_SETTLE_MILLISECONDS); });
+  });
+  await renderer.flush();
+
+  expect(edited).toEqual([{ messageId: 1, text: 'typo here' }]);
 });
 
 test('i enters INSERT and jk returns to NORMAL', async () => {

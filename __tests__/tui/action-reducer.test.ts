@@ -2,7 +2,7 @@ import { test, expect } from 'bun:test';
 
 // Concrete module, not the core/ barrel -- see src/tui/action-reducer.ts for why.
 import { ApplicationStoreService, type IApplicationState } from '../../src/core/application-store.ts';
-import { ActionTypes } from '../../src/keys/common/index.ts';
+import { ActionTypes, VimContexts, VimModes } from '../../src/keys/common/index.ts';
 import { applyAction } from '../../src/tui/action-reducer.ts';
 
 const buildState = (patch: Partial<IApplicationState> = {}): IApplicationState => {
@@ -129,6 +129,44 @@ test('reply.cancel clears the reply target', () => {
   const state = buildState({ replyToMessageId: 3 });
   const patch = applyAction({ state, action: { type: ActionTypes.REPLY_CANCEL } });
   expect(patch.replyToMessageId).toBeNull();
+});
+
+test('edit.start loads the composer with the message under the cursor, when it is your own', () => {
+  const state = buildState({
+    messageCursor: 0,
+    messages: [{ peerId: 'u1', id: 9, fromId: 'me', date: 900, text: 'own message', out: 1, entities: [], replyToMessageId: null }],
+    composerText: 'draft',
+  });
+  const patch = applyAction({ state, action: { type: ActionTypes.EDIT_START } });
+  expect(patch.editingMessageId).toBe(9);
+  expect(patch.composerText).toBe('own message');
+  expect(patch.composerTextBeforeEdit).toBe('draft');
+  expect(patch.engine?.mode).toBe(VimModes.INSERT);
+  expect(patch.engine?.context).toBe(VimContexts.COMPOSER);
+});
+
+// The default buildState() fixture is out: 0 throughout -- not the user's own.
+test('edit.start refuses a message that is not your own, and says so', () => {
+  const state = buildState({ messageCursor: 0 });
+  const patch = applyAction({ state, action: { type: ActionTypes.EDIT_START } });
+  expect(patch.editingMessageId).toBeUndefined();
+  expect(patch.composerText).toBeUndefined();
+  expect(patch.engine).toBeUndefined();
+  expect(patch.statusMessage).toBeTruthy();
+});
+
+test('edit.start with no messages is harmless', () => {
+  const state = buildState({ messages: [], messageCursor: 0 });
+  expect(() => applyAction({ state, action: { type: ActionTypes.EDIT_START } })).not.toThrow();
+  expect(applyAction({ state, action: { type: ActionTypes.EDIT_START } })).toEqual({});
+});
+
+test('edit.cancel restores the composer to what it held before the edit began', () => {
+  const state = buildState({ editingMessageId: 9, composerText: 'own message, edited', composerTextBeforeEdit: 'draft' });
+  const patch = applyAction({ state, action: { type: ActionTypes.EDIT_CANCEL } });
+  expect(patch.editingMessageId).toBeNull();
+  expect(patch.composerText).toBe('draft');
+  expect(patch.composerTextBeforeEdit).toBeNull();
 });
 
 test('an unknown action type is rejected rather than ignored', () => {

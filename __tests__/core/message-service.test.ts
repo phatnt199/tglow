@@ -19,6 +19,7 @@ const buildService = (adapter: IMessageAdapter): { service: MessageService; data
 const buildAdapter = (overrides: Partial<IMessageAdapter> = {}): IMessageAdapter => ({
   fetchHistory: async () => [],
   send: async opts => buildRawMessage({ id: 99, peerId: opts.peerId, text: opts.text, out: 1, date: 999 }),
+  edit: async opts => buildRawMessage({ id: opts.messageId, peerId: opts.peerId, text: opts.text, out: 1 }),
   // MessageService never calls this -- UpdateService (__tests__/core/update-service.test.ts)
   // is what exercises it -- but IMessageAdapter requires it, so a stub keeps this fake whole.
   subscribeToNewMessages: () => (): void => {},
@@ -209,4 +210,35 @@ test('a network failure with an unreadable cache still resolves instead of throw
 
   await expect(service.loadHistory({ peerId: 'u1', limit: 50 })).resolves.toBeUndefined();
   expect(store.getState().statusMessage).toContain('offline');
+});
+
+test('editing sends the new text for the right message id', async () => {
+  const edits: Array<{ peerId: string; messageId: number; text: string }> = [];
+  const harness = buildService(buildAdapter({
+    edit: async opts => { edits.push(opts); return buildRawMessage({ id: opts.messageId, text: opts.text }); },
+  }));
+  await harness.service.edit({ peerId: 'u1', messageId: 5, text: 'fixed' });
+  expect(edits).toEqual([{ peerId: 'u1', messageId: 5, text: 'fixed' }]);
+  harness.database.close();
+});
+
+test('a successful edit updates the cached message rather than adding one', async () => {
+  const harness = buildService(buildAdapter({
+    edit: async opts => buildRawMessage({ id: opts.messageId, text: opts.text }),
+  }));
+  harness.database.insertMessages({ messages: [{ peerId: 'u1', id: 5, fromId: 'me', date: 100, text: 'typo', out: 1, entities: [], replyToMessageId: null }] });
+  await harness.service.edit({ peerId: 'u1', messageId: 5, text: 'fixed' });
+  const rows = harness.database.listMessages({ peerId: 'u1', limit: 10 });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.text).toBe('fixed');
+  harness.database.close();
+});
+
+test('a failed edit keeps the text in the composer', async () => {
+  const harness = buildService(buildAdapter({ edit: async () => { throw new Error('MESSAGE_NOT_MODIFIED'); } }));
+  harness.store.setState({ patch: { composerText: 'fixed', editingMessageId: 5 } });
+  await harness.service.edit({ peerId: 'u1', messageId: 5, text: 'fixed' });
+  expect(harness.store.getState().composerText).toBe('fixed');
+  expect(harness.store.getState().editingMessageId).toBe(5);
+  harness.database.close();
 });

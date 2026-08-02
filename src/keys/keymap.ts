@@ -50,6 +50,16 @@ export class KeymapService {
       context: '*', mode: VimModes.NORMAL, keys: 'r', description: 'Reply to message',
       action: () => [{ type: ActionTypes.REPLY_START }],
     },
+    // EDIT_START itself decides mode and focus (moving straight to INSERT,
+    // unlike REPLY_START), since it also has to decide -- looking at
+    // out on the message under the cursor -- whether to do that at all.
+    // That refusal only IApplicationState can see, so like reply's own
+    // escape, <escape> cancelling an edit in progress is intercepted
+    // directly in App (app.tsx) rather than expressed as a second binding.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: 'e', description: 'Edit message',
+      action: () => [{ type: ActionTypes.EDIT_START }],
+    },
 
     // Panes — nf echoes the author's NvimTreeFocus mapping.
     {

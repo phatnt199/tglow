@@ -13,7 +13,7 @@ const COMPOSER_WIDTH = 50;
 
 const render = async (overrides: Partial<IComposerProps> = {}): Promise<TestRendererSetup> => {
   const props: IComposerProps = {
-    text: '', mode: VimModes.NORMAL, focused: false, tokens, width: COMPOSER_WIDTH, replyingTo: null, ...overrides,
+    text: '', mode: VimModes.NORMAL, focused: false, tokens, width: COMPOSER_WIDTH, replyingTo: null, editing: false, ...overrides,
   };
   const renderer = await renderWithKeys(<Composer {...props} />, { width: props.width, height: 3 });
   await renderer.flush();
@@ -107,7 +107,7 @@ test('shows a dimmed reply preview above the prompt when replying', async () => 
   const renderer = await renderWithKeys(
     <Composer
       text="" mode={VimModes.NORMAL} focused={false} tokens={tokens} width={COMPOSER_WIDTH}
-      replyingTo={{ senderName: 'Alice', text: 'sure, lets do it' }}
+      replyingTo={{ senderName: 'Alice', text: 'sure, lets do it' }} editing={false}
     />,
     { width: COMPOSER_WIDTH, height: 4 },
   );
@@ -128,6 +128,7 @@ test('the reply preview shows only the first line, truncated to the composer wid
     <Composer
       text="" mode={VimModes.NORMAL} focused={false} tokens={tokens} width={COMPOSER_WIDTH}
       replyingTo={{ senderName: 'Alice', text: 'first line is already long enough to need truncating on its own\nsecond line' }}
+      editing={false}
     />,
     { width: COMPOSER_WIDTH, height: 4 },
   );
@@ -141,4 +142,52 @@ test('the reply preview shows only the first line, truncated to the composer wid
   expect(rows[1]!.startsWith('Replying to Alice: first line')).toBe(true);
   expect(rows[1]!.length).toBe(COMPOSER_WIDTH);
   expect(rows[1]!.endsWith('…')).toBe(true);
+});
+
+// Task 7: editing. No row appears at all when editing is false (every test
+// above relies on that default), so these are the only cases that see it.
+test('no editing row when not editing', async () => {
+  const renderer = await render({ editing: false });
+  const rows = readRows(renderer);
+  expect(rows[0]).toBe('─'.repeat(COMPOSER_WIDTH));
+  expect(rows[1]).toContain('❯');
+});
+
+test('shows a dimmed editing indicator above the prompt when editing', async () => {
+  const renderer = await renderWithKeys(
+    <Composer
+      text="fix the typo" mode={VimModes.INSERT} focused={true} tokens={tokens} width={COMPOSER_WIDTH}
+      replyingTo={null} editing={true}
+    />,
+    { width: COMPOSER_WIDTH, height: 4 },
+  );
+  await renderer.flush();
+  const rows = readRows(renderer);
+  expect(rows[0]).toBe('─'.repeat(COMPOSER_WIDTH));
+  expect(rows[1]).toContain('Editing message');
+  // The prompt is pushed down to make room -- the row above it changes, not
+  // the row itself.
+  expect(rows[2]).toContain('fix the typo');
+
+  const indicatorSpan = renderer.captureSpans().lines[1]!.spans[0]!;
+  expect(rgbToHex(indicatorSpan.fg).toLowerCase()).toBe(tokens.dim.toLowerCase());
+});
+
+// The two rows are independent props, so nothing stops both from being true
+// at once (r then e in the same session) -- proving the stacking order here
+// is deliberate, not just untested.
+test('editing and a pending reply can show together, editing row on top', async () => {
+  const renderer = await renderWithKeys(
+    <Composer
+      text="" mode={VimModes.NORMAL} focused={false} tokens={tokens} width={COMPOSER_WIDTH}
+      replyingTo={{ senderName: 'Alice', text: 'sure, lets do it' }} editing={true}
+    />,
+    { width: COMPOSER_WIDTH, height: 5 },
+  );
+  await renderer.flush();
+  const rows = readRows(renderer);
+  expect(rows[0]).toBe('─'.repeat(COMPOSER_WIDTH));
+  expect(rows[1]).toContain('Editing message');
+  expect(rows[2]).toContain('Replying to Alice: sure, lets do it');
+  expect(rows[3]).toContain('❯');
 });

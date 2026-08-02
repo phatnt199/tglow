@@ -126,6 +126,17 @@ test('r starts a reply to the message under the cursor', () => {
   expect(result.actions).toEqual([{ type: ActionTypes.REPLY_START }]);
 });
 
+test('e starts an edit of the message under the cursor', () => {
+  const { keymapService, engine } = build();
+  const result = engine.resolve({
+    state: INITIAL_ENGINE_STATE,
+    key: buildKey('e'),
+    keymap: keymapService.getBindings(),
+  });
+  expect(result.status).toBe('resolved');
+  expect(result.actions).toEqual([{ type: ActionTypes.EDIT_START }]);
+});
+
 test('describe returns only bindings for the given mode and context', () => {
   const shown = build().keymapService.describe({ mode: VimModes.NORMAL, context: VimContexts.MESSAGES });
   expect(shown.some(binding => binding.keys === 'j')).toBe(true);

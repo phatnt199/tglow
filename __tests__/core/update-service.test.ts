@@ -20,6 +20,7 @@ const buildAdapter = (): { adapter: IMessageAdapter; emit: (message: IRawMessage
   const adapter: IMessageAdapter = {
     fetchHistory: async () => [],
     send: async opts => buildRawMessage({ peerId: opts.peerId, text: opts.text }),
+    edit: async opts => buildRawMessage({ id: opts.messageId, peerId: opts.peerId, text: opts.text }),
     subscribeToNewMessages: subscribeOpts => {
       onMessage = subscribeOpts.onMessage;
       return (): void => {

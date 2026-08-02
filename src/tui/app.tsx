@@ -9,7 +9,7 @@ import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
 // points at the concrete module rather than the core/ barrel purely because
 // that is where IApplicationState is actually defined.
 import type { ApplicationStoreService, IApplicationState } from '../core/application-store.ts';
-import { ActionTypes, VimContexts, VimModes } from '../keys/common/index.ts';
+import { ActionTypes, VimContexts, VimModes, type IEngineState } from '../keys/common/index.ts';
 import type { KeyNormalizerService, KeymapService, VimEngineService } from '../keys/index.ts';
 import { applyAction } from './action-reducer.ts';
 import { resolveWhichKeyHeight, WhichKey } from './overlays/index.ts';
@@ -24,6 +24,7 @@ export interface IAppProps {
   tokens: ITokens;
   resolveSenderName: (opts: { fromId: string | null }) => string;
   onSend: (text: string) => Promise<void>;
+  onEdit: (opts: { messageId: number; text: string }) => Promise<void>;
   onQuit: () => void;
   onOpenChat: (opts: { peerId: string }) => Promise<void>;
 }
@@ -35,6 +36,8 @@ const CHROME_HEIGHT = 3;
 const STATUS_LINE_HEIGHT = 1;
 /** Composer grows by exactly this many rows while a reply is pending -- see the comment on chromeHeight below. */
 const REPLY_PREVIEW_HEIGHT = 1;
+/** Composer grows by exactly this many rows while an edit is in progress -- see the comment on chromeHeight below. */
+const EDIT_INDICATOR_HEIGHT = 1;
 /**
  * `fillchars = "vert:│"`: splits are a single rule, not a box. Boxing the
  * panes also put a doubled `┐┌` seam where two of them met.
@@ -114,7 +117,7 @@ const toFlushedText = (opts: { pending: string[] }): string => {
 
 export const App = (props: IAppProps) => {
   const {
-    store, engine, keymapService, keyNormalizer, tokens, resolveSenderName, onSend, onQuit, onOpenChat,
+    store, engine, keymapService, keyNormalizer, tokens, resolveSenderName, onSend, onEdit, onQuit, onOpenChat,
   } = props;
 
   // useSyncExternalStore re-subscribes whenever the `subscribe` argument's
@@ -182,6 +185,30 @@ export const App = (props: IAppProps) => {
       }
     }
 
+    // An in-progress edit is App-level state too, but EDIT_START (unlike
+    // REPLY_START) moves straight into INSERT as part of starting -- so this
+    // has to be checked in INSERT, not NORMAL, or the very first escape the
+    // user presses would fall through to the ordinary INSERT <escape>
+    // binding below, which only ever knows to leave insert mode. That escape
+    // is the one that must also restore whatever the composer held before
+    // EDIT_START overwrote it, or an accidental `e` followed by Escape would
+    // look exactly like the discarded-draft class of bug MessageService
+    // already exists to prevent on a failed send.
+    if (current.editingMessageId !== null && current.engine.mode === VimModes.INSERT) {
+      const editToken = keyNormalizer.toCanonicalString({ key });
+      if (editToken === OVERLAY_ESCAPE_TOKEN) {
+        store.setState({
+          patch: {
+            editingMessageId: null,
+            composerText: current.composerTextBeforeEdit ?? '',
+            composerTextBeforeEdit: null,
+            engine: { ...current.engine, mode: VimModes.NORMAL },
+          },
+        });
+        return;
+      }
+    }
+
     const keymap = keymapService.getBindings();
     let result = engine.resolve({ state: current.engine, key, keymap });
 
@@ -239,8 +266,9 @@ export const App = (props: IAppProps) => {
 
       switch (action.type) {
         case ActionTypes.COMPOSER_SEND: {
-          // The composer is MessageService's to clear, and it clears only
-          // once the message has actually gone. Emptying it here was
+          // The composer is MessageService's to clear -- send()'s or, while
+          // editingMessageId is set, edit()'s -- and it clears only once the
+          // round trip has actually resolved. Emptying it here was
           // optimistic in the worst sense: a rejected send left the user with
           // nothing to retry and no copy of what they had written, and it
           // also made the service's "still what I sent?" check permanently
@@ -250,17 +278,24 @@ export const App = (props: IAppProps) => {
           // resolving, where the composer still shows the sent text with
           // nothing on screen to say a send is in flight. Without a guard, a
           // second Enter in that window re-dispatches this case with the same
-          // non-empty string -- a duplicate send, which MessageService's own
-          // comment calls unrecoverable. Set before the call and cleared in
-          // `finally` so a rejected send releases it too; leaving it set on
-          // failure would make the composer permanently unable to send.
+          // non-empty string -- a duplicate send (or duplicate edit), which
+          // MessageService's own comment calls unrecoverable. Set before the
+          // call and cleared in `finally` so a rejection releases it too;
+          // leaving it set on failure would make the composer permanently
+          // unable to send. One guard, not one each: send and edit can never
+          // both be in flight, since editingMessageId and the composer are
+          // the same shared state either path reads before dispatching.
           if (sendInFlightRef.current) {
             break;
           }
           sendInFlightRef.current = true;
-          void onSend(accumulated.composerText)
+          const { editingMessageId, composerText } = accumulated;
+          const inFlight = editingMessageId !== null
+            ? onEdit({ messageId: editingMessageId, text: composerText })
+            : onSend(composerText);
+          void inFlight
             .catch(error => {
-              logRejection({ method: 'onSend', error });
+              logRejection({ method: editingMessageId !== null ? 'onEdit' : 'onSend', error });
             })
             .finally(() => {
               sendInFlightRef.current = false;
@@ -286,8 +321,30 @@ export const App = (props: IAppProps) => {
       }
     }
 
-    // The engine owns mode and context; action patches must not override them.
-    store.setState({ patch: { ...patch, engine: result.state } });
+    // pending/count are the engine's alone, always -- result.state is the
+    // only place either is ever correctly reset once a binding resolves
+    // (vim-engine.ts's applyStateActions), and no reducer case may touch
+    // them (MODE_SET/FOCUS_SET's own patches spread state.engine verbatim,
+    // carrying over whatever pending/count happened to predate this key,
+    // precisely because resetting them is not their job). Trusting a
+    // reducer's full patch.engine here previously let a stale pending
+    // survive a resolved FOCUS_SET, corrupting the very next key press's
+    // token sequence -- caught by "return in the chat list opens the chat"
+    // regressing the moment this line first tried `{ ...result.state,
+    // ...patch.engine }` wholesale.
+    //
+    // mode/context are different: usually result.state already agrees with
+    // the reducer, since applyStateActions mirrors MODE_SET/FOCUS_SET
+    // independently -- but EDIT_START can genuinely disagree, because
+    // whether it enters INSERT depends on `out` on the message under the
+    // cursor, state engine.resolve() never receives and structurally cannot
+    // see (a pure fold over IEngineState alone -- vim-engine.ts's own doc
+    // comment). EDIT_START's refusal branch sets no engine key at all, so
+    // result.state (unchanged mode/context) still wins then.
+    const nextEngineState: IEngineState = patch.engine
+      ? { ...result.state, mode: patch.engine.mode, context: patch.engine.context }
+      : result.state;
+    store.setState({ patch: { ...patch, engine: nextEngineState } });
   });
 
   const activeDialog = state.dialogs.find(dialog => dialog.peerId === state.activePeerId);
@@ -307,17 +364,20 @@ export const App = (props: IAppProps) => {
   // than branching on whether the overlay is actually open.
   const whichKeyBindings = keymapService.describe({ mode: state.engine.mode, context: state.engine.context });
   const isWhichKeyOpen = state.overlay === 'whichkey';
+  const isEditing = state.editingMessageId !== null;
   // The overlay replaces the composer and grows upward, so the panes above
   // it must shrink by however many rows it actually renders -- Math.max(1, …)
   // keeps at least one row for them even if a future binding table were long
   // enough to ask for more than the terminal has. Composer grows by one row
-  // of its own (REPLY_PREVIEW_HEIGHT) whenever it actually renders the "Replying
-  // to" row -- driven by this same `replyingTo`, so the two can never disagree
-  // about whether that row is on screen. Skipping this while the overlay is
-  // open is correct, not an oversight: Composer is not rendered at all then.
+  // for each of REPLY_PREVIEW_HEIGHT ("Replying to…") and EDIT_INDICATOR_HEIGHT
+  // ("Editing message") it actually renders -- driven by these same
+  // `replyingTo`/`isEditing` values, so chromeHeight can never disagree with
+  // Composer about which of its rows are on screen. Skipping both while the
+  // overlay is open is correct, not an oversight: Composer is not rendered at
+  // all then.
   const chromeHeight = isWhichKeyOpen
     ? resolveWhichKeyHeight({ bindingCount: whichKeyBindings.length, width }) + STATUS_LINE_HEIGHT
-    : CHROME_HEIGHT + (replyingTo !== null ? REPLY_PREVIEW_HEIGHT : 0);
+    : CHROME_HEIGHT + (replyingTo !== null ? REPLY_PREVIEW_HEIGHT : 0) + (isEditing ? EDIT_INDICATOR_HEIGHT : 0);
   const paneHeight = Math.max(1, height - chromeHeight);
   const messageWidth = Math.max(1, width - SIDEBAR_WIDTH - RULE_WIDTH);
 
@@ -371,6 +431,7 @@ export const App = (props: IAppProps) => {
           tokens={tokens}
           width={width}
           replyingTo={replyingTo}
+          editing={isEditing}
         />
       )}
 

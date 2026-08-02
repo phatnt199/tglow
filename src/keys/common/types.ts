@@ -35,7 +35,9 @@ export type TAction =
   | { type: typeof ActionTypes.OVERLAY_TOGGLE; overlay: TOverlay }
   | { type: typeof ActionTypes.SPOILER_REVEAL }
   | { type: typeof ActionTypes.REPLY_START }
-  | { type: typeof ActionTypes.REPLY_CANCEL };
+  | { type: typeof ActionTypes.REPLY_CANCEL }
+  | { type: typeof ActionTypes.EDIT_START }
+  | { type: typeof ActionTypes.EDIT_CANCEL };
 
 export interface IEngineState {
   mode: TVimMode;

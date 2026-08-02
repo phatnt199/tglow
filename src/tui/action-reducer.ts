@@ -6,7 +6,7 @@ import { getError } from '@venizia/ignis-inversion';
 // -- points at the concrete module rather than the core/ barrel purely
 // because that is where IApplicationState is actually defined.
 import type { IApplicationState } from '../core/application-store.ts';
-import { ActionTypes, type TAction } from '../keys/common/index.ts';
+import { ActionTypes, VimContexts, VimModes, type TAction } from '../keys/common/index.ts';
 
 const clamp = (opts: { value: number; maximum: number }): number => {
   if (opts.maximum < 0) {
@@ -86,6 +86,36 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
 
     case ActionTypes.REPLY_CANCEL: {
       return { replyToMessageId: null };
+    }
+
+    case ActionTypes.EDIT_START: {
+      const message = state.messages[state.messageCursor];
+      if (!message) {
+        return {};
+      }
+      // Refused here, in the interface, rather than left to fail at the
+      // server: out !== 1 means this message is not the user's own.
+      if (message.out !== 1) {
+        return { statusMessage: 'Can only edit your own messages' };
+      }
+      // Unlike REPLY_START, this is the only action `e` dispatches -- there
+      // is no separate FOCUS_SET/MODE_SET pair the way `i` has, because
+      // those would fire unconditionally even on the refusal branch above.
+      // So this one action also carries what i's two normally would.
+      return {
+        editingMessageId: message.id,
+        composerTextBeforeEdit: state.composerText,
+        composerText: message.text,
+        engine: { ...state.engine, context: VimContexts.COMPOSER, mode: VimModes.INSERT },
+      };
+    }
+
+    case ActionTypes.EDIT_CANCEL: {
+      return {
+        editingMessageId: null,
+        composerText: state.composerTextBeforeEdit ?? '',
+        composerTextBeforeEdit: null,
+      };
     }
 
     // Side-effecting actions are App's to perform; the reducer has no patch.

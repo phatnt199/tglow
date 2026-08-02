@@ -6,7 +6,7 @@ import type { ApplicationStoreService, IApplicationState } from './application-s
 import type { DatabaseService, IMessageRow } from './cache/index.ts';
 import type { ITelegramEntity } from './common/index.ts';
 
-const SEND_REFRESH_LIMIT = 200;
+const REPUBLISH_LIMIT = 200;
 
 export interface IRawMessage {
   id: number;
@@ -22,15 +22,16 @@ export interface IRawMessage {
 export interface IMessageAdapter {
   fetchHistory(opts: { peerId: string; limit: number }): Promise<IRawMessage[]>;
   send(opts: { peerId: string; text: string; replyToMessageId?: number }): Promise<IRawMessage>;
+  edit(opts: { peerId: string; messageId: number; text: string }): Promise<IRawMessage>;
   subscribeToNewMessages(opts: { onMessage: (message: IRawMessage) => void }): () => void;
 }
 
 export class MessageService {
   private readonly _logger: ILogger = ApplicationLogger.get(MessageService.name);
   // The limit the view is currently displaying, so a republish after send()
-  // shows the same page size loadHistory() last asked for rather than a
-  // hardcoded one -- see SEND_REFRESH_LIMIT, its fallback before loadHistory
-  // has ever run.
+  // or edit() shows the same page size loadHistory() last asked for rather
+  // than a hardcoded one -- see REPUBLISH_LIMIT, its fallback before
+  // loadHistory has ever run.
   private _historyLimit: number | null = null;
 
   constructor(
@@ -132,7 +133,7 @@ export class MessageService {
 
       const patch: Partial<IApplicationState> = {
         messages: this.forDisplay({
-          rows: this._database.listMessages({ peerId, limit: this._historyLimit ?? SEND_REFRESH_LIMIT }),
+          rows: this._database.listMessages({ peerId, limit: this._historyLimit ?? REPUBLISH_LIMIT }),
         }),
         activePeerId: peerId,
         statusMessage: null,
@@ -155,6 +156,76 @@ export class MessageService {
       if (stillUnchanged) {
         patch.composerText = '';
         patch.replyToMessageId = null;
+      }
+      this._store.setState({ patch });
+    }
+  };
+
+  /**
+   * Mirrors send() exactly: the adapter call in its own try, the cache write
+   * in another, the composer (and the editing state riding alongside it)
+   * cleared only on success and only if the user has not since typed
+   * something new. insertMessages() upserts on (peerId, id), so writing the
+   * edited row back under the same messageId updates it in place rather than
+   * appending a second one.
+   */
+  edit = async (opts: { peerId: string; messageId: number; text: string }): Promise<void> => {
+    const { peerId, messageId, text } = opts;
+
+    let edited: IRawMessage;
+    try {
+      edited = await this._adapter.edit({ peerId, messageId, text });
+    } catch (error) {
+      this._logger.for(this.edit.name).error('Edit failed | Reason: %s', error);
+      this._store.setState({ patch: { statusMessage: `Edit failed: ${toError(error).message}` } });
+      return;
+    }
+
+    // Same snapshot-after-the-only-await rule as send(): only clear the
+    // composer if the user has not since typed something new.
+    const stillUnchanged = this._store.getState().composerText === text;
+
+    try {
+      this._database.insertMessages({
+        messages: [{
+          peerId: edited.peerId,
+          id: edited.id,
+          fromId: edited.fromId,
+          date: edited.date,
+          text: edited.text,
+          out: edited.out,
+          entities: edited.entities,
+          replyToMessageId: edited.replyToMessageId,
+        }],
+      });
+
+      const patch: Partial<IApplicationState> = {
+        messages: this.forDisplay({
+          rows: this._database.listMessages({ peerId, limit: this._historyLimit ?? REPUBLISH_LIMIT }),
+        }),
+        activePeerId: peerId,
+        statusMessage: null,
+      };
+      if (stillUnchanged) {
+        patch.composerText = '';
+        patch.editingMessageId = null;
+        patch.composerTextBeforeEdit = null;
+      }
+      this._store.setState({ patch });
+    } catch (error) {
+      // The edit already reached Telegram; only the local copy is stale.
+      // Reporting this as a failed edit would invite a retry -- harmless
+      // here (re-editing to the same text is idempotent, unlike a duplicate
+      // send) but still not what "failed" should tell the user happened.
+      this._logger.for(this.edit.name).error('Edited but could not cache | Reason: %s', error);
+
+      const patch: Partial<IApplicationState> = {
+        statusMessage: `Edited, but could not save it locally: ${toError(error).message}`,
+      };
+      if (stillUnchanged) {
+        patch.composerText = '';
+        patch.editingMessageId = null;
+        patch.composerTextBeforeEdit = null;
       }
       this._store.setState({ patch });
     }

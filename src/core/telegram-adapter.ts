@@ -138,6 +138,20 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
     return toRawMessage({ message: sent });
   },
 
+  // GramJS's own EditMessageParams names the target `message`, not
+  // `messageId` -- read from node_modules/telegram/client/messages.d.ts
+  // (interface EditMessageParams, `message: Api.Message | number`, line 176;
+  // TelegramClient.editMessage's own declaration at
+  // node_modules/telegram/client/TelegramClient.d.ts:563) rather than
+  // guessed, the same discipline send's own replyTo comment above follows.
+  edit: async (editOpts: { peerId: string; messageId: number; text: string }): Promise<IRawMessage> => {
+    const edited = await opts.client.editMessage(editOpts.peerId, {
+      message: editOpts.messageId,
+      text: editOpts.text,
+    });
+    return toRawMessage({ message: edited });
+  },
+
   subscribeToNewMessages: (subscribeOpts: { onMessage: (message: IRawMessage) => void }): (() => void) => {
     // The same builder instance is used to register and unregister: GramJS's
     // removeEventHandler matches on `===` against either the event builder or

@@ -15,6 +15,10 @@ export interface IApplicationState {
   composerText: string;
   /** The message `r` targeted, or null when no reply is pending. Cleared on a successful send and on escape; preserved on a failed send. */
   replyToMessageId: number | null;
+  /** The message `e` is editing, or null when no edit is in progress. EDIT_START refuses to set this at all when the target's `out !== 1` -- you cannot edit someone else's message. Cleared on a successful edit and on the escape that cancels one; preserved on a failed edit. */
+  editingMessageId: number | null;
+  /** What composerText held the instant before EDIT_START overwrote it with the message's own text. Restored by the escape that cancels an edit, so an accidental `e` never costs the user a draft; null whenever editingMessageId is null. */
+  composerTextBeforeEdit: string | null;
   connection: TConnectionState;
   statusMessage: string | null;
   /** Which full-pane overlay is showing, if any. Orthogonal to engine.context: opening one leaves mode and pane focus exactly as they were. */
@@ -36,6 +40,8 @@ const INITIAL_STATE: IApplicationState = {
   messageCursor: 0,
   composerText: '',
   replyToMessageId: null,
+  editingMessageId: null,
+  composerTextBeforeEdit: null,
   connection: 'offline',
   statusMessage: null,
   overlay: null,
