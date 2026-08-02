@@ -81,6 +81,38 @@ test('backspace on empty text is harmless', () => {
   }).composerText).toBe('');
 });
 
+test('spoiler.reveal adds the message under the cursor', () => {
+  const state = buildState({ messageCursor: 1 });
+  const patch = applyAction({ state, action: { type: ActionTypes.SPOILER_REVEAL } });
+  expect([...patch.revealedSpoilers!]).toEqual([state.messages[1]!.id]);
+});
+
+// Guards two failure modes at once: a naive `set.has(id) ? set : ...` shortcut
+// that returns the same reference when the id is already present would pass
+// the contents check below but still break useSyncExternalStore, which bails
+// out on an unchanged reference -- so identity is asserted unconditionally,
+// not just when the content actually changes.
+test('revealing twice keeps one entry and does not throw', () => {
+  const state = buildState({ messageCursor: 0, revealedSpoilers: new Set([1]) });
+  const patch = applyAction({ state, action: { type: ActionTypes.SPOILER_REVEAL } });
+  expect([...patch.revealedSpoilers!]).toEqual([1]);
+  expect(patch.revealedSpoilers).not.toBe(state.revealedSpoilers);
+});
+
+// Reveals accumulate per message id rather than replacing whatever was
+// revealed before -- without this, revealing a second spoiler would silently
+// re-mask the first one the next time its row rendered.
+test('revealing a second message keeps the first one revealed', () => {
+  const state = buildState({ messageCursor: 1, revealedSpoilers: new Set([1]) });
+  const patch = applyAction({ state, action: { type: ActionTypes.SPOILER_REVEAL } });
+  expect([...patch.revealedSpoilers!].sort()).toEqual([1, 2]);
+});
+
+test('revealing with no messages is harmless', () => {
+  const state = buildState({ messages: [], messageCursor: 0 });
+  expect(() => applyAction({ state, action: { type: ActionTypes.SPOILER_REVEAL } })).not.toThrow();
+});
+
 test('an unknown action type is rejected rather than ignored', () => {
   expect(() =>
     applyAction({ state: buildState(), action: { type: 'nonsense' } as never }),

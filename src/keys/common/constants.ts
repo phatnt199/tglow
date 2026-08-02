@@ -31,6 +31,7 @@ export class ActionTypes {
   static readonly COMPOSER_BACKSPACE = 'composer.backspace';
   static readonly APPLICATION_QUIT = 'application.quit';
   static readonly OVERLAY_TOGGLE = 'overlay.toggle';
+  static readonly SPOILER_REVEAL = 'spoiler.reveal';
 }
 
 const SUPPORTED_MODES: readonly string[] = [

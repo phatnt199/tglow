@@ -104,6 +104,17 @@ test('nf focuses the chat list', () => {
     .toEqual([{ type: ActionTypes.FOCUS_SET, context: VimContexts.CHAT_LIST }]);
 });
 
+// z is otherwise unbound, so a lone z must become a pending prefix the same
+// way g and n already do, and zs resolves it to the reveal action.
+test('zs reveals the spoiler on the message under the cursor', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('z'), keymap });
+  expect(pending.status).toBe('pending');
+  expect(engine.resolve({ state: pending.state, key: buildKey('s'), keymap }).actions)
+    .toEqual([{ type: ActionTypes.SPOILER_REVEAL }]);
+});
+
 test('describe returns only bindings for the given mode and context', () => {
   const shown = build().keymapService.describe({ mode: VimModes.NORMAL, context: VimContexts.MESSAGES });
   expect(shown.some(binding => binding.keys === 'j')).toBe(true);

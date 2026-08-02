@@ -190,6 +190,31 @@ test('3j moves three messages', async () => {
   expect(store.getState().messageCursor).toBe(3);
 });
 
+// Task 5, end to end: z is otherwise unbound so the engine holds it as a
+// pending prefix exactly as it does for gg/nf, the reducer adds the message
+// id to revealedSpoilers as a brand-new Set, and MessageView actually
+// re-renders because useSyncExternalStore sees the reference change.
+test('zs reveals the spoiler under the cursor', async () => {
+  const spoilerMessages: IMessageRow[] = [{
+    peerId: 'u1', id: 1, fromId: 'u1', date: 100, out: 0, replyToMessageId: null,
+    text: 'the answer is 42', entities: [{ kind: 'spoiler', offset: 14, length: 2 }],
+  }];
+  const { renderer, store } = await mount({ messages: spoilerMessages });
+  expect(renderer.captureCharFrame()).toContain('█');
+  expect(renderer.captureCharFrame()).not.toContain('42');
+
+  await act(async () => {
+    renderer.mockInput.pressKey('z');
+    renderer.mockInput.pressKey('s');
+  });
+  await renderer.flush();
+
+  expect(store.getState().revealedSpoilers.has(1)).toBe(true);
+  const frame = renderer.captureCharFrame();
+  expect(frame).toContain('42');
+  expect(frame).not.toContain('█');
+});
+
 test('i enters INSERT and jk returns to NORMAL', async () => {
   const { renderer, store } = await mount();
   await act(async () => { renderer.mockInput.pressKey('i'); });

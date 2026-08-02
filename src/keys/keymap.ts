@@ -35,6 +35,13 @@ export class KeymapService {
       action: count => [{ type: ActionTypes.CURSOR_MOVE, unit: 'message', delta: -HALF_PAGE_MESSAGES * count }],
     },
 
+    // Message actions — z is otherwise unbound, so it becomes a pending
+    // prefix exactly as g does for gg, mirroring vim's own z fold prefix.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: 'zs', description: 'Reveal spoiler',
+      action: () => [{ type: ActionTypes.SPOILER_REVEAL }],
+    },
+
     // Panes — nf echoes the author's NvimTreeFocus mapping.
     {
       context: '*', mode: VimModes.NORMAL, keys: 'nf', description: 'Focus chat list',

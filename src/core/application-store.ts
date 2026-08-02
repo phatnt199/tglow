@@ -17,6 +17,12 @@ export interface IApplicationState {
   statusMessage: string | null;
   /** Which full-pane overlay is showing, if any. Orthogonal to engine.context: opening one leaves mode and pane focus exactly as they were. */
   overlay: TOverlay | null;
+  /**
+   * Ids of messages whose spoilers `zs` has revealed. Not persisted: reopening
+   * a chat rebuilds the store from scratch, so a spoiler revealed yesterday is
+   * hidden again today, which is the intended behaviour, not a bug to fix.
+   */
+  revealedSpoilers: Set<number>;
 }
 
 const INITIAL_STATE: IApplicationState = {
@@ -30,6 +36,7 @@ const INITIAL_STATE: IApplicationState = {
   connection: 'offline',
   statusMessage: null,
   overlay: null,
+  revealedSpoilers: new Set(),
 };
 
 export class ApplicationStoreService {

@@ -32,7 +32,8 @@ export type TAction =
   | { type: typeof ActionTypes.COMPOSER_INSERT_TEXT; text: string }
   | { type: typeof ActionTypes.COMPOSER_BACKSPACE }
   | { type: typeof ActionTypes.APPLICATION_QUIT }
-  | { type: typeof ActionTypes.OVERLAY_TOGGLE; overlay: TOverlay };
+  | { type: typeof ActionTypes.OVERLAY_TOGGLE; overlay: TOverlay }
+  | { type: typeof ActionTypes.SPOILER_REVEAL };
 
 export interface IEngineState {
   mode: TVimMode;

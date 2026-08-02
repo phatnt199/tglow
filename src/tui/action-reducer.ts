@@ -63,6 +63,19 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
       return { overlay: state.overlay === action.overlay ? null : action.overlay };
     }
 
+    case ActionTypes.SPOILER_REVEAL: {
+      const message = state.messages[state.messageCursor];
+      if (!message) {
+        return {};
+      }
+      // A fresh Set, cloned from the current one rather than mutated: the
+      // store is read through useSyncExternalStore, which compares by
+      // reference and bails out on an unchanged one, leaving the spoiler
+      // masked on screen even though state.revealedSpoilers itself now has
+      // the id in it.
+      return { revealedSpoilers: new Set(state.revealedSpoilers).add(message.id) };
+    }
+
     // Side-effecting actions are App's to perform; the reducer has no patch.
     case ActionTypes.CHAT_OPEN:
     case ActionTypes.COMPOSER_SEND:
