@@ -46,6 +46,9 @@ const MINIMUM_CONTENT_WIDTH = 8;
 /** A gap this long starts a new group even from the same sender. */
 const GROUP_GAP_SECONDS = 300;
 
+/** Shown in place of a sender-and-text preview when the target isn't (or isn't yet) in `messages` -- still says something rather than leaving the reply unexplained. */
+const REPLY_FALLBACK_TEXT = 'Replying to an earlier message';
+
 const MARKER = ' '.repeat(MARKER_WIDTH);
 const BLANK_GUTTER = ' '.repeat(GUTTER_WIDTH);
 const BLANK_TIME = ' '.repeat(TIME_WIDTH);
@@ -59,6 +62,8 @@ const LINK_KINDS: readonly TEntityKind[] = [
 interface IRenderedRow {
   key: string;
   messageIndex: number;
+  /** 'quote' rows render their one content span dimmed, ignoring entity/ownership colour entirely -- see the render loop below. */
+  kind: 'content' | 'quote';
   gutter: string;
   time: string;
   sender: string;
@@ -161,6 +166,27 @@ const toLogicalSpanLines = (opts: { spans: IStyledSpan[] }): IStyledSpan[][] => 
 };
 
 const isPlainSpan = (span: IStyledSpan): boolean => span.kinds.length === 0;
+
+/**
+ * `messages` here is `props.messages` -- everything this pane currently
+ * holds, not the whole cache -- so a reply to something outside that window
+ * (scrolled past, or simply never loaded) falls back to REPLY_FALLBACK_TEXT
+ * rather than an empty or misleading quote.
+ */
+const buildQuoteText = (opts: {
+  replyToMessageId: number;
+  messages: IMessageRow[];
+  resolveSenderName: (opts: { fromId: string | null }) => string;
+}): string => {
+  const { replyToMessageId, messages, resolveSenderName } = opts;
+  const target = messages.find(candidate => candidate.id === replyToMessageId);
+  if (!target) {
+    return REPLY_FALLBACK_TEXT;
+  }
+  const senderName = resolveSenderName({ fromId: target.fromId });
+  const firstLine = target.text.split(/\r\n|\r|\n/)[0] ?? '';
+  return `Replying to ${senderName}: ${firstLine}`;
+};
 
 /**
  * Every rendered row must sum to exactly `width` columns, or the highlighted
@@ -272,6 +298,29 @@ const buildRows = (opts: {
     const gutter = index === cursor ? String(index + 1) : String(Math.abs(index - cursor));
     const revealed = revealedSpoilers.has(message.id);
 
+    // Pushed before the message's own content rows, so it sits directly above
+    // them and, sharing this message's `messageIndex`, scrolls and highlights
+    // with the rest of it exactly as a wrapped continuation row already does.
+    if (message.replyToMessageId !== null) {
+      const quoteText = buildQuoteText({ replyToMessageId: message.replyToMessageId, messages, resolveSenderName });
+      rows.push({
+        key: `${message.id}:quote`,
+        messageIndex: index,
+        kind: 'quote',
+        // Blank, like a wrapped continuation row: the quote is not itself a
+        // dated, sent-by someone message, so the rail has nothing to show.
+        gutter: BLANK_GUTTER,
+        time: BLANK_TIME,
+        sender: BLANK_SENDER,
+        content: padRowContent({
+          spans: [{ text: truncateToWidth({ text: quoteText, width: contentWidth }), kinds: [], url: null }],
+          width: contentWidth,
+        }),
+        own: message.out === 1,
+        revealed,
+      });
+    }
+
     const styled = maskSpoilerSpans({
       spans: toStyledSpans({ text: message.text, entities: message.entities }),
       revealed,
@@ -284,6 +333,7 @@ const buildRows = (opts: {
       rows.push({
         key: `${message.id}:${lineIndex}`,
         messageIndex: index,
+        kind: 'content',
         gutter: opensMessage ? padStartToWidth({ text: gutter, width: GUTTER_WIDTH }) : BLANK_GUTTER,
         time: opensMessage && opensGroup ? formatTime({ date: message.date }) : BLANK_TIME,
         sender:
@@ -339,8 +389,12 @@ export const MessageView = (props: IMessageViewProps) => {
           >
             <span fg={highlighted ? tokens.chatUnread : tokens.dim}>{`${MARKER}${row.gutter} `}</span>
             <span fg={tokens.dim}>{`${row.time} ${row.sender} `}</span>
-            {row.content.map((span, spanIndex) =>
-              renderContentSpan({ span, own: row.own, revealed: row.revealed, tokens, spanKey: `${row.key}:${spanIndex}` }),
+            {row.kind === 'quote' ? (
+              <span fg={tokens.dim}>{row.content[0]?.text ?? ''}</span>
+            ) : (
+              row.content.map((span, spanIndex) =>
+                renderContentSpan({ span, own: row.own, revealed: row.revealed, tokens, spanKey: `${row.key}:${spanIndex}` }),
+              )
             )}
           </text>
         );

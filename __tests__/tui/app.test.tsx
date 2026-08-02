@@ -215,6 +215,43 @@ test('zs reveals the spoiler under the cursor', async () => {
   expect(frame).not.toContain('█');
 });
 
+test('r starts a reply and the composer shows the quoted message', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('r'); });
+  await renderer.flush();
+  expect(store.getState().replyToMessageId).toBe(store.getState().messages[store.getState().messageCursor]!.id);
+  expect(renderer.captureCharFrame()).toContain('Replying');
+});
+
+test('escape cancels a reply without leaving normal mode', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('r'); });
+  await renderer.flush();
+  await pressEscape(renderer);
+  expect(store.getState().replyToMessageId).toBeNull();
+  expect(store.getState().engine.mode).toBe('normal');
+});
+
+// The composer grows from two rows to three while replying (Task 6's own
+// "one dimmed row above the prompt"). Composer has no explicit height of its
+// own -- app.tsx budgets for it via chromeHeight, the same way it already
+// does for the which-key overlay's variable height -- so if that budget were
+// not updated too, the outer column would be handed one more row of content
+// than app.tsx told it it had, which is exactly the overdraw class of bug the
+// message view's own rail was rebuilt around.
+test('starting a reply shrinks the message pane so the status line stays on its own row, uncorrupted', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('r'); });
+  await renderer.flush();
+  const rows = renderer.captureCharFrame().split('\n');
+  // Row TERMINAL_HEIGHT - 1 is where the status line belongs regardless of
+  // reply state -- if chromeHeight had not grown to match the composer's new
+  // third row, this row would instead still hold the composer's own prompt,
+  // pushed down by one without app.tsx ever finding out.
+  expect(rows[TERMINAL_HEIGHT - 1]).toContain('NORMAL');
+  expect(rows[TERMINAL_HEIGHT - 1]).toContain(`1/${store.getState().messages.length}`);
+});
+
 test('i enters INSERT and jk returns to NORMAL', async () => {
   const { renderer, store } = await mount();
   await act(async () => { renderer.mockInput.pressKey('i'); });

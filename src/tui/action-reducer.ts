@@ -76,6 +76,18 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
       return { revealedSpoilers: new Set(state.revealedSpoilers).add(message.id) };
     }
 
+    case ActionTypes.REPLY_START: {
+      const message = state.messages[state.messageCursor];
+      if (!message) {
+        return {};
+      }
+      return { replyToMessageId: message.id };
+    }
+
+    case ActionTypes.REPLY_CANCEL: {
+      return { replyToMessageId: null };
+    }
+
     // Side-effecting actions are App's to perform; the reducer has no patch.
     case ActionTypes.CHAT_OPEN:
     case ActionTypes.COMPOSER_SEND:

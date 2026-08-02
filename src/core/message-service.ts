@@ -21,7 +21,7 @@ export interface IRawMessage {
 
 export interface IMessageAdapter {
   fetchHistory(opts: { peerId: string; limit: number }): Promise<IRawMessage[]>;
-  send(opts: { peerId: string; text: string }): Promise<IRawMessage>;
+  send(opts: { peerId: string; text: string; replyToMessageId?: number }): Promise<IRawMessage>;
   subscribeToNewMessages(opts: { onMessage: (message: IRawMessage) => void }): () => void;
 }
 
@@ -94,8 +94,8 @@ export class MessageService {
     }
   };
 
-  send = async (opts: { peerId: string; text: string }): Promise<void> => {
-    const { peerId, text } = opts;
+  send = async (opts: { peerId: string; text: string; replyToMessageId?: number }): Promise<void> => {
+    const { peerId, text, replyToMessageId } = opts;
 
     if (text.trim() === '') {
       return;
@@ -103,7 +103,7 @@ export class MessageService {
 
     let sent: IRawMessage;
     try {
-      sent = await this._adapter.send({ peerId, text });
+      sent = await this._adapter.send({ peerId, text, replyToMessageId });
     } catch (error) {
       this._logger.for(this.send.name).error('Send failed | Reason: %s', error);
       this._store.setState({ patch: { statusMessage: `Send failed: ${toError(error).message}` } });
@@ -139,6 +139,7 @@ export class MessageService {
       };
       if (stillUnchanged) {
         patch.composerText = '';
+        patch.replyToMessageId = null;
       }
       this._store.setState({ patch });
     } catch (error) {
@@ -153,6 +154,7 @@ export class MessageService {
       };
       if (stillUnchanged) {
         patch.composerText = '';
+        patch.replyToMessageId = null;
       }
       this._store.setState({ patch });
     }

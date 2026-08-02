@@ -155,9 +155,14 @@ const main = async (): Promise<void> => {
           return dialogs.find(dialog => dialog.peerId === activePeerId)?.title ?? 'them';
         },
         onSend: async (text: string): Promise<void> => {
-          const peerId = store.getState().activePeerId;
-          if (peerId) {
-            await messageService.send({ peerId, text });
+          // Read alongside activePeerId rather than threaded through
+          // IAppProps.onSend's own signature: App already hands MessageService
+          // the composer text it owns, and the reply target is the same kind
+          // of App-level state (IApplicationState, not IEngineState) -- the
+          // store already closed over here is the natural place to read it.
+          const { activePeerId, replyToMessageId } = store.getState();
+          if (activePeerId) {
+            await messageService.send({ peerId: activePeerId, text, replyToMessageId: replyToMessageId ?? undefined });
           }
         },
         onQuit: quit,

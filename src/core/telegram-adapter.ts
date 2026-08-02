@@ -126,8 +126,15 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
       .map(message => toRawMessage({ message }));
   },
 
-  send: async (sendOpts: { peerId: string; text: string }): Promise<IRawMessage> => {
-    const sent = await opts.client.sendMessage(sendOpts.peerId, { message: sendOpts.text });
+  // GramJS's own SendMessageParams names this `replyTo`, not `replyToMessageId`
+  // -- read from node_modules/telegram/client/messages.d.ts rather than
+  // guessed, since a wrong name here sends an ordinary message with no error
+  // at all, silently dropping the reply.
+  send: async (sendOpts: { peerId: string; text: string; replyToMessageId?: number }): Promise<IRawMessage> => {
+    const sent = await opts.client.sendMessage(sendOpts.peerId, {
+      message: sendOpts.text,
+      replyTo: sendOpts.replyToMessageId,
+    });
     return toRawMessage({ message: sent });
   },
 

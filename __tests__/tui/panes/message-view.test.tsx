@@ -534,6 +534,60 @@ test('a styled message carrying newlines still renders one row per line', async 
 // the column the rail depends on, so message-view.tsx normalises it to a
 // single space on the styled path the same way wrapText already did on the
 // plain-text path it replaces.
+// Task 6: reply. A quote row sits above any message carrying a
+// replyToMessageId, so it must line up at the same content column as every
+// other row here -- see the wrapped-continuation test above for the bug this
+// guards against if it does not.
+test('a message with a reply target shows a dimmed quote row above it, at the content column', async () => {
+  const withReply: IMessageRow[] = [
+    { peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'original text here', out: 0, entities: [], replyToMessageId: null },
+    { peerId: 'u1', id: 2, fromId: 'me', date: 200, text: 'my reply', out: 1, entities: [], replyToMessageId: 1 },
+  ];
+  const renderer = await render({ messages: withReply, cursor: 1, width: 60, height: 8 });
+  const rows = readRows(renderer);
+  const quoteRowIndex = rows.findIndex(row => row.includes('Replying to'));
+  expect(quoteRowIndex).toBeGreaterThanOrEqual(0);
+  expect(rows[quoteRowIndex]).toContain('Replying to Alice: original text here');
+  expect(rows[quoteRowIndex]!.slice(0, RAIL_COLUMNS)).toBe(' '.repeat(RAIL_COLUMNS));
+
+  const spans = readSpans(renderer, quoteRowIndex);
+  expect(spans[spans.length - 1]!.foreground).toBe(tokens.dim.toLowerCase());
+});
+
+test('a reply target outside the currently held history shows a generic fallback', async () => {
+  const orphanReply: IMessageRow[] = [
+    { peerId: 'u1', id: 5, fromId: 'u1', date: 500, text: 'reply to nothing loaded', out: 0, entities: [], replyToMessageId: 999 },
+  ];
+  const renderer = await render({ messages: orphanReply, cursor: 0, width: 60 });
+  expect(renderer.captureCharFrame()).toContain('Replying to an earlier message');
+});
+
+test('a message with no reply target shows no quote row', async () => {
+  const renderer = await render({ cursor: 0 });
+  expect(renderer.captureCharFrame()).not.toContain('Replying to');
+});
+
+// The quote row shares its message's messageIndex, so it must be swept into
+// the same cursorline highlight as the rest of that message -- exactly how a
+// wrapped continuation row already is.
+test('the quote row is highlighted along with the rest of the cursor message', async () => {
+  const withReply: IMessageRow[] = [
+    { peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'original', out: 0, entities: [], replyToMessageId: null },
+    { peerId: 'u1', id: 2, fromId: 'me', date: 200, text: 'my reply', out: 1, entities: [], replyToMessageId: 1 },
+  ];
+  const renderer = await render({ messages: withReply, cursor: 1, width: 60, height: 8, focused: true });
+  const rows = readRows(renderer);
+  const quoteRowIndex = rows.findIndex(row => row.includes('Replying to'));
+  // Asserted explicitly, not just implied by the spans check below: an
+  // `every()` over the empty array readSpans(renderer, -1) returns would
+  // otherwise pass vacuously if the quote row were missing entirely, proving
+  // nothing about highlighting at all.
+  expect(quoteRowIndex).toBeGreaterThanOrEqual(0);
+  const spans = readSpans(renderer, quoteRowIndex);
+  expect(spans.length).toBeGreaterThan(0);
+  expect(spans.every(span => span.background === tokens.messageCursor.toLowerCase())).toBe(true);
+});
+
 test('a tab in a message becomes a single space', async () => {
   const renderer = await render({
     messages: [{

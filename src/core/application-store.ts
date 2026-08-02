@@ -13,6 +13,8 @@ export interface IApplicationState {
   chatCursor: number;
   messageCursor: number;
   composerText: string;
+  /** The message `r` targeted, or null when no reply is pending. Cleared on a successful send and on escape; preserved on a failed send. */
+  replyToMessageId: number | null;
   connection: TConnectionState;
   statusMessage: string | null;
   /** Which full-pane overlay is showing, if any. Orthogonal to engine.context: opening one leaves mode and pane focus exactly as they were. */
@@ -33,6 +35,7 @@ const INITIAL_STATE: IApplicationState = {
   chatCursor: 0,
   messageCursor: 0,
   composerText: '',
+  replyToMessageId: null,
   connection: 'offline',
   statusMessage: null,
   overlay: null,

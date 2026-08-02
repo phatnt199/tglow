@@ -32,6 +32,8 @@ export class ActionTypes {
   static readonly APPLICATION_QUIT = 'application.quit';
   static readonly OVERLAY_TOGGLE = 'overlay.toggle';
   static readonly SPOILER_REVEAL = 'spoiler.reveal';
+  static readonly REPLY_START = 'reply.start';
+  static readonly REPLY_CANCEL = 'reply.cancel';
 }
 
 const SUPPORTED_MODES: readonly string[] = [

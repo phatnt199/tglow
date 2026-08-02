@@ -113,6 +113,24 @@ test('revealing with no messages is harmless', () => {
   expect(() => applyAction({ state, action: { type: ActionTypes.SPOILER_REVEAL } })).not.toThrow();
 });
 
+test('reply.start targets the message under the cursor', () => {
+  const state = buildState({ messageCursor: 2 });
+  const patch = applyAction({ state, action: { type: ActionTypes.REPLY_START } });
+  expect(patch.replyToMessageId).toBe(state.messages[2]!.id);
+});
+
+test('reply.start with no messages is harmless', () => {
+  const state = buildState({ messages: [], messageCursor: 0 });
+  expect(() => applyAction({ state, action: { type: ActionTypes.REPLY_START } })).not.toThrow();
+  expect(applyAction({ state, action: { type: ActionTypes.REPLY_START } })).toEqual({});
+});
+
+test('reply.cancel clears the reply target', () => {
+  const state = buildState({ replyToMessageId: 3 });
+  const patch = applyAction({ state, action: { type: ActionTypes.REPLY_CANCEL } });
+  expect(patch.replyToMessageId).toBeNull();
+});
+
 test('an unknown action type is rejected rather than ignored', () => {
   expect(() =>
     applyAction({ state: buildState(), action: { type: 'nonsense' } as never }),

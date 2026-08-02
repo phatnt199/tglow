@@ -115,6 +115,17 @@ test('zs reveals the spoiler on the message under the cursor', () => {
     .toEqual([{ type: ActionTypes.SPOILER_REVEAL }]);
 });
 
+test('r starts a reply to the message under the cursor', () => {
+  const { keymapService, engine } = build();
+  const result = engine.resolve({
+    state: INITIAL_ENGINE_STATE,
+    key: buildKey('r'),
+    keymap: keymapService.getBindings(),
+  });
+  expect(result.status).toBe('resolved');
+  expect(result.actions).toEqual([{ type: ActionTypes.REPLY_START }]);
+});
+
 test('describe returns only bindings for the given mode and context', () => {
   const shown = build().keymapService.describe({ mode: VimModes.NORMAL, context: VimContexts.MESSAGES });
   expect(shown.some(binding => binding.keys === 'j')).toBe(true);

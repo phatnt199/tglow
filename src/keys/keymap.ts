@@ -41,6 +41,15 @@ export class KeymapService {
       context: '*', mode: VimModes.NORMAL, keys: 'zs', description: 'Reveal spoiler',
       action: () => [{ type: ActionTypes.SPOILER_REVEAL }],
     },
+    // <escape> cancels the reply this starts, but only when one is pending --
+    // that condition lives in IApplicationState, which no binding's action()
+    // can see, so App intercepts it directly (app.tsx) the same way it
+    // already does for the which-key overlay's own escape, rather than a
+    // second binding here.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: 'r', description: 'Reply to message',
+      action: () => [{ type: ActionTypes.REPLY_START }],
+    },
 
     // Panes — nf echoes the author's NvimTreeFocus mapping.
     {

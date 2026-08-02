@@ -13,7 +13,7 @@ const COMPOSER_WIDTH = 50;
 
 const render = async (overrides: Partial<IComposerProps> = {}): Promise<TestRendererSetup> => {
   const props: IComposerProps = {
-    text: '', mode: VimModes.NORMAL, focused: false, tokens, width: COMPOSER_WIDTH, ...overrides,
+    text: '', mode: VimModes.NORMAL, focused: false, tokens, width: COMPOSER_WIDTH, replyingTo: null, ...overrides,
   };
   const renderer = await renderWithKeys(<Composer {...props} />, { width: props.width, height: 3 });
   await renderer.flush();
@@ -92,4 +92,53 @@ test('a wide-character message is measured in columns, not code points', async (
   expect(rows[2]!.trim()).toBe('');
   expect(renderer.captureSpans().lines[1]!.spans.reduce((total, span) => total + span.width, 0))
     .toBe(COMPOSER_WIDTH);
+});
+
+// Task 6: replying. No row appears at all when replyingTo is null (every test
+// above relies on that default), so these are the only cases that see it.
+test('no reply row when not replying', async () => {
+  const renderer = await render({ replyingTo: null });
+  const rows = readRows(renderer);
+  expect(rows[0]).toBe('─'.repeat(COMPOSER_WIDTH));
+  expect(rows[1]).toContain('❯');
+});
+
+test('shows a dimmed reply preview above the prompt when replying', async () => {
+  const renderer = await renderWithKeys(
+    <Composer
+      text="" mode={VimModes.NORMAL} focused={false} tokens={tokens} width={COMPOSER_WIDTH}
+      replyingTo={{ senderName: 'Alice', text: 'sure, lets do it' }}
+    />,
+    { width: COMPOSER_WIDTH, height: 4 },
+  );
+  await renderer.flush();
+  const rows = readRows(renderer);
+  expect(rows[0]).toBe('─'.repeat(COMPOSER_WIDTH));
+  expect(rows[1]).toContain('Replying to Alice: sure, lets do it');
+  // The prompt is pushed down to make room -- the row above it changes, not
+  // the row itself.
+  expect(rows[2]).toContain('❯');
+
+  const previewSpan = renderer.captureSpans().lines[1]!.spans[0]!;
+  expect(rgbToHex(previewSpan.fg).toLowerCase()).toBe(tokens.dim.toLowerCase());
+});
+
+test('the reply preview shows only the first line, truncated to the composer width', async () => {
+  const renderer = await renderWithKeys(
+    <Composer
+      text="" mode={VimModes.NORMAL} focused={false} tokens={tokens} width={COMPOSER_WIDTH}
+      replyingTo={{ senderName: 'Alice', text: 'first line is already long enough to need truncating on its own\nsecond line' }}
+    />,
+    { width: COMPOSER_WIDTH, height: 4 },
+  );
+  await renderer.flush();
+  const rows = readRows(renderer);
+  expect(rows[1]).not.toContain('second line');
+  // Anchored on the literal prefix, not a bare `toContain('…')` -- the
+  // prompt's own empty-composer hint ("press i to write…") already contains
+  // an ellipsis, so that weaker assertion would pass even with this feature
+  // entirely unimplemented and the row never inserted.
+  expect(rows[1]!.startsWith('Replying to Alice: first line')).toBe(true);
+  expect(rows[1]!.length).toBe(COMPOSER_WIDTH);
+  expect(rows[1]!.endsWith('…')).toBe(true);
 });

@@ -33,6 +33,8 @@ const SIDEBAR_WIDTH = 22;
 const CHROME_HEIGHT = 3;
 /** The status line is always exactly one row, whichever chrome sits above it. */
 const STATUS_LINE_HEIGHT = 1;
+/** Composer grows by exactly this many rows while a reply is pending -- see the comment on chromeHeight below. */
+const REPLY_PREVIEW_HEIGHT = 1;
 /**
  * `fillchars = "vert:│"`: splits are a single rule, not a box. Boxing the
  * panes also put a doubled `┐┌` seam where two of them met.
@@ -164,6 +166,22 @@ export const App = (props: IAppProps) => {
       }
     }
 
+    // A pending reply is App-level state (IApplicationState), the same
+    // category as overlay above, so escape has to be intercepted here too:
+    // KeymapService's bindings are static and have no way to see whether a
+    // reply is pending, so there is no way to express "bound only sometimes"
+    // as a keymap entry. Checked only in NORMAL mode -- in INSERT, escape
+    // still means "leave insert mode" first, exactly as it does today; a
+    // second escape once back in NORMAL then cancels the reply. Unreachable
+    // while the overlay is open: that block above always returns first.
+    if (current.replyToMessageId !== null && current.engine.mode === VimModes.NORMAL) {
+      const replyToken = keyNormalizer.toCanonicalString({ key });
+      if (replyToken === OVERLAY_ESCAPE_TOKEN) {
+        store.setState({ patch: { replyToMessageId: null } });
+        return;
+      }
+    }
+
     const keymap = keymapService.getBindings();
     let result = engine.resolve({ state: current.engine, key, keymap });
 
@@ -273,6 +291,17 @@ export const App = (props: IAppProps) => {
   });
 
   const activeDialog = state.dialogs.find(dialog => dialog.peerId === state.activePeerId);
+  // Found rather than assumed: REPLY_START can only ever target a message
+  // still in state.messages (Task 6's action-reducer.ts reads it straight off
+  // state.messages[state.messageCursor]), but resolving it here rather than
+  // trusting that invariant means a target that later fell out of the loaded
+  // window degrades to no preview instead of a crash.
+  const replyTargetMessage = state.replyToMessageId === null
+    ? null
+    : state.messages.find(message => message.id === state.replyToMessageId) ?? null;
+  const replyingTo = replyTargetMessage
+    ? { senderName: resolveSenderName({ fromId: replyTargetMessage.fromId }), text: replyTargetMessage.text }
+    : null;
   // describe() is cheap (a filter + map over a couple dozen bindings at
   // most) and pure, so it costs nothing to compute unconditionally rather
   // than branching on whether the overlay is actually open.
@@ -281,10 +310,14 @@ export const App = (props: IAppProps) => {
   // The overlay replaces the composer and grows upward, so the panes above
   // it must shrink by however many rows it actually renders -- Math.max(1, …)
   // keeps at least one row for them even if a future binding table were long
-  // enough to ask for more than the terminal has.
+  // enough to ask for more than the terminal has. Composer grows by one row
+  // of its own (REPLY_PREVIEW_HEIGHT) whenever it actually renders the "Replying
+  // to" row -- driven by this same `replyingTo`, so the two can never disagree
+  // about whether that row is on screen. Skipping this while the overlay is
+  // open is correct, not an oversight: Composer is not rendered at all then.
   const chromeHeight = isWhichKeyOpen
     ? resolveWhichKeyHeight({ bindingCount: whichKeyBindings.length, width }) + STATUS_LINE_HEIGHT
-    : CHROME_HEIGHT;
+    : CHROME_HEIGHT + (replyingTo !== null ? REPLY_PREVIEW_HEIGHT : 0);
   const paneHeight = Math.max(1, height - chromeHeight);
   const messageWidth = Math.max(1, width - SIDEBAR_WIDTH - RULE_WIDTH);
 
@@ -337,6 +370,7 @@ export const App = (props: IAppProps) => {
           focused={state.engine.context === VimContexts.COMPOSER}
           tokens={tokens}
           width={width}
+          replyingTo={replyingTo}
         />
       )}
 

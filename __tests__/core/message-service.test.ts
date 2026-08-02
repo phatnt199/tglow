@@ -166,6 +166,33 @@ test('a send that resolves after the composer changes leaves the newer text alon
   database.close();
 });
 
+test('sending with a reply target passes it to the adapter', async () => {
+  const sent: Array<{ text: string; replyToMessageId?: number }> = [];
+  const harness = buildService(buildAdapter({
+    send: async opts => { sent.push(opts); return buildRawMessage({ text: opts.text }); },
+  }));
+  await harness.service.send({ peerId: 'u1', text: 'sure', replyToMessageId: 7 });
+  expect(sent[0]!.replyToMessageId).toBe(7);
+  harness.database.close();
+});
+
+test('a successful reply clears the reply target', async () => {
+  const harness = buildService(buildAdapter());
+  harness.store.setState({ patch: { activePeerId: 'u1', composerText: 'sure', replyToMessageId: 7 } });
+  await harness.service.send({ peerId: 'u1', text: 'sure', replyToMessageId: 7 });
+  expect(harness.store.getState().replyToMessageId).toBeNull();
+  harness.database.close();
+});
+
+test('a failed reply keeps both the text and the reply target', async () => {
+  const harness = buildService(buildAdapter({ send: async () => { throw new Error('FLOOD_WAIT_30'); } }));
+  harness.store.setState({ patch: { composerText: 'sure', replyToMessageId: 7 } });
+  await harness.service.send({ peerId: 'u1', text: 'sure', replyToMessageId: 7 });
+  expect(harness.store.getState().composerText).toBe('sure');
+  expect(harness.store.getState().replyToMessageId).toBe(7);
+  harness.database.close();
+});
+
 // The fallback read itself must not be able to throw: loadHistory() is
 // invoked fire-and-forget by its caller, so a second exception escaping the
 // catch would become an unhandled rejection instead of a status message.
