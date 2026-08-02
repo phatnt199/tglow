@@ -150,8 +150,14 @@ versus `Binding.bindScope`), so this is tglow's ruling, not an inherited one.
 - **Explicit return types** on every function.
 - **Options object** for arguments, conventionally named `opts`:
   `resolve(opts: { state: IEngineState; key: IKey })`, not `resolve(state, key)`.
-  A single unambiguous argument may stay positional (`ApplicationLogger.get(scope)`
-  is IGNIS's own precedent).
+  Two exceptions:
+  - A single unambiguous primitive may stay positional — `ApplicationLogger.get(scope)`
+    is IGNIS's own precedent.
+  - A single, fully-typed **domain object** is named for what it is, not `opts`:
+    `upsertPeer(peer: IPeerInput)`, `upsertDialog(dialog: IDialogInput)`. The rule
+    exists to stop callers mixing up positional arguments; one named, typed entity
+    cannot be mixed up, and `peer` tells the reader more than `opts` would.
+    `opts` is for an ad-hoc bag of arguments — `listMessages(opts: { peerId, limit })`.
 - Naming verbs: `generate*`, `build*`, `to*`, `is*`, `extract*`, `resolve*`.
 
 ---
