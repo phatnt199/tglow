@@ -96,6 +96,14 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
       return { statusMessage: `${urls[0]} (+${urls.length - 1} more)` };
     }
 
+    // The only thing that clears integrityWarning. Nothing else may: the field
+    // exists precisely because statusMessage is cleared as a matter of course
+    // by loadHistory/send/edit/delete, which is how "some missed messages
+    // could not be saved" was erased before the user ever saw it.
+    case ActionTypes.WARNING_DISMISS: {
+      return { integrityWarning: null };
+    }
+
     case ActionTypes.REPLY_START: {
       const message = state.messages[state.messageCursor];
       if (!message) {
@@ -124,7 +132,14 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
       // So this one action also carries what i's two normally would.
       return {
         editingMessageId: message.id,
-        composerTextBeforeEdit: state.composerText,
+        // Captured only when no edit is already under way. Unconditionally,
+        // a second `e` overwrote the saved draft with the *first* message's
+        // own text, so the <escape> that cancels restored that instead --
+        // `e` `jk` `e` `<escape>` destroyed the very draft this field exists
+        // to protect.
+        composerTextBeforeEdit: state.editingMessageId === null
+          ? state.composerText
+          : state.composerTextBeforeEdit,
         composerText: message.text,
         engine: { ...state.engine, context: VimContexts.COMPOSER, mode: VimModes.INSERT },
       };

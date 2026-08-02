@@ -4,7 +4,8 @@ import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
 import { BindingKeys } from '../common/index.ts';
 import type { ApplicationStoreService, IApplicationState } from './application-store.ts';
 import type { DatabaseService, IMessageRow } from './cache/index.ts';
-import type { IMessageAdapter, IRawMessage } from './message-service.ts';
+import type { ILiveMessage, IMessageAdapter, IRawMessage } from './message-service.ts';
+import { advanceUpdateState } from './update-state.ts';
 
 // Mirrors MessageService's SEND_REFRESH_LIMIT and main.ts's HISTORY_LIMIT: the
 // page size a live republish shows. UpdateService cannot see the limit
@@ -12,6 +13,21 @@ import type { IMessageAdapter, IRawMessage } from './message-service.ts';
 // state on a different instance -- so it keeps its own, generous enough for a
 // single screen of history.
 const MESSAGE_REFRESH_LIMIT = 200;
+
+/**
+ * Where a message reached `apply` from. The two are identical downstream --
+ * same cache write, same republish -- with exactly one exception, which is why
+ * this exists at all: the server's own `unreadCount`, fetched by
+ * DialogService.sync() before catch-up runs, already counts every message the
+ * difference is about to replay. Counting a backfill again inflates the badge
+ * on every launch, and nothing but a later sync ever writes it back down.
+ */
+export class MessageOrigins {
+  static readonly LIVE = 'live';
+  static readonly BACKFILL = 'backfill';
+}
+
+export type TMessageOrigin = (typeof MessageOrigins)[Exclude<keyof typeof MessageOrigins, 'prototype'>];
 
 export class UpdateService {
   private readonly _logger: ILogger = ApplicationLogger.get(UpdateService.name);
@@ -38,13 +54,23 @@ export class UpdateService {
    * task does not subscribe to), so only DialogService.sync's own server
    * fetch ever advances it -- same reasoning as pinned, just preserved rather
    * than defaulted forward.
+   *
+   * A backfill carries the count over untouched for the same reason `out`
+   * does: it is already counted. DialogService.sync() writes the server's
+   * authoritative unreadCount immediately before catch-up runs (main.ts), and
+   * that figure was computed by the server over exactly the messages the
+   * difference is now replaying. The ordering fields still move -- a chat that
+   * was spoken to while tglow was closed genuinely belongs at the top of the
+   * list with that message on it.
    */
-  private touchDialog = (message: IRawMessage): void => {
+  private touchDialog = (opts: { message: IRawMessage; origin: TMessageOrigin }): void => {
+    const { message, origin } = opts;
     const existing = this._database.listDialogs().find(dialog => dialog.peerId === message.peerId);
+    const carriedOver = existing?.unreadCount ?? 0;
     this._database.upsertDialog({
       peerId: message.peerId,
       pinned: existing?.pinned ?? 0,
-      unreadCount: message.out ? (existing?.unreadCount ?? 0) : (existing?.unreadCount ?? 0) + 1,
+      unreadCount: message.out || origin === MessageOrigins.BACKFILL ? carriedOver : carriedOver + 1,
       lastMessageAt: message.date,
       topMessageId: message.id,
       readOutboxMaxId: existing?.readOutboxMaxId ?? 0,
@@ -63,7 +89,8 @@ export class UpdateService {
    * message is lost permanently. A live caller has nothing to do with the
    * answer and ignores it.
    */
-  apply = (message: IRawMessage): boolean => {
+  apply = (opts: { message: IRawMessage; origin: TMessageOrigin }): boolean => {
+    const { message, origin } = opts;
     try {
       // Always, whatever chat it belongs to -- the cache is the only place
       // de-duplication happens, and the chat-list refresh below depends on
@@ -80,7 +107,7 @@ export class UpdateService {
           replyToMessageId: message.replyToMessageId,
         }],
       });
-      this.touchDialog(message);
+      this.touchDialog({ message, origin });
 
       const state = this._store.getState();
       const patch: Partial<IApplicationState> = { dialogs: this._database.listDialogs() };
@@ -119,7 +146,35 @@ export class UpdateService {
     }
   };
 
+  /**
+   * The live half of `sync_state`. Before this existed, pts was written only
+   * by DifferenceService.catchUp() -- once, at startup -- so it never moved
+   * during a session, and the next launch asked for the difference from before
+   * the previous session began. Everything received live was re-delivered:
+   * messages already read, already acked, each one counted into an unread
+   * badge a second time.
+   *
+   * Gated on apply() having actually returned true, the same invariant
+   * catchUp holds for a backfill: advancing past a message the cache refused
+   * loses it permanently, because a difference only ever runs forward.
+   */
+  private receive = (live: ILiveMessage): void => {
+    const applied = this.apply({ message: live.message, origin: MessageOrigins.LIVE });
+    if (!applied || live.pts === null) {
+      return;
+    }
+
+    try {
+      advanceUpdateState({ database: this._database, pts: live.pts, date: live.message.date });
+    } catch (error) {
+      // Same reasoning as apply()'s own catch: this runs on GramJS's event
+      // loop, so an escaping error is an unhandled rejection. A pts that
+      // failed to record costs a re-delivery next launch, not a lost message.
+      this._logger.for(this.receive.name).error('Could not record the live update state | Reason: %s', error);
+    }
+  };
+
   start = (): (() => void) => {
-    return this._adapter.subscribeToNewMessages({ onMessage: this.apply });
+    return this._adapter.subscribeToNewMessages({ onMessage: this.receive });
   };
 }

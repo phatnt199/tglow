@@ -24,6 +24,7 @@ const render = async (overrides: Partial<IStatusLineProps> = {}): Promise<TestRe
     tokens,
     width: STATUS_WIDTH,
     confirming: false,
+    warning: false,
     ...overrides,
   };
   const renderer = await renderWithKeys(<StatusLine {...props} />, { width: props.width, height: 1 });

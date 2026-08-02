@@ -375,11 +375,24 @@ export const App = (props: IAppProps) => {
         case ActionTypes.CURSOR_MOVE:
         case ActionTypes.CURSOR_EDGE: {
           // The other of the two moments Task 9's brief names markRead for.
-          // Gated on unit === 'message' specifically so chat-list movement
-          // (unit: 'chat') can never reach this at all -- not suppressed by a
-          // debounce or a flag, structurally excluded.
+          // Gated on unit === 'message' so chat-list movement (unit: 'chat')
+          // can never reach this at all -- not suppressed by a debounce or a
+          // flag, structurally excluded.
+          //
+          // The unit alone was not enough. gg, <S-g>, <C-d> and <C-u> are
+          // `context: '*'` bindings carrying unit: 'message' (keymap.ts), so
+          // they move the *message* cursor while the user is browsing the chat
+          // list -- and <S-g> from there acked the open chat on one keystroke,
+          // which is precisely the never-auto-read guarantee this pair of
+          // conditions exists to keep. Excluding the chat list rather than
+          // requiring the messages pane: the message pane is on screen and its
+          // cursor is visibly moving in COMPOSER context too (i, then escape,
+          // then G), and that is still the user reading their own chat.
           const { activePeerId, messages } = accumulated;
           if (action.unit !== 'message' || !activePeerId) {
+            break;
+          }
+          if (accumulated.engine.context === VimContexts.CHAT_LIST) {
             break;
           }
           const newCursor = patch.messageCursor ?? accumulated.messageCursor;
@@ -428,6 +441,21 @@ export const App = (props: IAppProps) => {
   });
 
   const activeDialog = state.dialogs.find(dialog => dialog.peerId === state.activePeerId);
+  const isConfirming = state.pendingConfirmation !== null;
+  // Four claims on one row, most urgent first. The confirmation prompt wins
+  // outright: it is the only thing the user is obliged to answer, and a
+  // swallowed y/n question is worse than a delayed warning. integrityWarning
+  // then outranks statusMessage rather than falling back to it, because
+  // statusMessage carries things like "No link in this message" that nothing
+  // ever clears -- a warning that ranked below those would be one keystroke
+  // away from being hidden for the rest of the session, which is the bug this
+  // field exists to fix, in a new shape.
+  const isWarning = !isConfirming && state.integrityWarning !== null;
+  const statusTitle = (isConfirming ? state.statusMessage : null)
+    ?? state.integrityWarning
+    ?? state.statusMessage
+    ?? activeDialog?.title
+    ?? 'no chat';
   // Found rather than assumed: REPLY_START can only ever target a message
   // still in state.messages (Task 6's action-reducer.ts reads it straight off
   // state.messages[state.messageCursor]), but resolving it here rather than
@@ -518,14 +546,15 @@ export const App = (props: IAppProps) => {
 
       <StatusLine
         mode={state.engine.mode}
-        title={state.statusMessage ?? activeDialog?.title ?? 'no chat'}
+        title={statusTitle}
         unreadCount={activeDialog?.unreadCount ?? 0}
         position={state.messages.length === 0 ? 0 : state.messageCursor + 1}
         total={state.messages.length}
         hint="\ for keys"
         tokens={tokens}
         width={width}
-        confirming={state.pendingConfirmation !== null}
+        confirming={isConfirming}
+        warning={isWarning}
       />
     </box>
   );

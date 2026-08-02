@@ -21,6 +21,16 @@ export interface IApplicationState {
   composerTextBeforeEdit: string | null;
   connection: TConnectionState;
   statusMessage: string | null;
+  /**
+   * The one status the user must not be able to miss: messages were, or may
+   * have been, lost. Its own field rather than a severity on statusMessage
+   * because statusMessage is *routinely* cleared -- loadHistory, send, edit and
+   * delete all patch it to null on success -- and main.ts calls loadHistory
+   * immediately after catch-up, so a data-integrity warning written to
+   * statusMessage was erased before the first frame every single time. Nothing
+   * clears this but the user, with <C-l>.
+   */
+  integrityWarning: string | null;
   /** Which full-pane overlay is showing, if any. Orthogonal to engine.context: opening one leaves mode and pane focus exactly as they were. */
   overlay: TOverlay | null;
   /**
@@ -52,6 +62,7 @@ const INITIAL_STATE: IApplicationState = {
   composerTextBeforeEdit: null,
   connection: 'offline',
   statusMessage: null,
+  integrityWarning: null,
   overlay: null,
   pendingConfirmation: null,
   revealedSpoilers: new Set(),

@@ -377,6 +377,38 @@ test('escape cancels editing and restores the composer to what it held before it
   expect(store.getState().engine.mode).toBe('normal');
 });
 
+// Final review, Important 2, driven the way the reviewer reproduced it: `e`
+// `jk` `e` `<escape>`. The second EDIT_START used to overwrite the saved draft
+// with the first message's own text, so this escape handed back "typo here"
+// rather than "draft" -- the draft was gone.
+test('e twice, then escape, still gives the draft back and not the message text', async () => {
+  const { renderer, store } = await mount({ messages: [ownMessage] });
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('draft'); });
+  await renderer.flush();
+  await pressEscape(renderer);
+  expect(store.getState().composerText).toBe('draft');
+
+  await act(async () => { renderer.mockInput.pressKey('e'); });
+  await renderer.flush();
+  // jk, this author's way out of insert mode, back to NORMAL so `e` binds again.
+  await act(async () => {
+    renderer.mockInput.pressKey('j');
+    renderer.mockInput.pressKey('k');
+  });
+  await renderer.flush();
+  expect(store.getState().engine.mode).toBe('normal');
+
+  await act(async () => { renderer.mockInput.pressKey('e'); });
+  await renderer.flush();
+  expect(store.getState().composerText).toBe('typo here');
+
+  await pressEscape(renderer);
+  expect(store.getState().composerText).toBe('draft');
+  expect(store.getState().editingMessageId).toBeNull();
+});
+
 // Mirrors "starting a reply shrinks..." above: the composer grows by one row
 // while editing too (its own "Editing message" indicator), and if
 // chromeHeight did not grow to match, the status line would lose its own row
@@ -796,6 +828,61 @@ test('moving the cursor within the chat list does not mark anything read', async
   expect(marked).toEqual([]);
 });
 
+/**
+ * Final review, Important 1. gg/G/<C-d>/<C-u> are `context: '*'` bindings
+ * carrying `unit: 'message'` (keymap.ts), so they move the message cursor from
+ * the chat list too -- and App gated markRead on the unit alone. Four
+ * keystrokes of browsing acked the open chat without the user ever looking at
+ * it, which is exactly the never-auto-read guarantee Task 9 exists for. Each
+ * key is its own case: a gate that only excluded CURSOR_EDGE would leave
+ * <C-d>/<C-u> (CURSOR_MOVE) still doing it.
+ */
+for (const browse of [
+  { name: '<S-g>', press: (renderer: TestRendererSetup): void => { renderer.mockInput.pressKey('g', { shift: true }); } },
+  { name: 'gg', press: (renderer: TestRendererSetup): void => {
+    renderer.mockInput.pressKey('g');
+    renderer.mockInput.pressKey('g');
+  } },
+  { name: '<C-d>', press: (renderer: TestRendererSetup): void => { renderer.mockInput.pressKey('d', { ctrl: true }); } },
+  { name: '<C-u>', press: (renderer: TestRendererSetup): void => { renderer.mockInput.pressKey('u', { ctrl: true }); } },
+]) {
+  test(`${browse.name} from the chat list does not mark the open chat read`, async () => {
+    const { renderer, store, marked } = await mount();
+    await act(async () => {
+      renderer.mockInput.pressKey('n');
+      renderer.mockInput.pressKey('f');
+    });
+    await renderer.flush();
+    expect(store.getState().engine.context).toBe(VimContexts.CHAT_LIST);
+
+    await act(async () => { browse.press(renderer); });
+    await renderer.flush();
+
+    expect(marked).toEqual([]);
+  });
+}
+
+// The other half of the same gate: the message pane is where reading happens,
+// and this must keep working exactly as it did.
+test('<S-g> still marks read once focus is back on the messages pane', async () => {
+  const { renderer, marked } = await mount();
+  await act(async () => {
+    renderer.mockInput.pressKey('n');
+    renderer.mockInput.pressKey('f');
+  });
+  await renderer.flush();
+  await act(async () => {
+    renderer.mockInput.pressKey('w', { ctrl: true });
+    renderer.mockInput.pressKey('l');
+  });
+  await renderer.flush();
+
+  await act(async () => { renderer.mockInput.pressKey('g', { shift: true }); });
+  await renderer.flush();
+
+  expect(marked).toEqual([{ peerId: 'u1', maxId: 4 }]);
+});
+
 test('opening a chat with no messages yet does not mark anything read', async () => {
   const { renderer, marked } = await mount({ messages: [], onOpenChat: async () => {} });
   await act(async () => {
@@ -872,6 +959,88 @@ test('the cursor already at the newest message marks it read again on the next q
   await renderer.flush();
   expect(marked).toHaveLength(2);
   expect(marked[1]).toEqual({ peerId: 'u1', maxId: 4 });
+});
+
+// --- Final review, Critical 2: the warning must reach the screen -----------
+
+test('a data-integrity warning is shown on the status line', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => {
+    store.setState({ patch: { integrityWarning: 'Some missed messages could not be saved' } });
+  });
+  await renderer.flush();
+  expect(renderer.captureCharFrame()).toContain('Some missed messages could not be saved');
+});
+
+// The half loadHistory used to erase: an ordinary status message coming and
+// going must not take the warning with it.
+test('the warning is still on the status line after a transient status message clears', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => {
+    store.setState({
+      patch: { integrityWarning: 'some history may be missing', statusMessage: 'Send failed: offline' },
+    });
+  });
+  await renderer.flush();
+
+  // Exactly what MessageService.loadHistory's success patch does, and the
+  // patch that used to wipe the warning out entirely.
+  await act(async () => { store.setState({ patch: { statusMessage: null } }); });
+  await renderer.flush();
+  expect(renderer.captureCharFrame()).toContain('some history may be missing');
+});
+
+/**
+ * The ordering choice, pinned rather than left to accident. Most of
+ * statusMessage is sticky -- "No link in this message", "Can only edit your
+ * own messages", "Send failed: …" are cleared only by the *next* successful
+ * load or send -- so a warning ranked below them would be one keystroke away
+ * from being hidden for the rest of the session, which is the bug this field
+ * exists to fix wearing a different hat. <C-l> is how the user gets the status
+ * line back.
+ */
+test('the warning outranks an ordinary status message until it is dismissed', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => {
+    store.setState({
+      patch: { integrityWarning: 'some history may be missing', statusMessage: 'No link in this message' },
+    });
+  });
+  await renderer.flush();
+  expect(renderer.captureCharFrame()).toContain('some history may be missing');
+
+  await act(async () => { renderer.mockInput.pressKey('l', { ctrl: true }); });
+  await renderer.flush();
+  expect(renderer.captureCharFrame()).toContain('No link in this message');
+});
+
+// The delete confirmation is the only thing the user has to answer, so it
+// outranks even this -- a swallowed y/n prompt is its own bug.
+test('a pending delete confirmation still outranks the warning', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { store.setState({ patch: { integrityWarning: 'some history may be missing' } }); });
+  await renderer.flush();
+  await act(async () => {
+    renderer.mockInput.pressKey('d');
+    renderer.mockInput.pressKey('d');
+  });
+  await renderer.flush();
+  const frame = renderer.captureCharFrame();
+  expect(frame).toContain('Delete this message?');
+  expect(frame).not.toContain('some history may be missing');
+});
+
+test('<C-l> dismisses the warning, and only the user can', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { store.setState({ patch: { integrityWarning: 'some history may be missing' } }); });
+  await renderer.flush();
+  expect(renderer.captureCharFrame()).toContain('some history may be missing');
+
+  await act(async () => { renderer.mockInput.pressKey('l', { ctrl: true }); });
+  await renderer.flush();
+
+  expect(store.getState().integrityWarning).toBeNull();
+  expect(renderer.captureCharFrame()).not.toContain('some history may be missing');
 });
 
 test('<C-c> quits the application', async () => {

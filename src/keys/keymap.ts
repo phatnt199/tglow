@@ -166,7 +166,16 @@ export class KeymapService {
       action: () => [{ type: ActionTypes.OVERLAY_TOGGLE, overlay: 'whichkey' }],
     },
 
-    // Application
+    // Application. <C-l> echoes vim's own redraw-the-screen key, which is what
+    // a reader reaches for to clear something stuck on their statusline.
+    // Dismissal has to be a real key: IApplicationState.integrityWarning is
+    // deliberately unreachable from the patches that clear statusMessage (a
+    // warning that messages were lost must outlive an ordinary load), so
+    // without this it would sit there for the rest of the session.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: '<C-l>', description: 'Dismiss warning',
+      action: () => [{ type: ActionTypes.WARNING_DISMISS }],
+    },
     {
       context: '*', mode: VimModes.NORMAL, keys: '<C-c>', description: 'Quit',
       action: () => [{ type: ActionTypes.APPLICATION_QUIT }],

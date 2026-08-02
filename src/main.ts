@@ -120,14 +120,12 @@ const main = async (): Promise<void> => {
   // can still be the one firstDialog picks below, and opens already
   // containing what was missed rather than needing a second fetch.
   //
-  // Awaited, and unguarded: catchUp() does not reject. One tradeoff of
-  // running here rather than last: loadHistory()'s own success patch below
-  // unconditionally clears statusMessage, so a too-long difference's "some
-  // history may be missing" notice can be overwritten before the first frame
-  // rather than surviving to it. The messages themselves are not affected --
-  // loadHistory reads the peer's history back from the cache catch-up just
-  // populated -- only that specific notice is at risk, and preserving it
-  // through loadHistory's own patch is not this file's call to make.
+  // Awaited, and unguarded: catchUp() does not reject. Running here rather
+  // than last used to cost the user its integrity warnings -- loadHistory()'s
+  // success patch below clears statusMessage unconditionally, so "some missed
+  // messages could not be saved" was erased before the first frame. Those
+  // warnings now go to IApplicationState.integrityWarning, which nothing but
+  // the user's own <C-l> clears, so this ordering costs nothing.
   await differenceService.catchUp();
 
   const firstDialog = store.getState().dialogs[0];

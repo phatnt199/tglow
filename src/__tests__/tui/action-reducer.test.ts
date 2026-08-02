@@ -145,6 +145,46 @@ test('edit.start loads the composer with the message under the cursor, when it i
   expect(patch.engine?.context).toBe(VimContexts.COMPOSER);
 });
 
+/**
+ * Final review, Important 2. composerTextBeforeEdit was captured
+ * unconditionally, so a second `e` while an edit was already in progress
+ * overwrote the draft with the first message's own text -- and the <escape>
+ * that cancels then "restored" that instead of the draft. `e` `jk` `e`
+ * `<escape>` destroyed exactly the thing this field exists to protect.
+ */
+test('a second edit.start does not overwrite the draft the first one saved', () => {
+  const state = buildState({
+    messageCursor: 0,
+    messages: [{ peerId: 'u1', id: 9, fromId: 'me', date: 900, text: 'own message', out: 1, entities: [], replyToMessageId: null }],
+    editingMessageId: 9,
+    composerText: 'own message',
+    composerTextBeforeEdit: 'draft',
+  });
+  const patch = applyAction({ state, action: { type: ActionTypes.EDIT_START } });
+  expect(patch.composerTextBeforeEdit).toBe('draft');
+  expect(patch.composerText).toBe('own message');
+});
+
+// The whole round trip the bug ran through, so the claim is about what the
+// user gets back, not just which field was written.
+test('e, then e again, then cancel gives the draft back rather than the message', () => {
+  const messages = [
+    { peerId: 'u1', id: 9, fromId: 'me', date: 900, text: 'first own', out: 1, entities: [], replyToMessageId: null },
+    { peerId: 'u1', id: 10, fromId: 'me', date: 910, text: 'second own', out: 1, entities: [], replyToMessageId: null },
+  ];
+  const start = buildState({ messages, messageCursor: 0, composerText: 'draft' });
+  const first = applyAction({ state: start, action: { type: ActionTypes.EDIT_START } });
+
+  const moved = buildState({ ...start, ...first, messages, messageCursor: 1 });
+  const second = applyAction({ state: moved, action: { type: ActionTypes.EDIT_START } });
+
+  const cancelled = applyAction({
+    state: buildState({ ...moved, ...second, messages }),
+    action: { type: ActionTypes.EDIT_CANCEL },
+  });
+  expect(cancelled.composerText).toBe('draft');
+});
+
 // The default buildState() fixture is out: 0 throughout -- not the user's own.
 test('edit.start refuses a message that is not your own, and says so', () => {
   const state = buildState({ messageCursor: 0 });
@@ -260,4 +300,22 @@ test('an unknown action type is rejected rather than ignored', () => {
   expect(() =>
     applyAction({ state: buildState(), action: { type: 'nonsense' } as never }),
   ).toThrow(/\[applyAction\]/);
+});
+
+// Final review, Critical 2. integrityWarning is the one status field no
+// service patch may clear -- only the user, through this action.
+test('warning.dismiss clears the integrity warning', () => {
+  const patch = applyAction({
+    state: buildState({ integrityWarning: 'some history may be missing' }),
+    action: { type: ActionTypes.WARNING_DISMISS },
+  });
+  expect(patch.integrityWarning).toBeNull();
+});
+
+test('warning.dismiss leaves the ordinary status message alone', () => {
+  const patch = applyAction({
+    state: buildState({ integrityWarning: 'some history may be missing', statusMessage: 'Deleted for you' }),
+    action: { type: ActionTypes.WARNING_DISMISS },
+  });
+  expect(patch.statusMessage).toBeUndefined();
 });

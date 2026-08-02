@@ -41,7 +41,8 @@ export type TAction =
   | { type: typeof ActionTypes.DELETE_REQUEST }
   | { type: typeof ActionTypes.CONFIRM }
   | { type: typeof ActionTypes.CANCEL_CONFIRMATION }
-  | { type: typeof ActionTypes.LINK_SHOW };
+  | { type: typeof ActionTypes.LINK_SHOW }
+  | { type: typeof ActionTypes.WARNING_DISMISS };
 
 export interface IEngineState {
   mode: TVimMode;

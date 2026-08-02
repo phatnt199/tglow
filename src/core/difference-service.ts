@@ -4,20 +4,9 @@ import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
 import { BindingKeys } from '../common/index.ts';
 import type { ApplicationStoreService } from './application-store.ts';
 import type { DatabaseService } from './cache/index.ts';
-import type { IRawMessage } from './message-service.ts';
-import type { UpdateService } from './update-service.ts';
-
-/**
- * The four numbers Telegram addresses its update stream by. Kept and stored
- * whole: `updates.getDifference` takes pts, date and qts together, and asking
- * for a pts with the wrong date is not a supported request.
- */
-export interface IUpdateState {
-  pts: number;
-  qts: number;
-  date: number;
-  seq: number;
-}
+import type { IMessageAdapter, IRawMessage } from './message-service.ts';
+import { readUpdateState, writeUpdateState, type IUpdateState } from './update-state.ts';
+import { MessageOrigins, type UpdateService } from './update-service.ts';
 
 export interface IDifferenceResult {
   messages: IRawMessage[];
@@ -35,53 +24,85 @@ export interface IDifferenceAdapter {
   getDifference(opts: { state: IUpdateState }): Promise<IDifferenceResult>;
 }
 
-/** The sync_state rows this service owns -- one per field of IUpdateState, since the table is a flat key/number store. */
-class SyncStateKeys {
-  static readonly PTS = 'pts';
-  static readonly QTS = 'qts';
-  static readonly DATE = 'date';
-  static readonly SEQ = 'seq';
-}
+/**
+ * How many chats a too-long recovery re-fetches, and how deep. Bounded on
+ * purpose: `listDialogs` is ordered pinned-first then most-recent-first, so
+ * these are the chats the user is about to look at, and the rest re-fetch for
+ * free the moment they are opened (MessageService.loadHistory always asks the
+ * server first). An unbounded sweep would put a hundred round trips in front
+ * of the first frame.
+ */
+const TOO_LONG_REFETCH_CHATS = 20;
+const TOO_LONG_REFETCH_LIMIT = 50;
 
 /**
  * Recovers the messages that arrived while tglow was closed. Everything it
  * recovers is handed to `UpdateService.apply` -- the same method a live event
  * goes through -- so a backfilled message and a live one are the same message
- * downstream, cached identically and published identically.
+ * downstream, cached identically and published identically. The one difference
+ * it declares is `MessageOrigins.BACKFILL`, which keeps the replay out of the
+ * unread counts DialogService.sync() has just fetched from the server.
  */
 export class DifferenceService {
   private readonly _logger: ILogger = ApplicationLogger.get(DifferenceService.name);
 
   constructor(
     @inject({ key: BindingKeys.DIFFERENCE_ADAPTER }) private readonly _adapter: IDifferenceAdapter,
+    @inject({ key: BindingKeys.MESSAGE_ADAPTER }) private readonly _messageAdapter: IMessageAdapter,
     @inject({ key: BindingKeys.DATABASE }) private readonly _database: DatabaseService,
     @inject({ key: BindingKeys.APPLICATION_STORE }) private readonly _store: ApplicationStoreService,
     @inject({ key: BindingKeys.UPDATE_SERVICE }) private readonly _updateService: UpdateService,
   ) {}
 
-  /** null only on the very first run: with no stored pts there is no gap to reason about, just a starting point to record. */
-  private readStoredState = (): IUpdateState | null => {
-    const pts = this._database.getSyncState({ key: SyncStateKeys.PTS });
-    if (pts === null) {
-      return null;
+  /**
+   * Spec §3.4's answer to `updates.differenceTooLong`: "drop cached state for
+   * that peer and re-fetch history rather than trying to reconcile."
+   *
+   * The common-space too-long carries no peer -- only a new account-wide pts --
+   * so the peers whose history is now suspect are all of them, and the cache's
+   * own dialog ordering decides which ones are worth the round trip now. The
+   * fetch is authoritative: `fetchHistory` reads the server, and
+   * `insertMessages` upserts on (peerId, id), so a range the difference skipped
+   * over is filled in rather than reconciled. Nothing is deleted -- the gap is
+   * a missing range, not wrong rows, and deleting would leave a user whose
+   * network then failed with less than they started with.
+   *
+   * Cache-only, deliberately: nothing here publishes to the store. main.ts
+   * calls loadHistory() straight after catchUp(), and opening any other chat
+   * calls it too, so the store is filled from the cache this just refreshed by
+   * the paths that already own that job.
+   *
+   * Never rejects, and never skips a chat because an earlier one failed: each
+   * peer's fetch is independent, and a partial recovery is strictly better
+   * than none.
+   */
+  private refetchHistoryAfterTooLong = async (): Promise<void> => {
+    const chats = this._database.listDialogs().slice(0, TOO_LONG_REFETCH_CHATS);
+
+    for (const chat of chats) {
+      try {
+        const fetched = await this._messageAdapter.fetchHistory({
+          peerId: chat.peerId,
+          limit: TOO_LONG_REFETCH_LIMIT,
+        });
+        this._database.insertMessages({
+          messages: fetched.map(message => ({
+            peerId: message.peerId,
+            id: message.id,
+            fromId: message.fromId,
+            date: message.date,
+            text: message.text,
+            out: message.out,
+            entities: message.entities,
+            replyToMessageId: message.replyToMessageId,
+          })),
+        });
+      } catch (error) {
+        this._logger
+          .for(this.refetchHistoryAfterTooLong.name)
+          .error('Could not re-fetch history after a too-long difference | Peer: %s | Reason: %s', chat.peerId, error);
+      }
     }
-
-    // pts is the one field that decides whether a stored state exists at all;
-    // the other three default rather than veto, so a row lost to a partial
-    // write degrades to a wider difference request, never to no request.
-    return {
-      pts,
-      qts: this._database.getSyncState({ key: SyncStateKeys.QTS }) ?? 0,
-      date: this._database.getSyncState({ key: SyncStateKeys.DATE }) ?? 0,
-      seq: this._database.getSyncState({ key: SyncStateKeys.SEQ }) ?? 0,
-    };
-  };
-
-  private writeState = (state: IUpdateState): void => {
-    this._database.setSyncState({ key: SyncStateKeys.PTS, value: state.pts });
-    this._database.setSyncState({ key: SyncStateKeys.QTS, value: state.qts });
-    this._database.setSyncState({ key: SyncStateKeys.DATE, value: state.date });
-    this._database.setSyncState({ key: SyncStateKeys.SEQ, value: state.seq });
   };
 
   /**
@@ -92,13 +113,13 @@ export class DifferenceService {
    */
   catchUp = async (): Promise<void> => {
     try {
-      const stored = this.readStoredState();
+      const stored = readUpdateState({ database: this._database });
 
       if (!stored) {
         // Nothing to recover, because there is no earlier point to recover
         // from. The server's state becomes the mark the *next* run measures
         // its gap against.
-        this.writeState(await this._adapter.getState());
+        writeUpdateState({ database: this._database, state: await this._adapter.getState() });
         return;
       }
 
@@ -113,7 +134,7 @@ export class DifferenceService {
 
       let appliedEverything = true;
       for (const message of ordered) {
-        if (!this._updateService.apply(message)) {
+        if (!this._updateService.apply({ message, origin: MessageOrigins.BACKFILL })) {
           appliedEverything = false;
         }
       }
@@ -128,22 +149,37 @@ export class DifferenceService {
         this._logger
           .for(this.catchUp.name)
           .error('Could not apply every missed message, so pts stays put | From pts: %s', stored.pts);
+        // integrityWarning, not statusMessage: this says messages were lost,
+        // and statusMessage is cleared as a matter of course by the very next
+        // loadHistory() -- which main.ts calls immediately after this returns,
+        // so the user never saw it.
         this._store.setState({
-          patch: { statusMessage: 'Some missed messages could not be saved; tglow will try again next time' },
+          patch: { integrityWarning: 'Some missed messages could not be saved; tglow will try again next time' },
         });
         return;
       }
 
-      this.writeState(difference.state);
+      if (difference.isTooLong) {
+        // Spec §3.4. The server refused to enumerate the gap, so the messages
+        // inside it were never sent and no pts arithmetic can recover them --
+        // re-fetching each chat's history from the server is the only thing
+        // that can. Run *before* the new state is stored, so a recovery that
+        // is interrupted leaves the old pts in place and the next launch tries
+        // again from the same point.
+        await this.refetchHistoryAfterTooLong();
+      }
+
+      writeUpdateState({ database: this._database, state: difference.state });
 
       if (difference.isTooLong) {
-        // Deliberately after writeState and deliberately not silent: the state
-        // is the server's own and is correct to store, but the messages it
-        // skips over were never sent, so the ordinary history fetch is the
-        // only thing that will fill them in -- and the user is owed the fact
-        // that it might not reach all of them.
+        // Storing the state is what makes this terminate: the next
+        // getDifference asks from a pts the server can still serve, so the
+        // same too-long gap is never requested twice. Refusing to store it
+        // would loop forever on a difference the server will not enumerate.
+        // The refetch above covers the chats worth covering now, and the user
+        // is owed the fact that it might not have reached everything.
         this._store.setState({
-          patch: { statusMessage: 'Too much happened while tglow was closed; some history may be missing' },
+          patch: { integrityWarning: 'Too much happened while tglow was closed; some history may be missing' },
         });
       }
     } catch (error) {

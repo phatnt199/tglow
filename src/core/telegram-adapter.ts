@@ -6,8 +6,9 @@ import type { NewMessageEvent } from 'telegram/events';
 
 import { EntityKinds, type ITelegramEntity, type TEntityKind } from './common/index.ts';
 import type { IDialogAdapter, IRawDialog } from './dialog-service.ts';
-import type { IDifferenceAdapter, IDifferenceResult, IUpdateState } from './difference-service.ts';
-import type { IMessageAdapter, IRawMessage } from './message-service.ts';
+import type { IDifferenceAdapter, IDifferenceResult } from './difference-service.ts';
+import type { ILiveMessage, IMessageAdapter, IRawMessage } from './message-service.ts';
+import type { IUpdateState } from './update-state.ts';
 
 const DIALOG_FETCH_LIMIT = 100;
 
@@ -104,6 +105,35 @@ const toRawMessages = (opts: { messages: Api.TypeMessage[] }): IRawMessage[] => 
   return opts.messages
     .filter((message): message is Api.Message => message.className === 'Message')
     .map(message => toRawMessage({ message }));
+};
+
+/**
+ * The update classes whose `pts` counts the **account-wide** sequence, read
+ * from node_modules/telegram/tl/api.d.ts rather than guessed
+ * (`UpdateNewMessage` 3177, `UpdateShortMessage` 5114, `UpdateShortChatMessage`
+ * 5142) and cross-checked against the only three branches
+ * `NewMessage.build()` can produce a message from (telegram/events/NewMessage.js).
+ *
+ * `UpdateNewChannelMessage` is the fourth branch and is deliberately absent:
+ * its pts numbers that one channel's own sequence, so storing it in the
+ * account-wide `sync_state` row would send the next `updates.getDifference` to
+ * a position that account never reached. Channels need
+ * `updates.getChannelDifference` and a per-channel row, which tglow does not
+ * have yet -- so their pts is reported as null and nothing is written, which
+ * costs a re-delivery rather than a corrupted state.
+ */
+const COMMON_PTS_UPDATE_CLASSES: readonly string[] = [
+  'UpdateNewMessage',
+  'UpdateShortMessage',
+  'UpdateShortChatMessage',
+];
+
+const toCommonPts = (opts: { update: { className: string } }): number | null => {
+  if (!COMMON_PTS_UPDATE_CLASSES.includes(opts.update.className)) {
+    return null;
+  }
+  const { pts } = opts.update as { pts?: number };
+  return typeof pts === 'number' ? pts : null;
 };
 
 const toUpdateState = (opts: { state: Api.updates.State }): IUpdateState => {
@@ -215,7 +245,7 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
     await opts.client.markAsRead(markReadOpts.peerId, undefined, { maxId: markReadOpts.maxId });
   },
 
-  subscribeToNewMessages: (subscribeOpts: { onMessage: (message: IRawMessage) => void }): (() => void) => {
+  subscribeToNewMessages: (subscribeOpts: { onMessage: (live: ILiveMessage) => void }): (() => void) => {
     // The same builder instance is used to register and unregister: GramJS's
     // removeEventHandler matches on `===` against either the event builder or
     // the callback, and a fresh `new NewMessage({})` would still match on the
@@ -224,8 +254,15 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
     // true, e.g. sent from another device) must both come through.
     const eventBuilder = new NewMessage({});
 
+    // originalUpdate is the update GramJS built this event from -- the only
+    // place the account's new pts is carried, since Api.Message itself has no
+    // such field. Declared on NewMessageEvent at
+    // node_modules/telegram/events/NewMessage.d.ts.
     const handleEvent = (event: NewMessageEvent): void => {
-      subscribeOpts.onMessage(toRawMessage({ message: event.message }));
+      subscribeOpts.onMessage({
+        message: toRawMessage({ message: event.message }),
+        pts: toCommonPts({ update: event.originalUpdate }),
+      });
     };
 
     opts.client.addEventHandler(handleEvent, eventBuilder);

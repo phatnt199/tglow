@@ -21,6 +21,14 @@ export interface IStatusLineProps {
    * as dangerous.
    */
   confirming: boolean;
+  /**
+   * True while `title` is carrying a data-integrity warning rather than a chat
+   * name -- messages were, or may have been, lost. Colours it like
+   * `confirming` for the same reason: a skimmed status line has to read as
+   * wrong. Both are booleans on the same title rather than two rows, because
+   * the status line stays exactly one row (app.tsx's STATUS_LINE_HEIGHT).
+   */
+  warning: boolean;
 }
 
 /** One column of air at each end, matching the pane rails above. */
@@ -48,7 +56,7 @@ const resolveModeColour = (opts: { mode: TVimMode; tokens: ITokens }): string =>
 
 /** lualine's shape: mode block in section A, then context, then position. */
 export const StatusLine = (props: IStatusLineProps) => {
-  const { mode, title, unreadCount, position, total, hint, tokens, width, confirming } = props;
+  const { mode, title, unreadCount, position, total, hint, tokens, width, confirming, warning } = props;
 
   const block = ` ${mode.toUpperCase()} `;
   const context = unreadCount > 0 ? `${title} · ${unreadCount} unread` : title;
@@ -69,7 +77,9 @@ export const StatusLine = (props: IStatusLineProps) => {
         {block}
       </text>
       <text height={1} flexShrink={0}>
-        <span fg={confirming ? tokens.error : tokens.foreground}>{`${' '.repeat(CONTEXT_INDENT)}${shown}`}</span>
+        <span fg={confirming || warning ? tokens.error : tokens.foreground}>
+          {`${' '.repeat(CONTEXT_INDENT)}${shown}`}
+        </span>
         <span fg={tokens.dim}>{`${' '.repeat(filler)}${trailing}`}</span>
       </text>
     </box>

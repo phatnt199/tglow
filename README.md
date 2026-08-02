@@ -95,6 +95,7 @@ by accident.
 | `i` / `a` | write a message |
 | `jk` or `Esc` | leave insert mode |
 | `Enter` (insert) | send |
+| `<C-l>` (normal) | dismiss a data-integrity warning on the status line |
 | `<C-c>` (normal) | quit |
 
 ## Security

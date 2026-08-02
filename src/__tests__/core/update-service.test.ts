@@ -1,10 +1,12 @@
 import { test, expect } from 'bun:test';
 
+import { Api } from 'telegram';
+
 import { ApplicationStoreService } from '../../core/application-store.ts';
 import { DatabaseService, type IMessageRow } from '../../core/cache/index.ts';
-import type { IMessageAdapter, IRawMessage } from '../../core/message-service.ts';
+import type { ILiveMessage, IMessageAdapter, IRawMessage } from '../../core/message-service.ts';
 import { buildMessageAdapter } from '../../core/telegram-adapter.ts';
-import { UpdateService } from '../../core/update-service.ts';
+import { MessageOrigins, UpdateService } from '../../core/update-service.ts';
 
 const buildRawMessage = (overrides: Partial<IRawMessage> = {}): IRawMessage => ({
   id: 1, peerId: 'u1', fromId: 'u1', date: 100, text: 'hi', out: 0, entities: [], replyToMessageId: null, ...overrides,
@@ -15,8 +17,12 @@ const buildRow = (overrides: Partial<IMessageRow> = {}): IMessageRow => ({
 });
 
 /** A fake IMessageAdapter that lets a test fire a "live" message on demand, exactly like DialogService/MessageService's own adapter fakes but with a subscription to drive instead of a promise to resolve. */
-const buildAdapter = (): { adapter: IMessageAdapter; emit: (message: IRawMessage) => void } => {
-  let onMessage: ((message: IRawMessage) => void) | null = null;
+const buildAdapter = (): {
+  adapter: IMessageAdapter;
+  emit: (message: IRawMessage) => void;
+  emitLive: (live: ILiveMessage) => void;
+} => {
+  let onMessage: ((live: ILiveMessage) => void) | null = null;
   const adapter: IMessageAdapter = {
     fetchHistory: async () => [],
     send: async opts => buildRawMessage({ peerId: opts.peerId, text: opts.text }),
@@ -35,7 +41,13 @@ const buildAdapter = (): { adapter: IMessageAdapter; emit: (message: IRawMessage
       };
     },
   };
-  return { adapter, emit: (message: IRawMessage): void => onMessage?.(message) };
+  return {
+    // The common case: a message with no pts worth recording, which is what
+    // every test written before the live path persisted state was asserting.
+    emit: (message: IRawMessage): void => onMessage?.({ message, pts: null }),
+    emitLive: (live: ILiveMessage): void => onMessage?.(live),
+    adapter,
+  };
 };
 
 const buildService = (
@@ -190,4 +202,112 @@ test('a cursor reading earlier history stays on the same message after a live ar
 test('IMessageAdapter exposes subscribeToNewMessages, so removing it cannot silently disable receive', () => {
   const adapter = buildMessageAdapter({ client: {} as any });
   expect(typeof adapter.subscribeToNewMessages).toBe('function');
+});
+
+// --- Critical 1: origin, and the unread count ------------------------------
+
+test('a live message increments the unread count', () => {
+  const { adapter, emit } = buildAdapter();
+  const { service, database } = buildService(adapter);
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 5, lastMessageAt: 100, topMessageId: 1, readOutboxMaxId: 0 });
+  service.start();
+
+  emit(buildRawMessage({ id: 2, peerId: 'u1', date: 200 }));
+
+  expect(database.listDialogs().find(dialog => dialog.peerId === 'u1')?.unreadCount).toBe(6);
+  database.close();
+});
+
+/**
+ * The badge half of Critical 1, at the unit that decides it. The server's
+ * unreadCount, written by DialogService.sync() moments earlier, already counts
+ * every message a backfill replays -- so a backfill must move the ordering
+ * fields and nothing else.
+ */
+test('a backfilled message leaves the unread count exactly where the server put it', () => {
+  const { adapter } = buildAdapter();
+  const { service, database } = buildService(adapter);
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 5, lastMessageAt: 100, topMessageId: 1, readOutboxMaxId: 0 });
+
+  service.apply({ message: buildRawMessage({ id: 2, peerId: 'u1', date: 200 }), origin: MessageOrigins.BACKFILL });
+
+  const dialog = database.listDialogs().find(row => row.peerId === 'u1');
+  expect(dialog?.unreadCount).toBe(5);
+  expect(dialog?.topMessageId).toBe(2);
+  expect(dialog?.lastMessageAt).toBe(200);
+  database.close();
+});
+
+test('a live message the user sent themselves still never counts as unread', () => {
+  const { adapter, emit } = buildAdapter();
+  const { service, database } = buildService(adapter);
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 5, lastMessageAt: 100, topMessageId: 1, readOutboxMaxId: 0 });
+  service.start();
+
+  emit(buildRawMessage({ id: 2, peerId: 'u1', date: 200, out: 1 }));
+
+  expect(database.listDialogs().find(dialog => dialog.peerId === 'u1')?.unreadCount).toBe(5);
+  database.close();
+});
+
+// --- Critical 1: the adapter reads the account pts off the real update ------
+//
+// Real Api.* instances, not hand-rolled objects: the className strings and the
+// pts field are the whole risk. UpdateNewChannelMessage carries a pts too, and
+// it is the one that must never be stored -- it numbers that channel's own
+// sequence, so writing it into the account-wide row sends the next
+// getDifference somewhere the account never was.
+
+const buildSubscribedClient = (): { client: any; fire: (event: unknown) => void } => {
+  let handler: ((event: unknown) => void) | null = null;
+  return {
+    client: {
+      addEventHandler: (callback: (event: unknown) => void): void => { handler = callback; },
+      removeEventHandler: (): void => { handler = null; },
+    },
+    fire: (event: unknown): void => { handler?.(event); },
+  };
+};
+
+const buildApiMessage = (): Api.Message =>
+  new Api.Message({ id: 7, peerId: new Api.PeerUser({ userId: BigInt(1) as any }), date: 500, message: 'live' });
+
+test('a private-chat update hands its account pts to the subscriber', () => {
+  const { client, fire } = buildSubscribedClient();
+  const received: ILiveMessage[] = [];
+  buildMessageAdapter({ client }).subscribeToNewMessages({ onMessage: live => { received.push(live); } });
+
+  const message = buildApiMessage();
+  fire({ message, originalUpdate: new Api.UpdateNewMessage({ message, pts: 4242, ptsCount: 1 }) });
+
+  expect(received.map(live => live.pts)).toEqual([4242]);
+  expect(received[0]?.message.text).toBe('live');
+});
+
+test('a channel update reports a null pts rather than corrupting the account state', () => {
+  const { client, fire } = buildSubscribedClient();
+  const received: ILiveMessage[] = [];
+  buildMessageAdapter({ client }).subscribeToNewMessages({ onMessage: live => { received.push(live); } });
+
+  const message = buildApiMessage();
+  fire({ message, originalUpdate: new Api.UpdateNewChannelMessage({ message, pts: 9, ptsCount: 1 }) });
+
+  expect(received.map(live => live.pts)).toEqual([null]);
+  // The message itself still arrives -- a channel message is still a message.
+  expect(received[0]?.message.text).toBe('live');
+});
+
+test('updateShortMessage, the other private-chat delivery shape, carries its pts too', () => {
+  const { client, fire } = buildSubscribedClient();
+  const received: ILiveMessage[] = [];
+  buildMessageAdapter({ client }).subscribeToNewMessages({ onMessage: live => { received.push(live); } });
+
+  fire({
+    message: buildApiMessage(),
+    originalUpdate: new Api.UpdateShortMessage({
+      id: 7, userId: BigInt(1) as any, message: 'live', pts: 88, ptsCount: 1, date: 500,
+    }),
+  });
+
+  expect(received.map(live => live.pts)).toEqual([88]);
 });

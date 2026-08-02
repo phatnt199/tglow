@@ -4,15 +4,11 @@ import { Api } from 'telegram';
 
 import { ApplicationStoreService } from '../../core/application-store.ts';
 import { DatabaseService } from '../../core/cache/index.ts';
-import {
-  DifferenceService,
-  type IDifferenceAdapter,
-  type IDifferenceResult,
-  type IUpdateState,
-} from '../../core/difference-service.ts';
-import type { IMessageAdapter, IRawMessage } from '../../core/message-service.ts';
+import { DifferenceService, type IDifferenceAdapter, type IDifferenceResult } from '../../core/difference-service.ts';
+import { MessageService, type ILiveMessage, type IMessageAdapter, type IRawMessage } from '../../core/message-service.ts';
 import { buildDifferenceAdapter } from '../../core/telegram-adapter.ts';
-import { UpdateService } from '../../core/update-service.ts';
+import type { IUpdateState } from '../../core/update-state.ts';
+import { MessageOrigins, UpdateService, type TMessageOrigin } from '../../core/update-service.ts';
 
 const buildRawMessage = (overrides: Partial<IRawMessage> = {}): IRawMessage => ({
   id: 1, peerId: 'u1', fromId: 'u1', date: 100, text: 'hi', out: 0, entities: [], replyToMessageId: null, ...overrides,
@@ -26,29 +22,54 @@ interface IHarness {
   store: ApplicationStoreService;
   /** Every message handed to UpdateService.apply, in the order catch-up handed it over. */
   applied: IRawMessage[];
+  /** The origin catch-up declared for each applied message -- backfill, never live. */
+  origins: TMessageOrigin[];
   /** The state each getDifference call was made from -- empty when catch-up never fetched. */
   fetched: IUpdateState[];
+  /** Every (peerId, limit) the too-long recovery re-fetched history for. */
+  refetched: Array<{ peerId: string; limit: number }>;
+  /** Drives the real UpdateService's live subscription, exactly as GramJS would. */
+  emitLive: (live: ILiveMessage) => void;
+  /** The same adapter DifferenceService re-fetches through, so a test can hand it to a real MessageService. */
+  messageAdapter: IMessageAdapter;
 }
 
-const build = (overrides: Partial<IDifferenceAdapter> = {}): IHarness => {
+const build = (
+  overrides: Partial<IDifferenceAdapter> & { history?: (opts: { peerId: string }) => IRawMessage[] } = {},
+): IHarness => {
   const database = new DatabaseService();
   database.open({ filePath: ':memory:' });
   database.upsertPeer({ id: 'u1', type: 'user', accessHash: 'h1', title: 'Alice', username: null });
   const store = new ApplicationStoreService();
 
   const applied: IRawMessage[] = [];
+  const origins: TMessageOrigin[] = [];
   const fetched: IUpdateState[] = [];
+  const refetched: Array<{ peerId: string; limit: number }> = [];
+
+  let onMessage: ((live: ILiveMessage) => void) | null = null;
+  const messageAdapter = {
+    fetchHistory: async (historyOpts: { peerId: string; limit: number }): Promise<IRawMessage[]> => {
+      refetched.push(historyOpts);
+      return overrides.history?.({ peerId: historyOpts.peerId }) ?? [];
+    },
+    subscribeToNewMessages: (subscribeOpts: { onMessage: (live: ILiveMessage) => void }): (() => void) => {
+      onMessage = subscribeOpts.onMessage;
+      return (): void => { onMessage = null; };
+    },
+  } as IMessageAdapter;
 
   // A real UpdateService, not a stand-in: "a backfilled message and a live one
   // are indistinguishable" is the property under test, and a fake apply() would
-  // assert nothing about it. Its message adapter is never touched -- catchUp
-  // calls apply() directly, and only start() ever subscribes.
-  const updateService = new UpdateService({} as IMessageAdapter, database, store);
+  // assert nothing about it.
+  const updateService = new UpdateService(messageAdapter, database, store);
   const apply = updateService.apply;
-  updateService.apply = (message: IRawMessage): boolean => {
-    applied.push(message);
-    return apply(message);
+  updateService.apply = (applyOpts: { message: IRawMessage; origin: TMessageOrigin }): boolean => {
+    applied.push(applyOpts.message);
+    origins.push(applyOpts.origin);
+    return apply(applyOpts);
   };
+  updateService.start();
 
   const adapter: IDifferenceAdapter = {
     getState: overrides.getState ?? (async (): Promise<IUpdateState> => SERVER_STATE),
@@ -62,13 +83,156 @@ const build = (overrides: Partial<IDifferenceAdapter> = {}): IHarness => {
   };
 
   return {
-    service: new DifferenceService(adapter, database, store, updateService),
+    service: new DifferenceService(adapter, messageAdapter, database, store, updateService),
     database,
     store,
     applied,
+    origins,
     fetched,
+    refetched,
+    emitLive: (live: ILiveMessage): void => { onMessage?.(live); },
+    messageAdapter,
   };
 };
+
+/**
+ * Critical 1, the badge half. dialogService.sync() has already written the
+ * server's own authoritative unreadCount before catchUp ever runs (main.ts's
+ * order), and that count already includes every message the difference is
+ * about to replay -- so counting them again inflates the badge on every
+ * launch, permanently, since nothing but a later sync ever writes it back
+ * down. Drop the origin argument from touchDialog and this is what fails.
+ */
+test('a backfilled message does not raise a dialog unread count the server already counted', async () => {
+  const harness = build({
+    getDifference: async () => ({
+      messages: [buildRawMessage({ id: 2, peerId: 'u1', text: 'already counted' })],
+      state: { pts: 120, qts: 0, date: 9, seq: 2 }, isTooLong: false,
+    }),
+  });
+  harness.database.setSyncState({ key: 'pts', value: 100 });
+  // What dialogService.sync() wrote from the server a moment earlier.
+  harness.database.upsertDialog({
+    peerId: 'u1', pinned: 0, unreadCount: 5, lastMessageAt: 100, topMessageId: 1, readOutboxMaxId: 0,
+  });
+
+  await harness.service.catchUp();
+
+  expect(harness.database.listDialogs().find(dialog => dialog.peerId === 'u1')?.unreadCount).toBe(5);
+  // Still applied, still cached, still the top message -- only the count is left alone.
+  expect(harness.database.listDialogs().find(dialog => dialog.peerId === 'u1')?.topMessageId).toBe(2);
+  harness.database.close();
+});
+
+test('catch-up declares every message it applies a backfill, never a live arrival', async () => {
+  const harness = build({
+    getDifference: async () => ({
+      messages: [buildRawMessage({ id: 2, peerId: 'u1' }), buildRawMessage({ id: 3, peerId: 'u1' })],
+      state: { pts: 120, qts: 0, date: 9, seq: 2 }, isTooLong: false,
+    }),
+  });
+  harness.database.setSyncState({ key: 'pts', value: 100 });
+
+  await harness.service.catchUp();
+
+  expect(harness.origins).toEqual([MessageOrigins.BACKFILL, MessageOrigins.BACKFILL]);
+  harness.database.close();
+});
+
+/**
+ * Critical 1, the pts half -- and the reason the badge bug was permanent
+ * rather than self-correcting. pts was written only here, by a method that
+ * runs once at startup, so it never moved during a session and the next
+ * launch's difference re-delivered everything the previous session had
+ * already received, read and acked. The live path has to persist the state
+ * it consumes.
+ */
+test('a second catch-up after live traffic resumes from the live pts, re-delivering nothing', async () => {
+  const harness = build({
+    getDifference: async (differenceOpts: { state: IUpdateState }) => {
+      // The server only ever offers what is actually after the requested pts.
+      if (differenceOpts.state.pts < 120) {
+        return {
+          messages: [buildRawMessage({ id: 2, peerId: 'u1', text: 'while closed' })],
+          state: { pts: 120, qts: 0, date: 9, seq: 2 }, isTooLong: false,
+        };
+      }
+      return { messages: [], state: differenceOpts.state, isTooLong: false };
+    },
+  });
+  harness.database.setSyncState({ key: 'pts', value: 100 });
+
+  await harness.service.catchUp();
+  expect(harness.database.getSyncState({ key: 'pts' })).toBe(120);
+
+  // A session's worth of live traffic, each update carrying its own pts.
+  harness.emitLive({ message: buildRawMessage({ id: 3, peerId: 'u1', date: 300, text: 'live one' }), pts: 121 });
+  harness.emitLive({ message: buildRawMessage({ id: 4, peerId: 'u1', date: 400, text: 'live two' }), pts: 122 });
+
+  expect(harness.database.getSyncState({ key: 'pts' })).toBe(122);
+
+  await harness.service.catchUp();
+
+  // The second request starts from what the live path consumed, not from where
+  // the first catch-up stopped -- otherwise every launch replays the session
+  // before it.
+  expect(harness.fetched.map(state => state.pts)).toEqual([100, 122]);
+  // `applied` sees the live path too (it wraps apply itself), so the claim is
+  // about what catch-up backfilled: message 2 once, and never again.
+  const backfilled = harness.applied.filter((unused, index) => harness.origins[index] === MessageOrigins.BACKFILL);
+  expect(backfilled.map(message => message.id)).toEqual([2]);
+  harness.database.close();
+});
+
+test('a live update with no common pts leaves the stored state where it was', async () => {
+  const harness = build();
+  harness.database.setSyncState({ key: 'pts', value: 100 });
+
+  // A channel update's pts belongs to that channel's own sequence; writing it
+  // into the account-wide row would send the next difference somewhere the
+  // server cannot follow. The adapter reports null rather than guessing.
+  harness.emitLive({ message: buildRawMessage({ id: 3, peerId: 'u1', date: 300 }), pts: null });
+
+  expect(harness.database.getSyncState({ key: 'pts' })).toBe(100);
+  harness.database.close();
+});
+
+test('a live pts behind the stored one never rewinds the stored state', async () => {
+  const harness = build();
+  harness.database.setSyncState({ key: 'pts', value: 500 });
+
+  harness.emitLive({ message: buildRawMessage({ id: 3, peerId: 'u1', date: 300 }), pts: 400 });
+
+  expect(harness.database.getSyncState({ key: 'pts' })).toBe(500);
+  harness.database.close();
+});
+
+/**
+ * The same invariant catchUp holds for a backfill, on the live path: a message
+ * the cache refused leaves the stored pts alone, so the next launch's
+ * difference still covers it. 'ghost' has no peers row, so the FK rejects it.
+ */
+test('a live message that could not be cached does not advance the stored pts', async () => {
+  const harness = build();
+  harness.database.setSyncState({ key: 'pts', value: 100 });
+
+  harness.emitLive({ message: buildRawMessage({ id: 3, peerId: 'ghost', date: 300 }), pts: 130 });
+
+  expect(harness.database.getSyncState({ key: 'pts' })).toBe(100);
+  harness.database.close();
+});
+
+test('a live update before any stored state exists does not invent one', async () => {
+  const harness = build();
+
+  harness.emitLive({ message: buildRawMessage({ id: 3, peerId: 'u1', date: 300 }), pts: 130 });
+
+  // Claiming pts 130 would assert everything below it had been consumed, when
+  // catch-up has not run at all -- the first run's own getState is the only
+  // thing entitled to establish that baseline.
+  expect(harness.database.getSyncState({ key: 'pts' })).toBeNull();
+  harness.database.close();
+});
 
 test('a first run with no stored state stores the server state and fetches nothing', async () => {
   const harness = build({ getState: async () => ({ pts: 100, qts: 0, date: 5, seq: 1 }) });
@@ -114,7 +278,158 @@ test('differenceTooLong stores the new state and does not pretend to have caught
   harness.database.setSyncState({ key: 'pts', value: 100 });
   await harness.service.catchUp();
   expect(harness.database.getSyncState({ key: 'pts' })).toBe(900);
-  expect(harness.store.getState().statusMessage).toContain('history');
+  expect(harness.store.getState().integrityWarning).toContain('history');
+  harness.database.close();
+});
+
+// --- Critical 3: differenceTooLong must re-fetch, not jump ------------------
+//
+// Spec §3.4: "If the server replies differenceTooLong, drop cached state for
+// that peer and re-fetch history rather than trying to reconcile." Storing the
+// server's new pts alone advances the account past a range of messages that
+// were never sent -- and a difference only ever runs forward, so nothing will
+// ever offer them again.
+
+const buildTooLongHarness = (history: (opts: { peerId: string }) => IRawMessage[]): IHarness => {
+  const harness = build({
+    getDifference: async () => ({ messages: [], state: { pts: 900, qts: 0, date: 9, seq: 2 }, isTooLong: true }),
+    history,
+  });
+  harness.database.setSyncState({ key: 'pts', value: 100 });
+  // What dialogService.sync() left behind: the chats whose history the pts
+  // jump has just made untrustworthy.
+  harness.database.upsertPeer({ id: 'u2', type: 'user', accessHash: 'h2', title: 'Bob', username: null });
+  harness.database.upsertDialog({
+    peerId: 'u1', pinned: 0, unreadCount: 3, lastMessageAt: 200, topMessageId: 9, readOutboxMaxId: 0,
+  });
+  harness.database.upsertDialog({
+    peerId: 'u2', pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 4, readOutboxMaxId: 0,
+  });
+  return harness;
+};
+
+test('differenceTooLong re-fetches each cached chat history from the server', async () => {
+  const harness = buildTooLongHarness(() => []);
+
+  await harness.service.catchUp();
+
+  expect(harness.refetched.map(request => request.peerId)).toEqual(['u1', 'u2']);
+  harness.database.close();
+});
+
+test('the messages a too-long re-fetch recovers are written to the cache', async () => {
+  const harness = buildTooLongHarness(({ peerId }) =>
+    peerId === 'u1' ? [buildRawMessage({ id: 7, peerId: 'u1', text: 'inside the gap' })] : []);
+
+  await harness.service.catchUp();
+
+  expect(harness.database.listMessages({ peerId: 'u1', limit: 10 }).map(row => row.text)).toContain('inside the gap');
+  harness.database.close();
+});
+
+// The recovery must not become the next bug: re-fetched history is history the
+// server's own unreadCount already accounts for.
+test('a too-long re-fetch does not touch the unread counts sync just wrote', async () => {
+  const harness = buildTooLongHarness(({ peerId }) =>
+    peerId === 'u1' ? [buildRawMessage({ id: 7, peerId: 'u1', text: 'inside the gap' })] : []);
+
+  await harness.service.catchUp();
+
+  expect(harness.database.listDialogs().find(dialog => dialog.peerId === 'u1')?.unreadCount).toBe(3);
+  harness.database.close();
+});
+
+/**
+ * Why it terminates. Refusing to store the new state would leave the next
+ * getDifference asking from the same pts the server has already refused to
+ * enumerate -- the same too-long answer, every launch, forever. The state is
+ * stored, so the next request starts from somewhere the server can serve;
+ * re-fetching history is what covers the range the jump skipped.
+ */
+test('differenceTooLong stores the new state even when the re-fetch fails, so it cannot loop', async () => {
+  const harness = buildTooLongHarness(() => { throw new Error('offline'); });
+
+  await expect(harness.service.catchUp()).resolves.toBeUndefined();
+
+  expect(harness.database.getSyncState({ key: 'pts' })).toBe(900);
+  expect(harness.store.getState().integrityWarning).toContain('history');
+  harness.database.close();
+});
+
+test('one chat failing to re-fetch does not stop the others', async () => {
+  const harness = buildTooLongHarness(({ peerId }) => {
+    if (peerId === 'u1') {
+      throw new Error('offline');
+    }
+    return [buildRawMessage({ id: 8, peerId: 'u2', text: 'second chat recovered' })];
+  });
+  harness.database.upsertPeer({ id: 'u2', type: 'user', accessHash: 'h2', title: 'Bob', username: null });
+
+  await harness.service.catchUp();
+
+  expect(harness.refetched.map(request => request.peerId)).toEqual(['u1', 'u2']);
+  expect(harness.database.listMessages({ peerId: 'u2', limit: 10 }).map(row => row.text))
+    .toContain('second chat recovered');
+  harness.database.close();
+});
+
+// An ordinary, enumerable difference has nothing to recover -- every message in
+// it was actually delivered, so a sweep of history fetches would be pure cost.
+test('a difference that is not too long re-fetches nothing', async () => {
+  const harness = build({
+    getDifference: async () => ({
+      messages: [buildRawMessage({ id: 2, peerId: 'u1' })],
+      state: { pts: 120, qts: 0, date: 9, seq: 2 }, isTooLong: false,
+    }),
+  });
+  harness.database.setSyncState({ key: 'pts', value: 100 });
+
+  await harness.service.catchUp();
+
+  expect(harness.refetched).toEqual([]);
+  harness.database.close();
+});
+
+/**
+ * Critical 2, reproduced end to end against main.ts's real order:
+ * dialogService.sync(), catchUp(), then loadHistory() for the first chat. The
+ * warning was written to statusMessage, and loadHistory's success patch sets
+ * statusMessage to null unconditionally -- so the one message that says
+ * messages were lost was erased before the first frame, every launch. Put the
+ * warning back on statusMessage and this is the test that fails.
+ */
+test('a catch-up integrity warning survives the loadHistory main.ts runs straight after it', async () => {
+  const harness = build({
+    getDifference: async () => ({ messages: [], state: { pts: 900, qts: 0, date: 9, seq: 2 }, isTooLong: true }),
+  });
+  harness.database.setSyncState({ key: 'pts', value: 100 });
+
+  await harness.service.catchUp();
+  expect(harness.store.getState().integrityWarning).toContain('history');
+
+  const messageService = new MessageService(harness.messageAdapter, harness.database, harness.store);
+  await messageService.loadHistory({ peerId: 'u1', limit: 50 });
+
+  expect(harness.store.getState().statusMessage).toBeNull();
+  expect(harness.store.getState().integrityWarning).toContain('history');
+  harness.database.close();
+});
+
+// Critical 2: the warning that means messages were lost goes somewhere
+// loadHistory's unconditional `statusMessage: null` cannot reach.
+test('the could-not-save warning is written to integrityWarning, not statusMessage', async () => {
+  const harness = build({
+    getDifference: async () => ({
+      messages: [buildRawMessage({ id: 2, peerId: 'ghost', text: 'lost' })],
+      state: { pts: 120, qts: 0, date: 9, seq: 2 }, isTooLong: false,
+    }),
+  });
+  harness.database.setSyncState({ key: 'pts', value: 100 });
+
+  await harness.service.catchUp();
+
+  expect(harness.store.getState().integrityWarning).toContain('could not be saved');
+  expect(harness.store.getState().statusMessage).toBeNull();
   harness.database.close();
 });
 

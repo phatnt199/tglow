@@ -23,13 +23,30 @@ export interface IRawMessage {
   replyToMessageId: number | null;
 }
 
+/**
+ * A message as the live update stream delivers it: the message itself, and the
+ * account-wide `pts` the delivering update carried. The pts rides along rather
+ * than living on IRawMessage because it belongs to the update, not the
+ * message -- a message fetched by `fetchHistory` or returned by `send` has no
+ * pts at all.
+ *
+ * null means "this update carried no pts this account can store": a channel
+ * update numbers its own sequence, so writing its pts into the account-wide
+ * row would send the next `updates.getDifference` to a position that does not
+ * exist there.
+ */
+export interface ILiveMessage {
+  message: IRawMessage;
+  pts: number | null;
+}
+
 export interface IMessageAdapter {
   fetchHistory(opts: { peerId: string; limit: number }): Promise<IRawMessage[]>;
   send(opts: { peerId: string; text: string; replyToMessageId?: number }): Promise<IRawMessage>;
   edit(opts: { peerId: string; messageId: number; text: string }): Promise<IRawMessage>;
   delete(opts: { peerId: string; messageId: number; forEveryone: boolean }): Promise<void>;
   markRead(opts: { peerId: string; maxId: number }): Promise<void>;
-  subscribeToNewMessages(opts: { onMessage: (message: IRawMessage) => void }): () => void;
+  subscribeToNewMessages(opts: { onMessage: (live: ILiveMessage) => void }): () => void;
 }
 
 export class MessageService {

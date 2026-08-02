@@ -3,7 +3,7 @@ import { test, expect } from 'bun:test';
 import { ApplicationStoreService } from '../../core/application-store.ts';
 import { DatabaseService } from '../../core/cache/index.ts';
 import { MessageService, type IMessageAdapter, type IRawMessage } from '../../core/message-service.ts';
-import { UpdateService } from '../../core/update-service.ts';
+import { MessageOrigins, UpdateService } from '../../core/update-service.ts';
 
 const buildRawMessage = (overrides: Partial<IRawMessage> = {}): IRawMessage => ({
   id: 1, peerId: 'u1', fromId: 'u1', date: 100, text: 'hi', out: 0, entities: [], replyToMessageId: null, ...overrides,
@@ -40,6 +40,46 @@ test('history is presented oldest-first', async () => {
   );
   await service.loadHistory({ peerId: 'u1', limit: 50 });
   expect(store.getState().messages.map(message => message.text)).toEqual(['morning!', 'ok ping me']);
+  database.close();
+});
+
+/**
+ * Final review, Critical 2. loadHistory's success patch clears statusMessage
+ * unconditionally, and main.ts calls it immediately after
+ * DifferenceService.catchUp() -- so a warning that messages were lost, written
+ * to statusMessage, was erased before the first frame every single launch.
+ * integrityWarning is a field loadHistory does not touch at all: not "cleared
+ * later", structurally unreachable from here.
+ */
+test('loadHistory clears the transient status message but never the integrity warning', async () => {
+  const { service, store, database } = buildService(buildAdapter({ fetchHistory: async () => [buildRawMessage()] }));
+  store.setState({
+    patch: {
+      statusMessage: 'Send failed: offline',
+      integrityWarning: 'Some missed messages could not be saved; tglow will try again next time',
+    },
+  });
+
+  await service.loadHistory({ peerId: 'u1', limit: 50 });
+
+  expect(store.getState().statusMessage).toBeNull();
+  expect(store.getState().integrityWarning)
+    .toBe('Some missed messages could not be saved; tglow will try again next time');
+  database.close();
+});
+
+// The same guarantee on the other three paths that clear statusMessage on
+// success, so the warning cannot be lost to an ordinary send either.
+test('send, edit and delete leave the integrity warning alone', async () => {
+  const { service, store, database } = buildService(buildAdapter());
+  database.insertMessages({ messages: [{ peerId: 'u1', id: 1, fromId: 'me', date: 100, text: 'hi', out: 1, entities: [], replyToMessageId: null }] });
+  store.setState({ patch: { integrityWarning: 'some history may be missing' } });
+
+  await service.send({ peerId: 'u1', text: 'hello' });
+  await service.edit({ peerId: 'u1', messageId: 1, text: 'hello again' });
+  await service.delete({ peerId: 'u1', messageId: 1 });
+
+  expect(store.getState().integrityWarning).toBe('some history may be missing');
   database.close();
 });
 
@@ -436,7 +476,10 @@ test('a message arriving after a chat is marked read counts as a fresh unread, n
   expect(harness.database.listDialogs().find(dialog => dialog.peerId === 'u1')?.unreadCount).toBe(0);
 
   const updateService = new UpdateService(buildAdapter(), harness.database, harness.store);
-  updateService.apply(buildRawMessage({ id: 4, peerId: 'u1', date: 200, text: 'new one' }));
+  updateService.apply({
+    message: buildRawMessage({ id: 4, peerId: 'u1', date: 200, text: 'new one' }),
+    origin: MessageOrigins.LIVE,
+  });
 
   expect(harness.database.listDialogs().find(dialog => dialog.peerId === 'u1')?.unreadCount).toBe(1);
   expect(harness.store.getState().dialogs.find(dialog => dialog.peerId === 'u1')?.unreadCount).toBe(1);

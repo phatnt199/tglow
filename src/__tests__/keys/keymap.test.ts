@@ -306,7 +306,11 @@ test('every binding the project promises the user is actually bound', () => {
     { context: '*', mode: VimModes.INSERT, keys: 'jk' },
     { context: '*', mode: VimModes.INSERT, keys: '<escape>' },
     { context: '*', mode: VimModes.INSERT, keys: '<return>' },
-    // Application
+    // Application. <C-l> is the only way to clear an integrity warning:
+    // IApplicationState.integrityWarning is deliberately unreachable from
+    // every service patch that clears statusMessage, so losing this binding
+    // would strand the warning on the status line for the rest of the session.
+    { context: '*', mode: VimModes.NORMAL, keys: '<C-l>' },
     { context: '*', mode: VimModes.NORMAL, keys: '<C-c>' },
   ];
 
