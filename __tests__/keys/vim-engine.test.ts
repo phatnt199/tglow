@@ -61,7 +61,7 @@ test('a single mapped key resolves immediately', () => {
   const result = buildEngine().resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('j'), keymap });
   expect(result.status).toBe('resolved');
   expect(result.actions).toEqual([{ type: ActionTypes.CURSOR_MOVE, unit: 'message', delta: 1 }]);
-  expect(result.state.pending).toBe('');
+  expect(result.state.pending).toEqual([]);
 });
 
 test('a count multiplies the action', () => {
@@ -103,7 +103,7 @@ test('a digit in insert mode does not accumulate a count', () => {
 test('a digit while a prefix is pending does not accumulate a count', () => {
   const engine = buildEngine();
   const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('g'), keymap });
-  expect(pending.state.pending).toBe('g');
+  expect(pending.state.pending).toEqual(['g']);
   const result = engine.resolve({ state: pending.state, key: buildKey('3'), keymap });
   expect(result.state.count).toBeNull();
 });
@@ -111,7 +111,7 @@ test('a digit while a prefix is pending does not accumulate a count', () => {
 test('a prefix of a longer binding stays pending', () => {
   const result = buildEngine().resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('g'), keymap });
   expect(result.status).toBe('pending');
-  expect(result.state.pending).toBe('g');
+  expect(result.state.pending).toEqual(['g']);
   expect(result.actions).toEqual([]);
 });
 
@@ -121,7 +121,7 @@ test('completing a multi-key binding resolves and clears pending', () => {
   const second = engine.resolve({ state: first.state, key: buildKey('g'), keymap });
   expect(second.status).toBe('resolved');
   expect(second.actions).toEqual([{ type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'first' }]);
-  expect(second.state.pending).toBe('');
+  expect(second.state.pending).toEqual([]);
 });
 
 test('an unmapped key clears pending and count', () => {
@@ -129,7 +129,7 @@ test('an unmapped key clears pending and count', () => {
   const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('g'), keymap });
   const result = engine.resolve({ state: { ...pending.state, count: 4 }, key: buildKey('z'), keymap });
   expect(result.status).toBe('unmapped');
-  expect(result.state.pending).toBe('');
+  expect(result.state.pending).toEqual([]);
   expect(result.state.count).toBeNull();
 });
 
@@ -261,5 +261,58 @@ test('a binding that is also a prefix of a longer one makes the longer one unrea
   const result = buildEngine().resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('g'), keymap: conflictingKeymap });
   expect(result.status).toBe('resolved');
   expect(result.actions).toEqual([{ type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'first' }]);
-  expect(result.state.pending).toBe('');
+  expect(result.state.pending).toEqual([]);
+});
+
+// Code review on Task 16: bracket-notating named keys ("<escape>") moved the
+// collision rather than removing it. A typed "<" is a valid canonical token
+// in its own right, and the old string-level `startsWith` matched it against
+// every bracketed binding ("<escape>".startsWith("<") is true) -- so typing
+// "<" registered as a pending prefix, and the literal characters of
+// "<return>" typed one at a time actually resolved the send binding. These
+// three tests pin the token-sequence fix: a single token can never be a
+// prefix of a different single token, no matter what characters either one
+// contains. Confirmed to fail against the pre-tokenization (bracket-only)
+// engine before this fix -- see the Task 16 fix report.
+test('typing the literal "<" character is unmapped, not a pending prefix of a named key', () => {
+  const engine = buildEngine();
+  const namedKeymap: IKeyBinding[] = [
+    {
+      context: '*', mode: VimModes.INSERT, keys: '<escape>', description: 'normal',
+      action: () => [{ type: ActionTypes.MODE_SET, mode: VimModes.NORMAL }],
+    },
+  ];
+  const insert: IEngineState = { ...INITIAL_ENGINE_STATE, mode: VimModes.INSERT };
+  const result = engine.resolve({ state: insert, key: buildKey('<'), keymap: namedKeymap });
+  expect(result.status).toBe('unmapped');
+});
+
+test('typing the literal characters of "<return>" one at a time never resolves the binding', () => {
+  const engine = buildEngine();
+  const namedKeymap: IKeyBinding[] = [
+    {
+      context: '*', mode: VimModes.INSERT, keys: '<return>', description: 'send',
+      action: () => [{ type: ActionTypes.COMPOSER_SEND }],
+    },
+  ];
+  let state: IEngineState = { ...INITIAL_ENGINE_STATE, mode: VimModes.INSERT };
+  for (const character of ['<', 'r', 'e', 't', 'u', 'r', 'n', '>']) {
+    const result = engine.resolve({ state, key: buildKey(character), keymap: namedKeymap });
+    expect(result.status).not.toBe('resolved');
+    state = result.state;
+  }
+});
+
+test('a real escape key press still resolves the <escape> binding', () => {
+  const engine = buildEngine();
+  const namedKeymap: IKeyBinding[] = [
+    {
+      context: '*', mode: VimModes.INSERT, keys: '<escape>', description: 'normal',
+      action: () => [{ type: ActionTypes.MODE_SET, mode: VimModes.NORMAL }],
+    },
+  ];
+  const insert: IEngineState = { ...INITIAL_ENGINE_STATE, mode: VimModes.INSERT };
+  const result = engine.resolve({ state: insert, key: buildKey('escape'), keymap: namedKeymap });
+  expect(result.status).toBe('resolved');
+  expect(result.state.mode).toBe(VimModes.NORMAL);
 });

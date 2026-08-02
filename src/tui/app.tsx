@@ -2,10 +2,11 @@ import { useCallback, useSyncExternalStore } from 'react';
 
 import { useKeyboard, useTerminalDimensions } from '@opentui/react';
 
-// Imported from the concrete module, not the core/ barrel -- see the same
-// note in action-reducer.ts: the barrel transitively pulls in the `telegram`
-// package, which misdetects itself as running in a browser once OpenTUI's
-// renderer has set `global.window`, and crashes at import time.
+// Type-only import, erased at runtime under verbatimModuleSyntax, so this
+// path choice has no bearing on the telegram/global.window crash the test
+// files' value imports had to avoid (see __tests__/tui/app.test.tsx) --
+// points at the concrete module rather than the core/ barrel purely because
+// that is where IApplicationState is actually defined.
 import type { ApplicationStoreService, IApplicationState } from '../core/application-store.ts';
 import { ActionTypes, VimContexts, VimModes } from '../keys/common/index.ts';
 import type { KeyNormalizerService, KeymapService, VimEngineService } from '../keys/index.ts';
@@ -27,6 +28,37 @@ export interface IAppProps {
 
 const SIDEBAR_WIDTH = 22;
 const CHROME_HEIGHT = 4;
+
+const CONTROL_CHARACTER_BOUNDARY = 0x20;
+const DELETE_CODE_POINT = 0x7f;
+
+/**
+ * True only for a single, unmodified, printable character. Two things a
+ * naive check misses:
+ *
+ * - Tab and linefeed arrive with `ctrl: false` (OpenTUI's parseKeypress
+ *   resolves them before the ctrl branch), so `!ctrl` alone does not keep
+ *   control characters out of the composer -- the code-point range check is
+ *   what actually excludes them.
+ * - `sequence.length` counts UTF-16 code units, which splits a non-BMP
+ *   character (an emoji) into two, silently failing "exactly one character"
+ *   for perfectly ordinary input. Array.from a string to count code points
+ *   instead.
+ */
+const isPrintableCharacter = (opts: { sequence: string; ctrl: boolean; meta: boolean }): boolean => {
+  const { sequence, ctrl, meta } = opts;
+  if (ctrl || meta) {
+    return false;
+  }
+
+  const codePoints = Array.from(sequence);
+  if (codePoints.length !== 1) {
+    return false;
+  }
+
+  const codePoint = codePoints[0].codePointAt(0) ?? 0;
+  return codePoint >= CONTROL_CHARACTER_BOUNDARY && codePoint !== DELETE_CODE_POINT;
+};
 
 export const App = (props: IAppProps) => {
   const {
@@ -63,7 +95,7 @@ export const App = (props: IAppProps) => {
 
     // In insert mode an unmapped printable key is text, not a missing binding.
     if (result.status === 'unmapped' && current.engine.mode === VimModes.INSERT) {
-      const isPrintable = event.sequence.length === 1 && !event.ctrl && !event.meta;
+      const isPrintable = isPrintableCharacter({ sequence: event.sequence, ctrl: event.ctrl, meta: event.meta });
       store.setState({
         patch: {
           engine: result.state,
@@ -81,17 +113,22 @@ export const App = (props: IAppProps) => {
     let patch: Partial<IApplicationState> = {};
 
     for (const action of result.actions) {
-      patch = { ...patch, ...applyAction({ state: { ...current, ...patch }, action }) };
+      // Computed once and read by both the reducer and the side-effect
+      // switch below, so a hypothetical binding that both moves a cursor and
+      // opens the item under it (e.g. [CURSOR_MOVE, CHAT_OPEN]) reads the
+      // post-move position in both places, not the pre-move snapshot.
+      const accumulated = { ...current, ...patch };
+      patch = { ...patch, ...applyAction({ state: accumulated, action }) };
 
       switch (action.type) {
         case ActionTypes.COMPOSER_SEND: {
-          const text = current.composerText;
+          const text = accumulated.composerText;
           patch = { ...patch, composerText: '' };
           void onSend(text);
           break;
         }
         case ActionTypes.CHAT_OPEN: {
-          const target = current.dialogs[current.chatCursor];
+          const target = accumulated.dialogs[accumulated.chatCursor];
           if (target) {
             void onOpenChat({ peerId: target.peerId });
           }

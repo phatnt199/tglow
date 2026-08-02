@@ -1,14 +1,10 @@
 import { getError } from '@venizia/ignis-inversion';
 
-// Imported from the concrete module, not the core/ barrel: the barrel also
-// re-exports telegram-client.ts, which imports the `telegram` package at
-// module scope. OpenTUI's CliRenderer sets `global.window = {}` the first
-// time any renderer is constructed (a requestAnimationFrame polyfill), which
-// survives for the rest of the test process; if `telegram` is then imported
-// afterward, its `isBrowser` check (`typeof window !== 'undefined'`) wrongly
-// reads true and crashes on `window.location`. Verified empirically: pulling
-// in the barrel here crashed the full suite (not this file in isolation,
-// since the renderer had not run yet) with exactly that TypeError.
+// Type-only import, erased at runtime under verbatimModuleSyntax, so this
+// path choice has no bearing on the telegram/global.window crash the test
+// files' value imports had to avoid (see __tests__/tui/action-reducer.test.ts)
+// -- points at the concrete module rather than the core/ barrel purely
+// because that is where IApplicationState is actually defined.
 import type { IApplicationState } from '../core/application-store.ts';
 import { ActionTypes, type TAction } from '../keys/common/index.ts';
 

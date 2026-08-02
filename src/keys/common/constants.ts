@@ -47,6 +47,6 @@ export const isVimMode = (value: string): value is TVimMode => {
 export const INITIAL_ENGINE_STATE: IEngineState = {
   mode: VimModes.NORMAL,
   context: VimContexts.MESSAGES,
-  pending: '',
+  pending: [],
   count: null,
 };

@@ -10,7 +10,7 @@ import type {
   TVimContext,
   TVimMode,
 } from './common/index.ts';
-import type { KeyNormalizerService } from './key-normalizer.ts';
+import { parseKeySequence, type KeyNormalizerService } from './key-normalizer.ts';
 
 const DIGIT_PATTERN = /^[0-9]$/;
 
@@ -37,11 +37,21 @@ export class VimEngineService {
     return opts.binding.context === '*' || opts.binding.context === opts.context;
   };
 
+  private tokensMatch = (opts: { bindingTokens: string[]; sequence: string[] }): boolean => {
+    const { bindingTokens, sequence } = opts;
+    return bindingTokens.length === sequence.length && bindingTokens.every((token, index) => token === sequence[index]);
+  };
+
+  private isPrefixOfBinding = (opts: { bindingTokens: string[]; sequence: string[] }): boolean => {
+    const { bindingTokens, sequence } = opts;
+    return bindingTokens.length > sequence.length && sequence.every((token, index) => token === bindingTokens[index]);
+  };
+
   private accumulateCount = (opts: { state: IEngineState; token: string }): IEngineState | null => {
     const { state, token } = opts;
 
     const countable = state.mode === VimModes.NORMAL || state.mode === VimModes.VISUAL;
-    if (!countable || state.pending !== '') {
+    if (!countable || state.pending.length !== 0) {
       return null;
     }
     if (!DIGIT_PATTERN.test(token)) {
@@ -61,7 +71,7 @@ export class VimEngineService {
   } => {
     const { binding, count } = opts;
     const actions = binding.action(count);
-    let state: IEngineState = { ...opts.state, pending: '', count: null };
+    let state: IEngineState = { ...opts.state, pending: [], count: null };
 
     for (const action of actions) {
       switch (action.type) {
@@ -104,26 +114,36 @@ export class VimEngineService {
       );
     });
 
-    const sequence = state.pending + token;
+    const sequence: string[] = [...state.pending, token];
 
     // A context-specific binding beats a wildcard one for the same keys, so
     // `j` in the chat list moves the chat cursor rather than the message cursor.
     // Without this, resolution depends on keymap declaration order.
+    //
+    // Matching compares whole token sequences, not raw strings: a binding's
+    // `keys` field is authored as a compact string ("gg", "<escape>") but
+    // parseKeySequence splits it back into the tokens it represents first.
+    // A typed "<" is one token; "<escape>" parses to one different token; the
+    // two can never equal or prefix each other regardless of which
+    // characters either contains. Comparing raw strings instead (as this did
+    // before) makes "<" a string-level prefix of every bracketed binding.
     const exact =
-      candidates.find(binding => binding.keys === sequence && binding.context !== '*') ??
-      candidates.find(binding => binding.keys === sequence);
+      candidates.find(binding => {
+        return this.tokensMatch({ bindingTokens: parseKeySequence(binding.keys), sequence }) && binding.context !== '*';
+      }) ??
+      candidates.find(binding => this.tokensMatch({ bindingTokens: parseKeySequence(binding.keys), sequence }));
     if (exact) {
       const applied = this.applyStateActions({ state, binding: exact, count: state.count ?? 1 });
       return { state: applied.state, actions: applied.actions, status: 'resolved' };
     }
 
     const isPrefix = candidates.some(binding => {
-      return binding.keys.startsWith(sequence) && binding.keys !== sequence;
+      return this.isPrefixOfBinding({ bindingTokens: parseKeySequence(binding.keys), sequence });
     });
     if (isPrefix) {
       return { state: { ...state, pending: sequence }, actions: [], status: 'pending' };
     }
 
-    return { state: { ...state, pending: '', count: null }, actions: [], status: 'unmapped' };
+    return { state: { ...state, pending: [], count: null }, actions: [], status: 'unmapped' };
   };
 }

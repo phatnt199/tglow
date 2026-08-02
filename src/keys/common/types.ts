@@ -34,8 +34,14 @@ export type TAction =
 export interface IEngineState {
   mode: TVimMode;
   context: TVimContext;
-  /** Canonical key strings accumulated toward a multi-key binding, for example "g". */
-  pending: string;
+  /**
+   * Canonical key tokens accumulated toward a multi-key binding, for example
+   * ["g"]. An array of whole tokens, not a concatenated string: a bracketed
+   * group like "<escape>" is one token no matter how many characters it
+   * takes to write, so a typed "<" (also one token) can never be mistaken
+   * for a prefix of it.
+   */
+  pending: string[];
   /** The 3 in 3j. Null when no count has been typed. */
   count: number | null;
 }

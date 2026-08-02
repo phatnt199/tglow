@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test';
 
-import { KeyNormalizerService } from '../../src/keys/key-normalizer.ts';
+import { KeyNormalizerService, parseKeySequence } from '../../src/keys/key-normalizer.ts';
 
 const service = new KeyNormalizerService();
 
@@ -14,6 +14,35 @@ test('plain keys stringify to their name', () => {
 test('a named key with no modifiers is still wrapped, so it cannot collide with typed text', () => {
   expect(service.toCanonicalString({ key: { name: 'escape', ctrl: false, alt: false, shift: false } })).toBe('<escape>');
   expect(service.toCanonicalString({ key: { name: 'return', ctrl: false, alt: false, shift: false } })).toBe('<return>');
+  expect(service.toCanonicalString({ key: { name: 'backspace', ctrl: false, alt: false, shift: false } })).toBe('<backspace>');
+});
+
+test('parseKeySequence splits into one token per character outside brackets', () => {
+  expect(parseKeySequence('j')).toEqual(['j']);
+  expect(parseKeySequence('gg')).toEqual(['g', 'g']);
+  expect(parseKeySequence('nf')).toEqual(['n', 'f']);
+});
+
+test('parseKeySequence treats a bracketed group as exactly one token', () => {
+  expect(parseKeySequence('<escape>')).toEqual(['<escape>']);
+  expect(parseKeySequence('<C-p>')).toEqual(['<C-p>']);
+  expect(parseKeySequence('<backspace>')).toEqual(['<backspace>']);
+});
+
+// The bug the whole tokenization fix exists for: bracket-notating named keys
+// alone moved the collision rather than removing it, because a typed "<" is
+// itself a bare single-character token that a raw-string startsWith matched
+// against every bracketed binding. Tokenizing means a lone "<" parses to
+// exactly one token, distinct from any bracketed group.
+test('parseKeySequence never merges a bare "<" into a later bracketed token', () => {
+  expect(parseKeySequence('<')).toEqual(['<']);
+});
+
+// vim itself treats an unbalanced "<" in a mapping as literal text rather
+// than erroring, so parseKeySequence degrades the same way instead of
+// throwing on a malformed binding string.
+test('an unclosed bracket falls back to one literal-character token per character', () => {
+  expect(parseKeySequence('<escape')).toEqual(['<', 'e', 's', 'c', 'a', 'p', 'e']);
 });
 
 test('modifiers use vim notation', () => {
