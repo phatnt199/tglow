@@ -26,6 +26,7 @@ First of two plans for milestone M1 of `docs/superpowers/specs/2026-08-01-tglow-
 - **Control flow:** always braces; early return over nesting; `switch` needs braces per case and a `default` that throws via `getError`.
 - **The logger must never write to stdout** — it would corrupt the alternate screen. `main.ts` registers a file-writing provider before anything can log.
 - **Dependency rule, enforced by Task 2's boundary test:** `keys/` imports only `@venizia/ignis-inversion` and relative paths. `core/` never imports `react` or `@opentui/*`. `tui/` never imports `telegram`.
+- **Tests preload a logger provider.** `bunfig.toml` preloads `src/test/setup.ts`, which calls `installFileLogger` once per test process. Without it, any test whose code-under-test logs in a `catch` block dies with `No logger provider is registered and the default (winston) could not be loaded` — winston is an optional peer this project does not install. Do NOT register a provider per test file; the preload covers the whole suite.
 - **No network in tests.** Every test passes with no internet and no Telegram account. Live connection is exercised only by the manual smoke test in Task 16.
 - **Commit after every task.**
 
@@ -78,6 +79,8 @@ Confirmed by running code on this machine — see `docs/superpowers/probes/`. Do
 | `src/tui/action-reducer.ts` | `applyAction` |
 | `src/tui/app.tsx` | Layout + key dispatch |
 | `src/test/render.tsx` | Working test renderer |
+| `src/test/setup.ts` | Test preload: registers the file logger once per test process |
+| `bunfig.toml` | Points `bun test` at the preload |
 | `src/container.ts` | `buildContainer` |
 | `src/main.ts` | Entry point |
 
