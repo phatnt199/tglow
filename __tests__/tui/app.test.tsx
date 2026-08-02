@@ -2,6 +2,7 @@ import { test, expect } from 'bun:test';
 import { act } from 'react';
 
 import { BindingScopes, Container } from '@venizia/ignis-inversion';
+import type { TestRendererSetup } from '@opentui/core/testing';
 
 import { BindingKeys } from '../../src/common/index.ts';
 // Concrete module, not the core/ barrel -- see src/tui/action-reducer.ts for why.
@@ -21,6 +22,20 @@ const dialogs: IDialogRow[] = [
 const messages: IMessageRow[] = [1, 2, 3, 4].map(id => ({
   peerId: 'u1', id, fromId: 'u1', date: id * 100, text: `msg${id}`, out: 0,
 }));
+
+// A lone \x1b could still open a CSI sequence, so OpenTUI's input parser holds
+// it for 20ms before giving up and delivering a bare Escape. Every other key
+// arrives synchronously; this one needs the window to pass first, or the press
+// simply never reaches the handler and the test proves nothing.
+const ESCAPE_FLUSH_MILLISECONDS = 60;
+
+const pressEscape = async (renderer: TestRendererSetup): Promise<void> => {
+  await act(async () => {
+    renderer.mockInput.pressEscape();
+    await new Promise(resolve => { setTimeout(resolve, ESCAPE_FLUSH_MILLISECONDS); });
+  });
+  await renderer.flush();
+};
 
 const mount = async () => {
   const container = new Container({ scope: 'AppTest' });
@@ -99,6 +114,46 @@ test('i enters INSERT and jk returns to NORMAL', async () => {
   });
   await renderer.flush();
   expect(store.getState().engine.mode).toBe('normal');
+  // The flush rule below must not make the escape hatch type its own keys.
+  expect(store.getState().composerText).toBe('');
+});
+
+// Final review, Critical 1: `jk` is bound in INSERT, so the engine holds a
+// bare `j` as a pending prefix -- and App's pending branch stored the engine
+// state without ever emitting the character. Every j a user typed vanished:
+// "enjoy" arrived as "enoy". These four drive real key presses through App,
+// because the engine's own tests use a local keymap that omits `jk`, which is
+// exactly how a bug this loud survived 164 passing tests.
+test('a j inside a word reaches the composer instead of being swallowed', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('enjoy'); });
+  await renderer.flush();
+  expect(store.getState().composerText).toBe('enjoy');
+});
+
+test('two j presses leave both characters in the composer', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('jj'); });
+  await renderer.flush();
+  expect(store.getState().composerText).toBe('jj');
+});
+
+// A dead prefix must not cost a second Escape: ['j', '<escape>'] is unmapped
+// and \x1b is not printable, so before the flush rule the first Escape did
+// nothing at all and INSERT persisted.
+test('one Escape leaves INSERT after a lone j', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('j'); });
+  await renderer.flush();
+  await pressEscape(renderer);
+  expect(store.getState().engine.mode).toBe('normal');
+  expect(store.getState().composerText).toBe('j');
 });
 
 test('typing in INSERT reaches the composer and does not move the cursor', async () => {

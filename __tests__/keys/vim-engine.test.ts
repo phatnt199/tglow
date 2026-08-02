@@ -244,9 +244,20 @@ test('a context-specific binding beats a wildcard one for the same keys', () => 
 // M1a limitation, not a bug: resolve checks for an exact match before it
 // checks for a prefix, so a keymap that binds both a key and a longer
 // sequence starting with it makes the longer binding unreachable. The M1a
-// keymap avoids this -- 'g' and 'n' are only ever prefixes, and 'j' / 'jk'
-// never compete because they live in different modes. Resolving it properly
-// needs operator-pending semantics and a timeout, which is M1b work.
+// keymap avoids this: 'g' and 'n' are only ever prefixes, and nothing binds
+// both a key and a longer sequence starting with it inside one mode.
+//
+// 'j' and 'jk' are NOT an instance of it, but they do compete -- an earlier
+// version of this comment claimed they could not, "because they live in
+// different modes", and that is false. INSERT's fall-through for an unmatched
+// key is literal text, not the absence of a binding, so the bare `j` this
+// engine correctly reports as `pending` is a character the user is owed.
+// Holding it is the engine's job; emitting it once the prefix is proven dead
+// is App's, and while nothing did, every typed j was swallowed. The flush
+// rule and its tests live in src/tui/app.tsx and __tests__/tui/app.test.tsx.
+//
+// Resolving the exact-before-prefix limit properly needs operator-pending
+// semantics and a timeout, which is M1b work.
 test('a binding that is also a prefix of a longer one makes the longer one unreachable (known limit, see M1b)', () => {
   const conflictingKeymap: IKeyBinding[] = [
     {

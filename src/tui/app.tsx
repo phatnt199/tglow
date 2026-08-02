@@ -60,6 +60,19 @@ const isPrintableCharacter = (opts: { sequence: string; ctrl: boolean; meta: boo
   return codePoint >= CONTROL_CHARACTER_BOUNDARY && codePoint !== DELETE_CODE_POINT;
 };
 
+/**
+ * The literal text a dead pending prefix stands for. A canonical token is
+ * either one character a human typed or a bracketed key name, and only the
+ * former is text -- the same test `isPrintableCharacter` applies to a live
+ * press, so a bracketed token ("<escape>") is more than one code point and
+ * drops out on its own.
+ */
+const toFlushedText = (opts: { pending: string[] }): string => {
+  return opts.pending
+    .filter(token => isPrintableCharacter({ sequence: token, ctrl: false, meta: false }))
+    .join('');
+};
+
 export const App = (props: IAppProps) => {
   const {
     store, engine, keymapService, keyNormalizer, tokens, resolveSenderName, onSend, onQuit, onOpenChat,
@@ -91,26 +104,52 @@ export const App = (props: IAppProps) => {
     // every setState, so reading it fresh here is always current.
     const current = store.getState();
     const key = keyNormalizer.normalize({ event });
-    const result = engine.resolve({ state: current.engine, key, keymap: keymapService.getBindings() });
+    const keymap = keymapService.getBindings();
+    let result = engine.resolve({ state: current.engine, key, keymap });
+
+    const isPrintable = isPrintableCharacter({ sequence: event.sequence, ctrl: event.ctrl, meta: event.meta });
+    const isInsert = current.engine.mode === VimModes.INSERT;
+
+    // Vim flushes a prefix that turns out to match nothing as literal text,
+    // and INSERT here has no other fall-through: `jk` leaves insert mode, so
+    // the engine withholds a bare `j` while it waits for the `k`, and
+    // discarding it on the key that proves no binding will complete swallowed
+    // every j anyone typed -- "enjoy" reached the composer as "enoy".
+    //
+    // The key that broke the match is then handled as though it had arrived
+    // with no prefix. A printable one is simply text: tglow has no
+    // `timeoutlen`, so a character withheld a second time would stay
+    // invisible until some later press happened to end the sequence. Anything
+    // else is re-resolved against a cleared prefix, which is what lets a
+    // single Escape leave INSERT after a lone j rather than needing two.
+    let flushed = '';
+    if (result.status === 'unmapped' && isInsert && current.engine.pending.length > 0) {
+      flushed = toFlushedText({ pending: current.engine.pending });
+      if (!isPrintable) {
+        result = engine.resolve({ state: { ...current.engine, pending: [] }, key, keymap });
+      }
+    }
+    const flushPatch: Partial<IApplicationState> =
+      flushed === '' ? {} : { composerText: current.composerText + flushed };
 
     // In insert mode an unmapped printable key is text, not a missing binding.
-    if (result.status === 'unmapped' && current.engine.mode === VimModes.INSERT) {
-      const isPrintable = isPrintableCharacter({ sequence: event.sequence, ctrl: event.ctrl, meta: event.meta });
+    if (result.status === 'unmapped' && isInsert) {
+      const typed = flushed + (isPrintable ? event.sequence : '');
       store.setState({
         patch: {
           engine: result.state,
-          ...(isPrintable ? { composerText: current.composerText + event.sequence } : {}),
+          ...(typed === '' ? {} : { composerText: current.composerText + typed }),
         },
       });
       return;
     }
 
     if (result.status !== 'resolved') {
-      store.setState({ patch: { engine: result.state } });
+      store.setState({ patch: { ...flushPatch, engine: result.state } });
       return;
     }
 
-    let patch: Partial<IApplicationState> = {};
+    let patch: Partial<IApplicationState> = { ...flushPatch };
 
     for (const action of result.actions) {
       // Computed once and read by both the reducer and the side-effect
