@@ -1764,9 +1764,9 @@ git commit -m "Add configuration service with actionable setup errors"
 
 ```ts
 import { test, expect } from 'bun:test';
-import { existsSync, mkdtempSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { SessionStoreService } from './session-store.ts';
 
@@ -1808,6 +1808,19 @@ test('clearing a missing file is not an error', () => {
   expect(() => service.clear({ filePath: buildPath() })).not.toThrow();
 });
 
+// writeFileSync's mode is honoured only on creation, so overwriting a file that
+// already exists with looser permissions would silently leave it world-readable.
+test('saving over an existing loose-permission file tightens it to 0600', () => {
+  const filePath = buildPath();
+  mkdirSync(dirname(filePath), { recursive: true });
+  writeFileSync(filePath, 'stale', { mode: 0o644 });
+  expect(statSync(filePath).mode & 0o777).toBe(0o644);
+
+  service.save({ filePath, value: 'fresh' });
+  expect(statSync(filePath).mode & 0o777).toBe(0o600);
+  expect(service.load({ filePath })).toBe('fresh');
+});
+
 test('surrounding whitespace is stripped on load', () => {
   const filePath = buildPath();
   service.save({ filePath, value: '  padded  ' });
@@ -1823,7 +1836,7 @@ Expected: FAIL — `Cannot find module './session-store.ts'`
 - [ ] **Step 3: Write `src/core/session-store.ts`**
 
 ```ts
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 const SESSION_FILE_MODE = 0o600;
@@ -1845,6 +1858,10 @@ export class SessionStoreService {
   save = (opts: { filePath: string; value: string }): void => {
     mkdirSync(dirname(opts.filePath), { recursive: true, mode: SESSION_DIRECTORY_MODE });
     writeFileSync(opts.filePath, opts.value, { mode: SESSION_FILE_MODE });
+    // writeFileSync's mode applies only when it creates the inode, so an
+    // existing file keeps whatever permissions it already had. Tighten
+    // unconditionally: this file is equivalent to a logged-in device.
+    chmodSync(opts.filePath, SESSION_FILE_MODE);
   };
 
   clear = (opts: { filePath: string }): void => {
