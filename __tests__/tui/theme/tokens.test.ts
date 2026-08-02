@@ -28,6 +28,23 @@ test('sage matches the upstream devglow palette exactly', () => {
   expect(sage.DARK_03).toBe('#383838');
 });
 
+// From devglow/lua/devglow/palettes/ember.lua. The shades were once
+// transcribed wrongly -- the whole DARK_* ramp was off by one position --
+// and nothing caught it, because no test asserted ember's values.
+test('ember matches the upstream devglow palette exactly', () => {
+  const ember = PALETTES.ember!;
+  expect(ember.FOREGROUND).toBe('#F5F0EB');
+  expect(ember.BACKGROUND).toBe('#141311');
+  expect(ember.GOLD).toBe('#EACA80');
+  expect(ember.TEAL).toBe('#7BBDBD');
+  expect(ember.WINE).toBe('#B45A42');
+  expect(ember.DARK_00).toBe('#0D0D0B');
+  expect(ember.DARK_01).toBe('#1A1917');
+  expect(ember.DARK_02).toBe('#2E2C28');
+  expect(ember.DARK_03).toBe('#3A3835');
+  expect(ember.DARK_04).toBe('#78716C');
+});
+
 test('an unknown palette falls back to sage', () => {
   expect(buildTokens({ paletteName: 'nonexistent' })).toEqual(buildTokens({ paletteName: 'sage' }));
 });

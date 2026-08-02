@@ -53,11 +53,11 @@ const EMBER: IPalette = {
   TEAL: '#7BBDBD',
   SKY: '#6AADAD',
   WINE: '#B45A42',
-  DARK_00: '#1A1917',
-  DARK_01: '#211F1D',
-  DARK_02: '#2E2B28',
-  DARK_03: '#3D3935',
-  DARK_04: '#847C74',
+  DARK_00: '#0D0D0B',
+  DARK_01: '#1A1917',
+  DARK_02: '#2E2C28',
+  DARK_03: '#3A3835',
+  DARK_04: '#78716C',
 };
 
 export const PALETTES: Record<string, IPalette> = { sage: SAGE, ember: EMBER };
