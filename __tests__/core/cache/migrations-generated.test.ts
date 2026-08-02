@@ -33,9 +33,7 @@ test('every embedded hash and statement matches drizzle readMigrationFiles', () 
   expect(EMBEDDED_MIGRATIONS.map(migration => migration.createdAt)).toEqual(
     fromDrizzle.map(migration => migration.folderMillis),
   );
-  expect(EMBEDDED_MIGRATIONS.map(migration => migration.sql)).toEqual(
-    fromDrizzle.map(migration => migration.sql.filter(statement => statement.trim() !== '')),
-  );
+  expect(EMBEDDED_MIGRATIONS.map(migration => migration.sql)).toEqual(fromDrizzle.map(migration => migration.sql));
 });
 
 test('migrations are embedded in journal order', () => {

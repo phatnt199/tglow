@@ -48,6 +48,13 @@ export const runMigrations = (opts: { database: TDrizzleDatabase }): void => {
 
     database.transaction(transaction => {
       for (const statement of migration.sql) {
+        // The statements are drizzle's own split, kept unmodified so the two
+        // agree byte for byte. A trailing breakpoint would leave an empty chunk
+        // that SQLite rejects; drizzle never emits one, and skipping it here
+        // executes nothing either way.
+        if (statement.trim() === '') {
+          continue;
+        }
         transaction.run(sql.raw(statement));
       }
       transaction.run(

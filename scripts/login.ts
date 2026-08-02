@@ -5,6 +5,7 @@ import {
   SessionStoreService,
   TelegramAuthenticationGateway,
   TelegramClientService,
+  installFileLogger,
 } from '../src/core/index.ts';
 
 // tglow logs in on its own now; this stays for re-authenticating without
@@ -18,6 +19,13 @@ if (!process.stdin.isTTY) {
 }
 
 const configuration = new ConfigurationService().load();
+
+// Not optional here either. Without a provider registered, LoggerFactory does
+// not quietly fall back -- winston is not a dependency, so the first log call
+// inside a catch block *throws*, and its message replaces the real reason a
+// login failed. A wrong code reported "could not load winston".
+installFileLogger({ filePath: configuration.logPath });
+
 const clientService = new TelegramClientService(new SessionStoreService());
 const client = clientService.build({ configuration });
 

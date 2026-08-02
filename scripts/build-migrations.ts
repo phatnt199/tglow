@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const STATEMENT_BREAKPOINT = '--> statement-breakpoint';
 
@@ -24,8 +25,10 @@ export interface IReadMigration {
   sql: string[];
 }
 
-export const MIGRATIONS_FOLDER = new URL('../drizzle', import.meta.url).pathname;
-export const GENERATED_PATH = new URL('../src/core/cache/migrations.generated.ts', import.meta.url).pathname;
+// fileURLToPath, not .pathname: a repository checked out under a path with a
+// space in it would otherwise arrive here percent-encoded.
+export const MIGRATIONS_FOLDER = fileURLToPath(new URL('../drizzle', import.meta.url));
+export const GENERATED_PATH = fileURLToPath(new URL('../src/core/cache/migrations.generated.ts', import.meta.url));
 
 /**
  * The hash is `createHash('sha256').update(query).digest('hex')` over the whole
@@ -47,10 +50,7 @@ export const readMigrations = (opts: { migrationsFolder: string }): IReadMigrati
       tag: entry.tag,
       hash: createHash('sha256').update(query).digest('hex'),
       createdAt: entry.when,
-      // A trailing breakpoint would leave an empty chunk that SQLite rejects as
-      // a statement; drizzle happens never to emit one, and dropping it here
-      // costs nothing because an all-whitespace chunk executes nothing anyway.
-      sql: query.split(STATEMENT_BREAKPOINT).filter(statement => statement.trim() !== ''),
+      sql: query.split(STATEMENT_BREAKPOINT),
     };
   });
 };

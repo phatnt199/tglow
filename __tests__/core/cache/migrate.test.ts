@@ -8,6 +8,7 @@ import { drizzle } from 'drizzle-orm/bun-sqlite';
 import { migrate } from 'drizzle-orm/bun-sqlite/migrator';
 
 import { DatabaseService } from '../../../src/core/cache/database.ts';
+import { runMigrations } from '../../../src/core/cache/migrate.ts';
 import { EMBEDDED_MIGRATIONS } from '../../../src/core/cache/migrations.generated.ts';
 
 const buildPath = (): string => join(mkdtempSync(join(tmpdir(), 'tglow-db-')), 'cache.sqlite');
@@ -124,6 +125,25 @@ test('a database tglow migrated is left alone by drizzle', () => {
   connection.close();
 
   expect(readBookkeeping({ filePath })).toEqual(before);
+});
+
+// A migration that records itself but did not fully apply is the worst outcome
+// available: every later start would skip it, and the schema would be wrong for
+// ever. The transaction around each migration is what prevents that, so it is
+// worth an actual failed migration to prove it holds.
+test('a migration that fails part way records nothing', () => {
+  const filePath = buildPath();
+  const connection = new Database(filePath);
+  // Collides with the migration's own CREATE TABLE `peers`, part way through.
+  connection.run('CREATE TABLE `peers` (placeholder integer)');
+
+  expect(() => runMigrations({ database: drizzle(connection) })).toThrow();
+
+  const rows = connection.query('SELECT count(*) AS total FROM __drizzle_migrations').get() as { total: number };
+  expect(rows.total).toBe(0);
+  // The statements before the collision were rolled back with it.
+  expect(connection.query(`SELECT name FROM sqlite_master WHERE name = 'dialogs'`).get()).toBeNull();
+  connection.close();
 });
 
 test('the bookkeeping table tglow creates is the one drizzle creates', () => {

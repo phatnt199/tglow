@@ -1,4 +1,4 @@
-import { toError } from '@venizia/ignis-helpers';
+import { ApplicationLogger, toError, type ILogger } from '@venizia/ignis-helpers';
 import { getError } from '@venizia/ignis-inversion';
 
 import type { AuthenticationService, TAuthenticationStep } from '../core/authentication.ts';
@@ -15,6 +15,8 @@ const PASSWORD_LABEL = 'Two-factor password: ';
  * about to be handed to OpenTUI is worse than an early exit.
  */
 const MAX_ATTEMPTS_PER_STEP = 3;
+
+const logger: ILogger = ApplicationLogger.get('interactive-login');
 
 export interface IInteractiveLoginOptions {
   service: AuthenticationService;
@@ -70,6 +72,13 @@ export const runInteractiveLogin = async (opts: IInteractiveLoginOptions): Promi
       attemptsLeft = MAX_ATTEMPTS_PER_STEP;
       continue;
     } catch (error) {
+      // The step, never what was typed at it. AuthenticationService and the
+      // gateway log their own rejections; this catches the ones they raise
+      // before reaching a gateway at all, which would otherwise reach no log.
+      logger
+        .for(runInteractiveLogin.name)
+        .warn('Step rejected | Step: %s | Reason: %s', service.getStep(), toError(error).message);
+
       attemptsLeft -= 1;
       if (attemptsLeft <= 0) {
         throw getError({
