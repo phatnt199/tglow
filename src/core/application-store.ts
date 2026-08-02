@@ -24,6 +24,14 @@ export interface IApplicationState {
   /** Which full-pane overlay is showing, if any. Orthogonal to engine.context: opening one leaves mode and pane focus exactly as they were. */
   overlay: TOverlay | null;
   /**
+   * Set by `dd`'s DELETE_REQUEST while the status line waits for y/n; null
+   * once answered either way. The only irreversible action in the app gates
+   * on this being non-null: App checks it before engine resolution, the same
+   * category of App-level gate as `overlay` and the reply/edit escapes above,
+   * and swallows every key except y, n and escape while it is set.
+   */
+  pendingConfirmation: { kind: 'delete'; messageId: number } | null;
+  /**
    * Ids of messages whose spoilers `zs` has revealed. Not persisted: reopening
    * a chat rebuilds the store from scratch, so a spoiler revealed yesterday is
    * hidden again today, which is the intended behaviour, not a bug to fix.
@@ -45,6 +53,7 @@ const INITIAL_STATE: IApplicationState = {
   connection: 'offline',
   statusMessage: null,
   overlay: null,
+  pendingConfirmation: null,
   revealedSpoilers: new Set(),
 };
 

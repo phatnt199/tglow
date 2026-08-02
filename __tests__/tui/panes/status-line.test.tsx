@@ -23,6 +23,7 @@ const render = async (overrides: Partial<IStatusLineProps> = {}): Promise<TestRe
     hint: '',
     tokens,
     width: STATUS_WIDTH,
+    confirming: false,
     ...overrides,
   };
   const renderer = await renderWithKeys(<StatusLine {...props} />, { width: props.width, height: 1 });
@@ -144,4 +145,21 @@ test('renders without a hint', async () => {
   const row = readRow(await render({ hint: '', position: 2, total: 9 }));
   expect(row).toContain('2/9');
   expect(row.trimEnd().endsWith('2/9')).toBe(true);
+});
+
+// Task 8: the only irreversible action in the app gets a colour, not another
+// row -- the status line stays exactly one row (see app.tsx's own
+// STATUS_LINE_HEIGHT comment) whether or not a delete is pending confirmation.
+test('the title turns the danger colour while a destructive action is pending confirmation', async () => {
+  const renderer = await render({ confirming: true, title: 'Delete this message? (y/n)' });
+  const span = renderer.captureSpans().lines[0]!.spans.find(candidate => candidate.text.includes('Delete this message'));
+  expect(span).toBeDefined();
+  expect(toHex(span!.fg)).toBe(tokens.error.toLowerCase());
+});
+
+test('the title keeps the ordinary colour when nothing is pending confirmation', async () => {
+  const renderer = await render({ confirming: false, title: 'Alice' });
+  const span = renderer.captureSpans().lines[0]!.spans.find(candidate => candidate.text.includes('Alice'));
+  expect(span).toBeDefined();
+  expect(toHex(span!.fg)).toBe(tokens.foreground.toLowerCase());
 });

@@ -20,6 +20,7 @@ const buildAdapter = (overrides: Partial<IMessageAdapter> = {}): IMessageAdapter
   fetchHistory: async () => [],
   send: async opts => buildRawMessage({ id: 99, peerId: opts.peerId, text: opts.text, out: 1, date: 999 }),
   edit: async opts => buildRawMessage({ id: opts.messageId, peerId: opts.peerId, text: opts.text, out: 1 }),
+  delete: async (): Promise<void> => {},
   // MessageService never calls this -- UpdateService (__tests__/core/update-service.test.ts)
   // is what exercises it -- but IMessageAdapter requires it, so a stub keeps this fake whole.
   subscribeToNewMessages: () => (): void => {},
@@ -240,5 +241,88 @@ test('a failed edit keeps the text in the composer', async () => {
   await harness.service.edit({ peerId: 'u1', messageId: 5, text: 'fixed' });
   expect(harness.store.getState().composerText).toBe('fixed');
   expect(harness.store.getState().editingMessageId).toBe(5);
+  harness.database.close();
+});
+
+// Task 8: delete. forEveryone is decided here, from state.messages -- the
+// same array DELETE_REQUEST itself resolved the id from -- rather than
+// trusted from a caller, so the confirmation and the deletion can never
+// disagree about whose message this is.
+test('deleting your own message asks the adapter to delete it for everyone', async () => {
+  const deletes: Array<{ peerId: string; messageId: number; forEveryone: boolean }> = [];
+  const harness = buildService(buildAdapter({ delete: async opts => { deletes.push(opts); } }));
+  harness.database.insertMessages({
+    messages: [{ peerId: 'u1', id: 5, fromId: 'me', date: 100, text: 'oops', out: 1, entities: [], replyToMessageId: null }],
+  });
+  harness.store.setState({ patch: { messages: harness.database.listMessages({ peerId: 'u1', limit: 10 }) } });
+  await harness.service.delete({ peerId: 'u1', messageId: 5 });
+  expect(deletes).toEqual([{ peerId: 'u1', messageId: 5, forEveryone: true }]);
+  harness.database.close();
+});
+
+test("deleting someone else's message deletes only for you", async () => {
+  const deletes: Array<{ peerId: string; messageId: number; forEveryone: boolean }> = [];
+  const harness = buildService(buildAdapter({ delete: async opts => { deletes.push(opts); } }));
+  harness.database.insertMessages({
+    messages: [{ peerId: 'u1', id: 5, fromId: 'u1', date: 100, text: 'hi', out: 0, entities: [], replyToMessageId: null }],
+  });
+  harness.store.setState({ patch: { messages: harness.database.listMessages({ peerId: 'u1', limit: 10 }) } });
+  await harness.service.delete({ peerId: 'u1', messageId: 5 });
+  expect(deletes).toEqual([{ peerId: 'u1', messageId: 5, forEveryone: false }]);
+  harness.database.close();
+});
+
+// The row must stay in the cache, only flagged -- removing it would leave a
+// hole in the id range that history paging reasons about. listMessages
+// already filters deleted rows out, so this also proves the cache write ran.
+test('a successful delete marks the cached row deleted rather than removing it', async () => {
+  const harness = buildService(buildAdapter({ delete: async () => {} }));
+  harness.database.insertMessages({
+    messages: [
+      { peerId: 'u1', id: 5, fromId: 'me', date: 100, text: 'oops', out: 1, entities: [], replyToMessageId: null },
+      { peerId: 'u1', id: 6, fromId: 'me', date: 200, text: 'kept', out: 1, entities: [], replyToMessageId: null },
+    ],
+  });
+  harness.store.setState({ patch: { messages: harness.database.listMessages({ peerId: 'u1', limit: 10 }) } });
+  await harness.service.delete({ peerId: 'u1', messageId: 5 });
+  expect(harness.database.listMessages({ peerId: 'u1', limit: 10 }).map(row => row.text)).toEqual(['kept']);
+  harness.database.close();
+});
+
+test('a successful delete for everyone says so on the status line', async () => {
+  const harness = buildService(buildAdapter({ delete: async () => {} }));
+  harness.database.insertMessages({
+    messages: [{ peerId: 'u1', id: 5, fromId: 'me', date: 100, text: 'oops', out: 1, entities: [], replyToMessageId: null }],
+  });
+  harness.store.setState({ patch: { messages: harness.database.listMessages({ peerId: 'u1', limit: 10 }) } });
+  await harness.service.delete({ peerId: 'u1', messageId: 5 });
+  expect(harness.store.getState().statusMessage).toContain('everyone');
+  harness.database.close();
+});
+
+test('a successful delete for yourself only says so on the status line', async () => {
+  const harness = buildService(buildAdapter({ delete: async () => {} }));
+  harness.database.insertMessages({
+    messages: [{ peerId: 'u1', id: 5, fromId: 'u1', date: 100, text: 'hi', out: 0, entities: [], replyToMessageId: null }],
+  });
+  harness.store.setState({ patch: { messages: harness.database.listMessages({ peerId: 'u1', limit: 10 }) } });
+  await harness.service.delete({ peerId: 'u1', messageId: 5 });
+  const status = harness.store.getState().statusMessage;
+  expect(status).not.toContain('everyone');
+  expect(status).toBeTruthy();
+  harness.database.close();
+});
+
+// The irreversible half of this task: a rejected delete must not touch the
+// cache, and must say so rather than silently doing nothing.
+test('a failed delete reports failure and leaves the message cached', async () => {
+  const harness = buildService(buildAdapter({ delete: async () => { throw new Error('MESSAGE_DELETE_FORBIDDEN'); } }));
+  harness.database.insertMessages({
+    messages: [{ peerId: 'u1', id: 5, fromId: 'me', date: 100, text: 'oops', out: 1, entities: [], replyToMessageId: null }],
+  });
+  harness.store.setState({ patch: { messages: harness.database.listMessages({ peerId: 'u1', limit: 10 }) } });
+  await harness.service.delete({ peerId: 'u1', messageId: 5 });
+  expect(harness.store.getState().statusMessage).toContain('MESSAGE_DELETE_FORBIDDEN');
+  expect(harness.database.listMessages({ peerId: 'u1', limit: 10 }).map(row => row.text)).toEqual(['oops']);
   harness.database.close();
 });

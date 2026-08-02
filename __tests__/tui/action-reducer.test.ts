@@ -169,6 +169,41 @@ test('edit.cancel restores the composer to what it held before the edit began', 
   expect(patch.composerTextBeforeEdit).toBeNull();
 });
 
+test('delete.request asks for confirmation on the message under the cursor', () => {
+  const state = buildState({ messageCursor: 2 });
+  const patch = applyAction({ state, action: { type: ActionTypes.DELETE_REQUEST } });
+  expect(patch.pendingConfirmation).toEqual({ kind: 'delete', messageId: state.messages[2]!.id });
+  expect(patch.statusMessage).toBeTruthy();
+});
+
+test('delete.request with no messages is harmless', () => {
+  const state = buildState({ messages: [], messageCursor: 0 });
+  expect(() => applyAction({ state, action: { type: ActionTypes.DELETE_REQUEST } })).not.toThrow();
+  expect(applyAction({ state, action: { type: ActionTypes.DELETE_REQUEST } })).toEqual({});
+});
+
+test('confirmation.confirm clears the pending confirmation and the prompt', () => {
+  const state = buildState({
+    pendingConfirmation: { kind: 'delete', messageId: 3 },
+    statusMessage: 'Delete this message? (y/n)',
+  });
+  const patch = applyAction({ state, action: { type: ActionTypes.CONFIRM } });
+  expect(patch.pendingConfirmation).toBeNull();
+  expect(patch.statusMessage).toBeNull();
+});
+
+// Cancelling clears the same two fields CONFIRM does -- only the side effect
+// (App calling onDelete) tells the two apart, and that lives in app.tsx, not here.
+test('confirmation.cancel clears the pending confirmation and the prompt', () => {
+  const state = buildState({
+    pendingConfirmation: { kind: 'delete', messageId: 3 },
+    statusMessage: 'Delete this message? (y/n)',
+  });
+  const patch = applyAction({ state, action: { type: ActionTypes.CANCEL_CONFIRMATION } });
+  expect(patch.pendingConfirmation).toBeNull();
+  expect(patch.statusMessage).toBeNull();
+});
+
 test('an unknown action type is rejected rather than ignored', () => {
   expect(() =>
     applyAction({ state: buildState(), action: { type: 'nonsense' } as never }),

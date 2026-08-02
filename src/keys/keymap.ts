@@ -60,6 +60,19 @@ export class KeymapService {
       context: '*', mode: VimModes.NORMAL, keys: 'e', description: 'Edit message',
       action: () => [{ type: ActionTypes.EDIT_START }],
     },
+    // dd, not bare d: resolve() checks for an exact match before it checks
+    // for a prefix (see vim-engine.ts's own resolve, and the invariant test
+    // pinning this in vim-engine.test.ts), so a bare `d` binding would make
+    // `dd` permanently unreachable. Operator-pending with a timeout, which
+    // would let both coexist the way real vim does, is M1b-2 work. The
+    // confirmation this starts is intercepted directly in App (app.tsx),
+    // the same way the reply/edit escapes above are -- y and n only mean
+    // anything while IApplicationState.pendingConfirmation is set, which a
+    // static keymap entry has no way to see.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: 'dd', description: 'Delete message',
+      action: () => [{ type: ActionTypes.DELETE_REQUEST }],
+    },
 
     // Panes — nf echoes the author's NvimTreeFocus mapping.
     {

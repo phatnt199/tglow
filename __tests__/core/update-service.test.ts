@@ -21,6 +21,10 @@ const buildAdapter = (): { adapter: IMessageAdapter; emit: (message: IRawMessage
     fetchHistory: async () => [],
     send: async opts => buildRawMessage({ peerId: opts.peerId, text: opts.text }),
     edit: async opts => buildRawMessage({ id: opts.messageId, peerId: opts.peerId, text: opts.text }),
+    // UpdateService never calls this -- MessageService.delete (see
+    // message-service.test.ts) is what exercises it -- but IMessageAdapter
+    // requires it, so a stub keeps this fake whole.
+    delete: async (): Promise<void> => {},
     subscribeToNewMessages: subscribeOpts => {
       onMessage = subscribeOpts.onMessage;
       return (): void => {

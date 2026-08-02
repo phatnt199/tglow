@@ -12,6 +12,15 @@ export interface IStatusLineProps {
   tokens: ITokens;
   /** Columns available; position and hint are pushed to the far end of them. */
   width: number;
+  /**
+   * True while a destructive action (Task 8: delete) is waiting on y/n.
+   * Recolours the title red rather than adding a row -- the status line stays
+   * exactly one row either way (app.tsx's own STATUS_LINE_HEIGHT comment), so
+   * the app's only irreversible action does not need its own chrome budget,
+   * only a colour unmistakable enough that a skimmed status line still reads
+   * as dangerous.
+   */
+  confirming: boolean;
 }
 
 /** One column of air at each end, matching the pane rails above. */
@@ -39,7 +48,7 @@ const resolveModeColour = (opts: { mode: TVimMode; tokens: ITokens }): string =>
 
 /** lualine's shape: mode block in section A, then context, then position. */
 export const StatusLine = (props: IStatusLineProps) => {
-  const { mode, title, unreadCount, position, total, hint, tokens, width } = props;
+  const { mode, title, unreadCount, position, total, hint, tokens, width, confirming } = props;
 
   const block = ` ${mode.toUpperCase()} `;
   const context = unreadCount > 0 ? `${title} · ${unreadCount} unread` : title;
@@ -60,7 +69,7 @@ export const StatusLine = (props: IStatusLineProps) => {
         {block}
       </text>
       <text height={1} flexShrink={0}>
-        <span fg={tokens.foreground}>{`${' '.repeat(CONTEXT_INDENT)}${shown}`}</span>
+        <span fg={confirming ? tokens.error : tokens.foreground}>{`${' '.repeat(CONTEXT_INDENT)}${shown}`}</span>
         <span fg={tokens.dim}>{`${' '.repeat(filler)}${trailing}`}</span>
       </text>
     </box>

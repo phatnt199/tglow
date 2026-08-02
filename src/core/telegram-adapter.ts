@@ -152,6 +152,23 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
     return toRawMessage({ message: edited });
   },
 
+  // GramJS's own signature (client.deleteMessages, declared at
+  // node_modules/telegram/client/TelegramClient.d.ts:586, backed by the free
+  // function at node_modules/telegram/client/messages.d.ts:243-245) takes an
+  // array of ids -- `messageIds`, not a single `messageId` -- and expresses
+  // "for everyone" through a `revoke` option, not `forEveryone`. Read rather
+  // than guessed, the same discipline send's replyTo and edit's message
+  // follow above. TelegramClient.d.ts's own doc comment on the declaration
+  // (directly above line 586) is explicit that omitting revoke already
+  // deletes for everyone by default -- the opposite of the official
+  // clients -- and that revoke:false has no effect at all in channels or
+  // megagroups, which delete for everyone unconditionally regardless of what
+  // is passed. Passing the flag explicitly either way, rather than relying
+  // on that default, is what MessageService.delete's own forEveryone decides.
+  delete: async (deleteOpts: { peerId: string; messageId: number; forEveryone: boolean }): Promise<void> => {
+    await opts.client.deleteMessages(deleteOpts.peerId, [deleteOpts.messageId], { revoke: deleteOpts.forEveryone });
+  },
+
   subscribeToNewMessages: (subscribeOpts: { onMessage: (message: IRawMessage) => void }): (() => void) => {
     // The same builder instance is used to register and unregister: GramJS's
     // removeEventHandler matches on `===` against either the event builder or

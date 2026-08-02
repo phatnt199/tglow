@@ -137,6 +137,24 @@ test('e starts an edit of the message under the cursor', () => {
   expect(result.actions).toEqual([{ type: ActionTypes.EDIT_START }]);
 });
 
+test('dd asks to delete the message under the cursor', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('d'), keymap });
+  expect(pending.status).toBe('pending');
+  expect(engine.resolve({ state: pending.state, key: buildKey('d'), keymap }).actions)
+    .toEqual([{ type: ActionTypes.DELETE_REQUEST }]);
+});
+
+// Task 8's own limit, not a regression: the engine resolves an exact match
+// before it checks for a prefix (pinned generically in vim-engine.test.ts),
+// so a bare `d` binding would make `dd` permanently unreachable. Operator-
+// pending with a timeout, which would let both coexist, is M1b-2 work.
+test('bare d is not bound -- only dd, so it stays reachable', () => {
+  const { keymapService } = build();
+  expect(keymapService.getBindings().some(binding => binding.keys === 'd')).toBe(false);
+});
+
 test('describe returns only bindings for the given mode and context', () => {
   const shown = build().keymapService.describe({ mode: VimModes.NORMAL, context: VimContexts.MESSAGES });
   expect(shown.some(binding => binding.keys === 'j')).toBe(true);

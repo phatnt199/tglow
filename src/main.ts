@@ -174,6 +174,15 @@ const main = async (): Promise<void> => {
             await messageService.edit({ peerId: activePeerId, messageId: opts.messageId, text: opts.text });
           }
         },
+        // Same reasoning as onSend/onEdit above: activePeerId is App-level
+        // state read off the same store closure rather than threaded through
+        // IAppProps.onDelete's own signature.
+        onDelete: async (opts: { messageId: number }): Promise<void> => {
+          const { activePeerId } = store.getState();
+          if (activePeerId) {
+            await messageService.delete({ peerId: activePeerId, messageId: opts.messageId });
+          }
+        },
         onQuit: quit,
         onOpenChat: async (opts: { peerId: string }): Promise<void> => {
           await messageService.loadHistory({ peerId: opts.peerId, limit: HISTORY_LIMIT });

@@ -142,6 +142,7 @@ test('every method rejects use before open, naming itself in the error', () => {
     { method: 'listDialogs', call: () => database.listDialogs() },
     { method: 'insertMessages', call: () => database.insertMessages({ messages: [] }) },
     { method: 'listMessages', call: () => database.listMessages({ peerId: 'u1', limit: 1 }) },
+    { method: 'deleteMessage', call: () => database.deleteMessage({ peerId: 'u1', id: 1 }) },
     { method: 'getSyncState', call: () => database.getSyncState({ key: 'pts' }) },
     { method: 'setSyncState', call: () => database.setSyncState({ key: 'pts', value: 1 }) },
   ];
@@ -149,4 +150,34 @@ test('every method rejects use before open, naming itself in the error', () => {
   for (const attempt of attempts) {
     expect(attempt.call, attempt.method).toThrow(`[DatabaseService][${attempt.method}]`);
   }
+});
+
+test('deleteMessage removes the row from listMessages without disturbing others', () => {
+  const database = buildDatabase();
+  database.insertMessages({
+    messages: [
+      { peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'keep', out: 0, entities: [], replyToMessageId: null },
+      { peerId: 'u1', id: 2, fromId: 'u1', date: 200, text: 'gone', out: 0, entities: [], replyToMessageId: null },
+    ],
+  });
+  database.deleteMessage({ peerId: 'u1', id: 2 });
+  expect(database.listMessages({ peerId: 'u1', limit: 10 }).map(message => message.text)).toEqual(['keep']);
+  database.close();
+});
+
+// The behaviour Task 8 actually depends on: a hole in the id range would
+// confuse history paging, so the row must still exist afterward, only
+// flagged. insertMessages upserts on (peerId, id) -- if deleteMessage had
+// removed the row instead of marking it, this re-insert would silently
+// create a fresh one with `deleted` defaulting back to 0, undoing the delete.
+test('deleteMessage marks the row deleted rather than removing it', () => {
+  const database = buildDatabase();
+  const message = { peerId: 'u1', id: 2, fromId: 'u1', date: 200, text: 'gone', out: 0, entities: [], replyToMessageId: null };
+  database.insertMessages({ messages: [message] });
+  database.deleteMessage({ peerId: 'u1', id: 2 });
+  expect(database.listMessages({ peerId: 'u1', limit: 10 })).toEqual([]);
+
+  database.insertMessages({ messages: [message] });
+  expect(database.listMessages({ peerId: 'u1', limit: 10 })).toEqual([]);
+  database.close();
 });

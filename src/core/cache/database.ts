@@ -202,6 +202,21 @@ export class DatabaseService {
     }));
   };
 
+  /**
+   * Flags the row rather than running a real DELETE: removing it would open
+   * a hole in the peer's id range, which is exactly the fact history paging
+   * (scrolling past the top of a contiguous range) reasons about to tell
+   * "cached" from "never fetched". listMessages already excludes deleted=1,
+   * so this alone is what makes a deleted message stop appearing.
+   */
+  deleteMessage = (opts: { peerId: string; id: number }): void => {
+    this.require('deleteMessage')
+      .update(messages)
+      .set({ deleted: 1 })
+      .where(and(eq(messages.peerId, opts.peerId), eq(messages.id, opts.id)))
+      .run();
+  };
+
   getSyncState = (opts: { key: string }): number | null => {
     const row = this.require('getSyncState')
       .select({ value: syncState.value })

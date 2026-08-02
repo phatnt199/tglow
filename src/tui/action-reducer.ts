@@ -118,6 +118,28 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
       };
     }
 
+    case ActionTypes.DELETE_REQUEST: {
+      const message = state.messages[state.messageCursor];
+      if (!message) {
+        return {};
+      }
+      return {
+        pendingConfirmation: { kind: 'delete', messageId: message.id },
+        statusMessage: 'Delete this message? (y/n)',
+      };
+    }
+
+    // CONFIRM and CANCEL_CONFIRMATION both end the question the same way --
+    // only CONFIRM additionally deletes, which is App's side effect to
+    // perform (the only place that can reach onDelete), the same split
+    // COMPOSER_SEND/CHAT_OPEN draw below. Clearing unconditionally here,
+    // not only once a successful delete comes back, keeps a failed or
+    // hung network call from leaving every other key swallowed.
+    case ActionTypes.CONFIRM:
+    case ActionTypes.CANCEL_CONFIRMATION: {
+      return { pendingConfirmation: null, statusMessage: null };
+    }
+
     // Side-effecting actions are App's to perform; the reducer has no patch.
     case ActionTypes.CHAT_OPEN:
     case ActionTypes.COMPOSER_SEND:

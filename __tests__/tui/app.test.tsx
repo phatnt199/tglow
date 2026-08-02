@@ -69,6 +69,7 @@ const mount = async (opts: {
   messages?: IMessageRow[];
   onSend?: (text: string) => Promise<void>;
   onEdit?: (edit: { messageId: number; text: string }) => Promise<void>;
+  onDelete?: (deletion: { messageId: number }) => Promise<void>;
 } = {}) => {
   const container = new Container({ scope: 'AppTest' });
   container.bind({ key: BindingKeys.KEY_NORMALIZER }).toClass(KeyNormalizerService).setScope(BindingScopes.SINGLETON);
@@ -117,6 +118,15 @@ const mount = async (opts: {
     }
   });
 
+  // Stands in for MessageService.delete. Unlike onSend/onEdit there is no
+  // composer text to protect, so nothing here needs the "still what I sent?"
+  // guard -- App itself clears pendingConfirmation the instant y is pressed
+  // (action-reducer.ts's CONFIRM case), before this ever runs.
+  const deleted: Array<{ messageId: number }> = [];
+  const onDelete = opts.onDelete ?? (async (deletion: { messageId: number }): Promise<void> => {
+    deleted.push(deletion);
+  });
+
   const renderer = await renderWithKeys(
     <App
       store={store}
@@ -127,13 +137,14 @@ const mount = async (opts: {
       resolveSenderName={() => 'Alice'}
       onSend={onSend}
       onEdit={onEdit}
+      onDelete={onDelete}
       onQuit={() => { quit.push(true); }}
       onOpenChat={async chat => { opened.push(chat.peerId); }}
     />,
     { width: TERMINAL_WIDTH, height: TERMINAL_HEIGHT },
   );
   await renderer.flush();
-  return { renderer, store, sent, composerAtSend, edited, opened, quit };
+  return { renderer, store, sent, composerAtSend, edited, deleted, opened, quit };
 };
 
 test('starts in NORMAL mode with both panes on screen', async () => {
@@ -392,6 +403,87 @@ test('a second Enter before the first edit resolves does not edit twice', async 
   await renderer.flush();
 
   expect(edited).toEqual([{ messageId: 1, text: 'typo here' }]);
+});
+
+// Task 8: delete, behind a confirmation. The behaviour that matters most:
+// dd alone must never delete anything.
+test('dd asks for confirmation and does not delete yet', async () => {
+  const { renderer, store, deleted } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('d'); renderer.mockInput.pressKey('d'); });
+  await renderer.flush();
+  expect(deleted).toEqual([]);
+  expect(store.getState().pendingConfirmation).not.toBeNull();
+  expect(renderer.captureCharFrame()).toContain('Delete');
+});
+
+test('y confirms and deletes', async () => {
+  const { renderer, store, deleted } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('d'); renderer.mockInput.pressKey('d'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('y'); });
+  await renderer.flush();
+  expect(deleted).toHaveLength(1);
+  expect(store.getState().pendingConfirmation).toBeNull();
+});
+
+test('n cancels and deletes nothing', async () => {
+  const { renderer, store, deleted } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('d'); renderer.mockInput.pressKey('d'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('n'); });
+  await renderer.flush();
+  expect(deleted).toEqual([]);
+  expect(store.getState().pendingConfirmation).toBeNull();
+});
+
+// The load-bearing guard: a stray key while the confirmation is up must not
+// reach the message that will be under the cursor once it is answered --
+// which might not be the message the confirmation was actually about.
+test('while a confirmation is pending, j does not move the cursor', async () => {
+  const { renderer, store } = await mount();
+  const before = store.getState().messageCursor;
+  await act(async () => { renderer.mockInput.pressKey('d'); renderer.mockInput.pressKey('d'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('j'); });
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(before);
+});
+
+// Same class of key as the which-key overlay's own escape and the reply/edit
+// cancels above: App-level state a static keymap binding cannot see.
+test('escape cancels a pending delete confirmation', async () => {
+  const { renderer, store, deleted } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('d'); renderer.mockInput.pressKey('d'); });
+  await renderer.flush();
+  await pressEscape(renderer);
+  expect(deleted).toEqual([]);
+  expect(store.getState().pendingConfirmation).toBeNull();
+});
+
+// The other half of the swallow guard: it must let go again once answered,
+// not leave every key dead for the rest of the session.
+test('after n cancels, j moves the cursor again', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('d'); renderer.mockInput.pressKey('d'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('n'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('j'); });
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(1);
+});
+
+// The confirmation reuses the status line's existing single row (no new
+// chrome row to budget -- see the comment on StatusLine's confirming prop),
+// so the only on-screen sign this is the irreversible one is colour.
+test('the status line turns the danger colour while a delete is pending confirmation', async () => {
+  const { renderer } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('d'); renderer.mockInput.pressKey('d'); });
+  await renderer.flush();
+  const statusRow = renderer.captureSpans().lines[TERMINAL_HEIGHT - 1]!;
+  const span = statusRow.spans.find(candidate => candidate.text.includes('Delete'));
+  expect(span).toBeDefined();
+  expect(rgbToHex(span!.fg).toLowerCase()).toBe(tokens.error.toLowerCase());
 });
 
 test('i enters INSERT and jk returns to NORMAL', async () => {

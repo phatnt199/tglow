@@ -37,7 +37,10 @@ export type TAction =
   | { type: typeof ActionTypes.REPLY_START }
   | { type: typeof ActionTypes.REPLY_CANCEL }
   | { type: typeof ActionTypes.EDIT_START }
-  | { type: typeof ActionTypes.EDIT_CANCEL };
+  | { type: typeof ActionTypes.EDIT_CANCEL }
+  | { type: typeof ActionTypes.DELETE_REQUEST }
+  | { type: typeof ActionTypes.CONFIRM }
+  | { type: typeof ActionTypes.CANCEL_CONFIRMATION };
 
 export interface IEngineState {
   mode: TVimMode;

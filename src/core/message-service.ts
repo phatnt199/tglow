@@ -23,6 +23,7 @@ export interface IMessageAdapter {
   fetchHistory(opts: { peerId: string; limit: number }): Promise<IRawMessage[]>;
   send(opts: { peerId: string; text: string; replyToMessageId?: number }): Promise<IRawMessage>;
   edit(opts: { peerId: string; messageId: number; text: string }): Promise<IRawMessage>;
+  delete(opts: { peerId: string; messageId: number; forEveryone: boolean }): Promise<void>;
   subscribeToNewMessages(opts: { onMessage: (message: IRawMessage) => void }): () => void;
 }
 
@@ -228,6 +229,55 @@ export class MessageService {
         patch.composerTextBeforeEdit = null;
       }
       this._store.setState({ patch });
+    }
+  };
+
+  /**
+   * The only irreversible operation in this file. forEveryone is decided
+   * here, from state.messages -- the same array DELETE_REQUEST itself
+   * resolved messageId from, so the confirmation the user answered and the
+   * delete this performs can never disagree about whose message it is.
+   * GramJS ignores the flag in channels and megagroups regardless, deleting
+   * for everyone unconditionally there.
+   *
+   * Mirrors send()/edit(): the adapter call in its own try, the cache write
+   * in another. Unlike them there is no composerText to protect, so there is
+   * no "still unchanged?" guard -- App clears pendingConfirmation the instant
+   * CONFIRM is dispatched, before this ever runs, so nothing here depends on
+   * whether the network call has resolved yet.
+   */
+  delete = async (opts: { peerId: string; messageId: number }): Promise<void> => {
+    const { peerId, messageId } = opts;
+    const target = this._store.getState().messages.find(message => message.id === messageId);
+    const forEveryone = target?.out === 1;
+
+    try {
+      await this._adapter.delete({ peerId, messageId, forEveryone });
+    } catch (error) {
+      this._logger.for(this.delete.name).error('Delete failed | Reason: %s', error);
+      this._store.setState({ patch: { statusMessage: `Delete failed: ${toError(error).message}` } });
+      return;
+    }
+
+    try {
+      this._database.deleteMessage({ peerId, id: messageId });
+      this._store.setState({
+        patch: {
+          messages: this.forDisplay({
+            rows: this._database.listMessages({ peerId, limit: this._historyLimit ?? REPUBLISH_LIMIT }),
+          }),
+          activePeerId: peerId,
+          statusMessage: forEveryone ? 'Deleted for everyone' : 'Deleted for you',
+        },
+      });
+    } catch (error) {
+      // The delete already reached Telegram; only the local copy is stale --
+      // the same split send() and edit() draw between a network call that
+      // failed and one that succeeded but failed only to cache.
+      this._logger.for(this.delete.name).error('Deleted but could not update the cache | Reason: %s', error);
+      this._store.setState({
+        patch: { statusMessage: `Deleted, but could not update the local cache: ${toError(error).message}` },
+      });
     }
   };
 }

@@ -9,7 +9,7 @@ import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
 // points at the concrete module rather than the core/ barrel purely because
 // that is where IApplicationState is actually defined.
 import type { ApplicationStoreService, IApplicationState } from '../core/application-store.ts';
-import { ActionTypes, VimContexts, VimModes, type IEngineState } from '../keys/common/index.ts';
+import { ActionTypes, VimContexts, VimModes, type IEngineState, type TAction } from '../keys/common/index.ts';
 import type { KeyNormalizerService, KeymapService, VimEngineService } from '../keys/index.ts';
 import { applyAction } from './action-reducer.ts';
 import { resolveWhichKeyHeight, WhichKey } from './overlays/index.ts';
@@ -25,6 +25,7 @@ export interface IAppProps {
   resolveSenderName: (opts: { fromId: string | null }) => string;
   onSend: (text: string) => Promise<void>;
   onEdit: (opts: { messageId: number; text: string }) => Promise<void>;
+  onDelete: (opts: { messageId: number }) => Promise<void>;
   onQuit: () => void;
   onOpenChat: (opts: { peerId: string }) => Promise<void>;
 }
@@ -117,7 +118,8 @@ const toFlushedText = (opts: { pending: string[] }): string => {
 
 export const App = (props: IAppProps) => {
   const {
-    store, engine, keymapService, keyNormalizer, tokens, resolveSenderName, onSend, onEdit, onQuit, onOpenChat,
+    store, engine, keymapService, keyNormalizer, tokens, resolveSenderName,
+    onSend, onEdit, onDelete, onQuit, onOpenChat,
   } = props;
 
   // useSyncExternalStore re-subscribes whenever the `subscribe` argument's
@@ -153,6 +155,39 @@ export const App = (props: IAppProps) => {
     // every setState, so reading it fresh here is always current.
     const current = store.getState();
     const key = keyNormalizer.normalize({ event });
+
+    // The only irreversible action in the app gates on this, so it is
+    // checked before even the which-key overlay below: while
+    // pendingConfirmation is set, only y (confirm) and n (cancel, along with
+    // <escape> -- the same "also cancels" role it plays for the overlay and
+    // the reply/edit escapes) mean anything, and every other key is
+    // swallowed before the engine ever sees it. KeymapService's bindings are
+    // static and have no way to see pendingConfirmation, so y and n cannot be
+    // expressed as ordinary keymap entries the way dd itself is -- the same
+    // reasoning the reply/edit escapes below already rely on. CONFIRM and
+    // CANCEL_CONFIRMATION are still real actions run through applyAction,
+    // not a hand-rolled patch, so the reducer stays the one place that
+    // decides what answering the question does to state.
+    if (current.pendingConfirmation !== null) {
+      const confirmationToken = keyNormalizer.toCanonicalString({ key });
+
+      let confirmationAction: TAction | null = null;
+      if (confirmationToken === 'y') {
+        confirmationAction = { type: ActionTypes.CONFIRM };
+      } else if (confirmationToken === 'n' || confirmationToken === OVERLAY_ESCAPE_TOKEN) {
+        confirmationAction = { type: ActionTypes.CANCEL_CONFIRMATION };
+      }
+      if (confirmationAction === null) {
+        return;
+      }
+
+      const { messageId } = current.pendingConfirmation;
+      store.setState({ patch: applyAction({ state: current, action: confirmationAction }) });
+      if (confirmationAction.type === ActionTypes.CONFIRM) {
+        void onDelete({ messageId }).catch(error => { logRejection({ method: 'onDelete', error }); });
+      }
+      return;
+    }
 
     // The overlay owns input while it is open. Everything except the two
     // keys above is swallowed here, before the engine ever sees it, so a
@@ -444,6 +479,7 @@ export const App = (props: IAppProps) => {
         hint="\ for keys"
         tokens={tokens}
         width={width}
+        confirming={state.pendingConfirmation !== null}
       />
     </box>
   );

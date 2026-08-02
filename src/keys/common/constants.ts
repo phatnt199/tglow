@@ -36,6 +36,9 @@ export class ActionTypes {
   static readonly REPLY_CANCEL = 'reply.cancel';
   static readonly EDIT_START = 'edit.start';
   static readonly EDIT_CANCEL = 'edit.cancel';
+  static readonly DELETE_REQUEST = 'delete.request';
+  static readonly CONFIRM = 'confirmation.confirm';
+  static readonly CANCEL_CONFIRMATION = 'confirmation.cancel';
 }
 
 const SUPPORTED_MODES: readonly string[] = [
