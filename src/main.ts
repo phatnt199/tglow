@@ -4,6 +4,7 @@ import { createElement } from 'react';
 
 import { createCliRenderer } from '@opentui/core';
 import { AppContext, createRoot } from '@opentui/react';
+import { toError } from '@venizia/ignis-helpers';
 import { isApplicationError } from '@venizia/ignis-inversion';
 
 import { BindingKeys } from './common/index.ts';
@@ -42,9 +43,30 @@ const main = async (): Promise<void> => {
 
   const clientService = new TelegramClientService(new SessionStoreService());
   const client = clientService.build({ configuration });
-  await client.connect();
 
-  if (!(await client.isUserAuthorized())) {
+  // Both calls reach the network, and both run before createCliRenderer takes
+  // the screen. Unguarded, a machine with no route to Telegram spent several
+  // seconds inside GramJS's retries and was then handed its stack trace; the
+  // services' cached-fallback paths cannot soften that, because none of them
+  // have been constructed yet. M1a does not start without a connection, so
+  // fail the way a bad configuration does: one line, and a non-zero exit.
+  let authorized: boolean;
+  try {
+    await client.connect();
+    authorized = await client.isUserAuthorized();
+  } catch (error) {
+    process.stderr.write(
+      [
+        `Could not reach Telegram: ${toError(error).message}`,
+        '',
+        'Check your network connection and try again.',
+        '',
+      ].join('\n'),
+    );
+    process.exit(1);
+  }
+
+  if (!authorized) {
     process.stderr.write(
       [
         'Not logged in.',
