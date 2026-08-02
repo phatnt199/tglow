@@ -26,3 +26,6 @@ session
 # Editor / OS
 .DS_Store
 *.swp
+
+# Agent working notes -- task briefs, reports and ledgers. Never published.
+.superpowers/
