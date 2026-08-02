@@ -292,6 +292,18 @@ can never drift apart.
 Leader is `\`, matching `vim.g.mapleader`. Mappings deliberately echo the
 author's neovim config so the keys are already learned.
 
+**What is bound today.** This section is the full M1 design target, not a
+changelog of what has shipped. The M1a walking-skeleton plan implements a
+foundational slice of it: from Navigation below, `j`/`k`, `3j` and other
+counts, `gg`/`G`, `<C-d>`/`<C-u>`, `<C-w>h/l` and `nf`; from Message actions,
+`i`/`a`; plus the which-key popup at `\`. Everything else in this section —
+`<A-j>`/`<A-k>`, `zz`, `\nv`, `]u`/`[u`, `]m`/`[m`, `r`/`e`/`dd`/`yy`/`\y`/`K`/
+`gd`, `v`/`V`, `<C-p>`, `/`/`?`/`n`/`N`, `:`, and the whole Ex commands
+subsection — is M1b work (see that plan's own scope note). `README.md`'s key
+table is the one place that only ever lists what is bound right now; if this
+section and the keymap ever disagree, the keymap and `README.md` are correct
+and this needs updating, not the other way around.
+
 ### Navigation (NORMAL)
 
 | Key | Action | Echoes |
@@ -303,6 +315,7 @@ author's neovim config so the keys are already learned.
 | `<A-j>` / `<A-k>` | scroll view one line | their `<A-j>`/`<A-k>` |
 | `zz` | centre current message | vim |
 | `<C-w>h/l` | move focus between panes | vim windows |
+| `<Esc>` (chat list) | back to messages, without opening anything | vim's ubiquitous "cancel" |
 | `nf` | focus chat list | their `nf` → NvimTreeFocus |
 | `\nv` | toggle chat-list sidebar | their `<leader>nv` → NvimTreeToggle |
 | `]u` / `[u` | next / previous **unread** chat | their `]q`/`[q` pattern |
