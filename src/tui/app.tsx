@@ -5,11 +5,11 @@ import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
 
 // Type-only import, erased at runtime under verbatimModuleSyntax, so this
 // path choice has no bearing on the telegram/global.window crash the test
-// files' value imports had to avoid (see __tests__/tui/app.test.tsx) --
+// files' value imports had to avoid (see src/__tests__/tui/app.test.tsx) --
 // points at the concrete module rather than the core/ barrel purely because
 // that is where IApplicationState is actually defined.
 import type { ApplicationStoreService, IApplicationState } from '../core/application-store.ts';
-import { ActionTypes, VimContexts, VimModes } from '../keys/common/index.ts';
+import { ActionTypes, VimContexts, VimModes, type IEngineState, type TAction } from '../keys/common/index.ts';
 import type { KeyNormalizerService, KeymapService, VimEngineService } from '../keys/index.ts';
 import { applyAction } from './action-reducer.ts';
 import { resolveWhichKeyHeight, WhichKey } from './overlays/index.ts';
@@ -24,8 +24,18 @@ export interface IAppProps {
   tokens: ITokens;
   resolveSenderName: (opts: { fromId: string | null }) => string;
   onSend: (text: string) => Promise<void>;
+  onEdit: (opts: { messageId: number; text: string }) => Promise<void>;
+  onDelete: (opts: { messageId: number }) => Promise<void>;
   onQuit: () => void;
   onOpenChat: (opts: { peerId: string }) => Promise<void>;
+  /**
+   * Called only for the two moments Task 9's brief names: once a chat is open
+   * and its newest message is showing, and again whenever the cursor reaches
+   * that newest message afterward. Never for chat-list movement -- reading is
+   * an explicit act, not a side effect of browsing. Fired on every qualifying
+   * move with no debounce of its own; MessageService.markRead owns that.
+   */
+  onMarkRead: (opts: { peerId: string; maxId: number }) => Promise<void>;
 }
 
 const SIDEBAR_WIDTH = 22;
@@ -33,6 +43,10 @@ const SIDEBAR_WIDTH = 22;
 const CHROME_HEIGHT = 3;
 /** The status line is always exactly one row, whichever chrome sits above it. */
 const STATUS_LINE_HEIGHT = 1;
+/** Composer grows by exactly this many rows while a reply is pending -- see the comment on chromeHeight below. */
+const REPLY_PREVIEW_HEIGHT = 1;
+/** Composer grows by exactly this many rows while an edit is in progress -- see the comment on chromeHeight below. */
+const EDIT_INDICATOR_HEIGHT = 1;
 /**
  * `fillchars = "vert:│"`: splits are a single rule, not a box. Boxing the
  * panes also put a doubled `┐┌` seam where two of them met.
@@ -112,7 +126,8 @@ const toFlushedText = (opts: { pending: string[] }): string => {
 
 export const App = (props: IAppProps) => {
   const {
-    store, engine, keymapService, keyNormalizer, tokens, resolveSenderName, onSend, onQuit, onOpenChat,
+    store, engine, keymapService, keyNormalizer, tokens, resolveSenderName,
+    onSend, onEdit, onDelete, onQuit, onOpenChat, onMarkRead,
   } = props;
 
   // useSyncExternalStore re-subscribes whenever the `subscribe` argument's
@@ -149,6 +164,39 @@ export const App = (props: IAppProps) => {
     const current = store.getState();
     const key = keyNormalizer.normalize({ event });
 
+    // The only irreversible action in the app gates on this, so it is
+    // checked before even the which-key overlay below: while
+    // pendingConfirmation is set, only y (confirm) and n (cancel, along with
+    // <escape> -- the same "also cancels" role it plays for the overlay and
+    // the reply/edit escapes) mean anything, and every other key is
+    // swallowed before the engine ever sees it. KeymapService's bindings are
+    // static and have no way to see pendingConfirmation, so y and n cannot be
+    // expressed as ordinary keymap entries the way dd itself is -- the same
+    // reasoning the reply/edit escapes below already rely on. CONFIRM and
+    // CANCEL_CONFIRMATION are still real actions run through applyAction,
+    // not a hand-rolled patch, so the reducer stays the one place that
+    // decides what answering the question does to state.
+    if (current.pendingConfirmation !== null) {
+      const confirmationToken = keyNormalizer.toCanonicalString({ key });
+
+      let confirmationAction: TAction | null = null;
+      if (confirmationToken === 'y') {
+        confirmationAction = { type: ActionTypes.CONFIRM };
+      } else if (confirmationToken === 'n' || confirmationToken === OVERLAY_ESCAPE_TOKEN) {
+        confirmationAction = { type: ActionTypes.CANCEL_CONFIRMATION };
+      }
+      if (confirmationAction === null) {
+        return;
+      }
+
+      const { messageId } = current.pendingConfirmation;
+      store.setState({ patch: applyAction({ state: current, action: confirmationAction }) });
+      if (confirmationAction.type === ActionTypes.CONFIRM) {
+        void onDelete({ messageId }).catch(error => { logRejection({ method: 'onDelete', error }); });
+      }
+      return;
+    }
+
     // The overlay owns input while it is open. Everything except the two
     // keys above is swallowed here, before the engine ever sees it, so a
     // stray keystroke cannot move a cursor or seed a pending prefix the
@@ -160,6 +208,46 @@ export const App = (props: IAppProps) => {
         return;
       }
       if (overlayToken !== OVERLAY_LEADER_TOKEN) {
+        return;
+      }
+    }
+
+    // A pending reply is App-level state (IApplicationState), the same
+    // category as overlay above, so escape has to be intercepted here too:
+    // KeymapService's bindings are static and have no way to see whether a
+    // reply is pending, so there is no way to express "bound only sometimes"
+    // as a keymap entry. Checked only in NORMAL mode -- in INSERT, escape
+    // still means "leave insert mode" first, exactly as it does today; a
+    // second escape once back in NORMAL then cancels the reply. Unreachable
+    // while the overlay is open: that block above always returns first.
+    if (current.replyToMessageId !== null && current.engine.mode === VimModes.NORMAL) {
+      const replyToken = keyNormalizer.toCanonicalString({ key });
+      if (replyToken === OVERLAY_ESCAPE_TOKEN) {
+        store.setState({ patch: { replyToMessageId: null } });
+        return;
+      }
+    }
+
+    // An in-progress edit is App-level state too, but EDIT_START (unlike
+    // REPLY_START) moves straight into INSERT as part of starting -- so this
+    // has to be checked in INSERT, not NORMAL, or the very first escape the
+    // user presses would fall through to the ordinary INSERT <escape>
+    // binding below, which only ever knows to leave insert mode. That escape
+    // is the one that must also restore whatever the composer held before
+    // EDIT_START overwrote it, or an accidental `e` followed by Escape would
+    // look exactly like the discarded-draft class of bug MessageService
+    // already exists to prevent on a failed send.
+    if (current.editingMessageId !== null && current.engine.mode === VimModes.INSERT) {
+      const editToken = keyNormalizer.toCanonicalString({ key });
+      if (editToken === OVERLAY_ESCAPE_TOKEN) {
+        store.setState({
+          patch: {
+            editingMessageId: null,
+            composerText: current.composerTextBeforeEdit ?? '',
+            composerTextBeforeEdit: null,
+            engine: { ...current.engine, mode: VimModes.NORMAL },
+          },
+        });
         return;
       }
     }
@@ -221,8 +309,9 @@ export const App = (props: IAppProps) => {
 
       switch (action.type) {
         case ActionTypes.COMPOSER_SEND: {
-          // The composer is MessageService's to clear, and it clears only
-          // once the message has actually gone. Emptying it here was
+          // The composer is MessageService's to clear -- send()'s or, while
+          // editingMessageId is set, edit()'s -- and it clears only once the
+          // round trip has actually resolved. Emptying it here was
           // optimistic in the worst sense: a rejected send left the user with
           // nothing to retry and no copy of what they had written, and it
           // also made the service's "still what I sent?" check permanently
@@ -232,17 +321,24 @@ export const App = (props: IAppProps) => {
           // resolving, where the composer still shows the sent text with
           // nothing on screen to say a send is in flight. Without a guard, a
           // second Enter in that window re-dispatches this case with the same
-          // non-empty string -- a duplicate send, which MessageService's own
-          // comment calls unrecoverable. Set before the call and cleared in
-          // `finally` so a rejected send releases it too; leaving it set on
-          // failure would make the composer permanently unable to send.
+          // non-empty string -- a duplicate send (or duplicate edit), which
+          // MessageService's own comment calls unrecoverable. Set before the
+          // call and cleared in `finally` so a rejection releases it too;
+          // leaving it set on failure would make the composer permanently
+          // unable to send. One guard, not one each: send and edit can never
+          // both be in flight, since editingMessageId and the composer are
+          // the same shared state either path reads before dispatching.
           if (sendInFlightRef.current) {
             break;
           }
           sendInFlightRef.current = true;
-          void onSend(accumulated.composerText)
+          const { editingMessageId, composerText } = accumulated;
+          const inFlight = editingMessageId !== null
+            ? onEdit({ messageId: editingMessageId, text: composerText })
+            : onSend(composerText);
+          void inFlight
             .catch(error => {
-              logRejection({ method: 'onSend', error });
+              logRejection({ method: editingMessageId !== null ? 'onEdit' : 'onSend', error });
             })
             .finally(() => {
               sendInFlightRef.current = false;
@@ -252,8 +348,58 @@ export const App = (props: IAppProps) => {
         case ActionTypes.CHAT_OPEN: {
           const target = accumulated.dialogs[accumulated.chatCursor];
           if (target) {
-            void onOpenChat({ peerId: target.peerId }).catch(error => {
-              logRejection({ method: 'onOpenChat', error });
+            const { peerId } = target;
+            // onMarkRead is chained onto onOpenChat's own resolution, not
+            // fired alongside it: onOpenChat is what actually loads the
+            // chat's messages (MessageService.loadHistory), so only once it
+            // resolves does the store hold the newest message to mark --
+            // reading store.getState() here, before that lands, would still
+            // see whatever chat was open previously.
+            void onOpenChat({ peerId })
+              .then(() => {
+                const { messages } = store.getState();
+                const newest = messages[messages.length - 1];
+                if (!newest) {
+                  return;
+                }
+                void onMarkRead({ peerId, maxId: newest.id }).catch(error => {
+                  logRejection({ method: 'onMarkRead', error });
+                });
+              })
+              .catch(error => {
+                logRejection({ method: 'onOpenChat', error });
+              });
+          }
+          break;
+        }
+        case ActionTypes.CURSOR_MOVE:
+        case ActionTypes.CURSOR_EDGE: {
+          // The other of the two moments Task 9's brief names markRead for.
+          // Gated on unit === 'message' so chat-list movement (unit: 'chat')
+          // can never reach this at all -- not suppressed by a debounce or a
+          // flag, structurally excluded.
+          //
+          // The unit alone was not enough. gg, <S-g>, <C-d> and <C-u> are
+          // `context: '*'` bindings carrying unit: 'message' (keymap.ts), so
+          // they move the *message* cursor while the user is browsing the chat
+          // list -- and <S-g> from there acked the open chat on one keystroke,
+          // which is precisely the never-auto-read guarantee this pair of
+          // conditions exists to keep. Excluding the chat list rather than
+          // requiring the messages pane: the message pane is on screen and its
+          // cursor is visibly moving in COMPOSER context too (i, then escape,
+          // then G), and that is still the user reading their own chat.
+          const { activePeerId, messages } = accumulated;
+          if (action.unit !== 'message' || !activePeerId) {
+            break;
+          }
+          if (accumulated.engine.context === VimContexts.CHAT_LIST) {
+            break;
+          }
+          const newCursor = patch.messageCursor ?? accumulated.messageCursor;
+          const newest = messages[messages.length - 1];
+          if (newest && newCursor === messages.length - 1) {
+            void onMarkRead({ peerId: activePeerId, maxId: newest.id }).catch(error => {
+              logRejection({ method: 'onMarkRead', error });
             });
           }
           break;
@@ -268,23 +414,78 @@ export const App = (props: IAppProps) => {
       }
     }
 
-    // The engine owns mode and context; action patches must not override them.
-    store.setState({ patch: { ...patch, engine: result.state } });
+    // pending/count are the engine's alone, always -- result.state is the
+    // only place either is ever correctly reset once a binding resolves
+    // (vim-engine.ts's applyStateActions), and no reducer case may touch
+    // them (MODE_SET/FOCUS_SET's own patches spread state.engine verbatim,
+    // carrying over whatever pending/count happened to predate this key,
+    // precisely because resetting them is not their job). Trusting a
+    // reducer's full patch.engine here previously let a stale pending
+    // survive a resolved FOCUS_SET, corrupting the very next key press's
+    // token sequence -- caught by "return in the chat list opens the chat"
+    // regressing the moment this line first tried `{ ...result.state,
+    // ...patch.engine }` wholesale.
+    //
+    // mode/context are different: usually result.state already agrees with
+    // the reducer, since applyStateActions mirrors MODE_SET/FOCUS_SET
+    // independently -- but EDIT_START can genuinely disagree, because
+    // whether it enters INSERT depends on `out` on the message under the
+    // cursor, state engine.resolve() never receives and structurally cannot
+    // see (a pure fold over IEngineState alone -- vim-engine.ts's own doc
+    // comment). EDIT_START's refusal branch sets no engine key at all, so
+    // result.state (unchanged mode/context) still wins then.
+    const nextEngineState: IEngineState = patch.engine
+      ? { ...result.state, mode: patch.engine.mode, context: patch.engine.context }
+      : result.state;
+    store.setState({ patch: { ...patch, engine: nextEngineState } });
   });
 
   const activeDialog = state.dialogs.find(dialog => dialog.peerId === state.activePeerId);
+  const isConfirming = state.pendingConfirmation !== null;
+  // Four claims on one row, most urgent first. The confirmation prompt wins
+  // outright: it is the only thing the user is obliged to answer, and a
+  // swallowed y/n question is worse than a delayed warning. integrityWarning
+  // then outranks statusMessage rather than falling back to it, because
+  // statusMessage carries things like "No link in this message" that nothing
+  // ever clears -- a warning that ranked below those would be one keystroke
+  // away from being hidden for the rest of the session, which is the bug this
+  // field exists to fix, in a new shape.
+  const isWarning = !isConfirming && state.integrityWarning !== null;
+  const statusTitle = (isConfirming ? state.statusMessage : null)
+    ?? state.integrityWarning
+    ?? state.statusMessage
+    ?? activeDialog?.title
+    ?? 'no chat';
+  // Found rather than assumed: REPLY_START can only ever target a message
+  // still in state.messages (Task 6's action-reducer.ts reads it straight off
+  // state.messages[state.messageCursor]), but resolving it here rather than
+  // trusting that invariant means a target that later fell out of the loaded
+  // window degrades to no preview instead of a crash.
+  const replyTargetMessage = state.replyToMessageId === null
+    ? null
+    : state.messages.find(message => message.id === state.replyToMessageId) ?? null;
+  const replyingTo = replyTargetMessage
+    ? { senderName: resolveSenderName({ fromId: replyTargetMessage.fromId }), text: replyTargetMessage.text }
+    : null;
   // describe() is cheap (a filter + map over a couple dozen bindings at
   // most) and pure, so it costs nothing to compute unconditionally rather
   // than branching on whether the overlay is actually open.
   const whichKeyBindings = keymapService.describe({ mode: state.engine.mode, context: state.engine.context });
   const isWhichKeyOpen = state.overlay === 'whichkey';
+  const isEditing = state.editingMessageId !== null;
   // The overlay replaces the composer and grows upward, so the panes above
   // it must shrink by however many rows it actually renders -- Math.max(1, …)
   // keeps at least one row for them even if a future binding table were long
-  // enough to ask for more than the terminal has.
+  // enough to ask for more than the terminal has. Composer grows by one row
+  // for each of REPLY_PREVIEW_HEIGHT ("Replying to…") and EDIT_INDICATOR_HEIGHT
+  // ("Editing message") it actually renders -- driven by these same
+  // `replyingTo`/`isEditing` values, so chromeHeight can never disagree with
+  // Composer about which of its rows are on screen. Skipping both while the
+  // overlay is open is correct, not an oversight: Composer is not rendered at
+  // all then.
   const chromeHeight = isWhichKeyOpen
     ? resolveWhichKeyHeight({ bindingCount: whichKeyBindings.length, width }) + STATUS_LINE_HEIGHT
-    : CHROME_HEIGHT;
+    : CHROME_HEIGHT + (replyingTo !== null ? REPLY_PREVIEW_HEIGHT : 0) + (isEditing ? EDIT_INDICATOR_HEIGHT : 0);
   const paneHeight = Math.max(1, height - chromeHeight);
   const messageWidth = Math.max(1, width - SIDEBAR_WIDTH - RULE_WIDTH);
 
@@ -318,6 +519,8 @@ export const App = (props: IAppProps) => {
           width={messageWidth}
           height={paneHeight}
           resolveSenderName={resolveSenderName}
+          revealedSpoilers={state.revealedSpoilers}
+          readOutboxMaxId={activeDialog?.readOutboxMaxId ?? 0}
         />
       </box>
 
@@ -336,18 +539,22 @@ export const App = (props: IAppProps) => {
           focused={state.engine.context === VimContexts.COMPOSER}
           tokens={tokens}
           width={width}
+          replyingTo={replyingTo}
+          editing={isEditing}
         />
       )}
 
       <StatusLine
         mode={state.engine.mode}
-        title={state.statusMessage ?? activeDialog?.title ?? 'no chat'}
+        title={statusTitle}
         unreadCount={activeDialog?.unreadCount ?? 0}
         position={state.messages.length === 0 ? 0 : state.messageCursor + 1}
         total={state.messages.length}
         hint="\ for keys"
         tokens={tokens}
         width={width}
+        confirming={isConfirming}
+        warning={isWarning}
       />
     </box>
   );

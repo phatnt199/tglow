@@ -1,8 +1,14 @@
+import type { ReactNode } from 'react';
+
+import { TextAttributes } from '@opentui/core';
+
 import type { IMessageRow } from '../../core/cache/index.ts';
+import { EntityKinds, type TEntityKind } from '../../core/common/index.ts';
+import { toStyledSpans, type IStyledSpan } from '../entities.ts';
+import { measureTextWidth, padStartToWidth, padToWidth, toGraphemes, truncateToWidth } from '../text-width.ts';
 import type { ITokens } from '../theme/index.ts';
-import { padStartToWidth, padToWidth, truncateToWidth } from '../text-width.ts';
 import { resolveVisibleRowRange } from '../viewport.ts';
-import { wrapText } from '../wrap-text.ts';
+import { wrapSpans } from '../wrap-spans.ts';
 
 export interface IMessageViewProps {
   messages: IMessageRow[];
@@ -19,6 +25,23 @@ export interface IMessageViewProps {
   /** Columns available to this pane; the content column wraps to what is left of it. */
   width: number;
   resolveSenderName: (opts: { fromId: string | null }) => string;
+  /**
+   * Message ids whose spoiler entities render as text instead of a `█` mask.
+   * No default: a caller that forgot this prop would otherwise render every
+   * spoiler either always hidden or always shown, silently, and the
+   * distinction between "no spoilers on screen" and "forgot to wire reveals"
+   * is exactly the bug a required prop catches at compile time.
+   */
+  revealedSpoilers: Set<number>;
+  /**
+   * The open chat's dialog.readOutboxMaxId -- the highest id of the user's
+   * own messages the other side has read. Drives the tick shown on own
+   * messages; a message that is not the user's own never reads this. No
+   * default, same reasoning as revealedSpoilers above: a caller that forgot
+   * it would otherwise show every own message as read (0 is a valid, if
+   * misleading, number) rather than fail to compile.
+   */
+  readOutboxMaxId: number;
 }
 
 /** Reserved and always blank: the cursorline shows position, not an arrow. */
@@ -26,28 +49,73 @@ const MARKER_WIDTH = 1;
 const GUTTER_WIDTH = 4;
 const TIME_WIDTH = 5;
 const SENDER_WIDTH = 10;
-/** marker, gutter, time and sender, each followed by a single blank column. */
-const RAIL_WIDTH = MARKER_WIDTH + GUTTER_WIDTH + 1 + TIME_WIDTH + 1 + SENDER_WIDTH + 1;
+/** Two columns: both ticks once read, one tick and a blank while only sent, or fully blank when the message is not the user's own. */
+const TICK_WIDTH = 2;
+/** marker, gutter, time, sender and tick, each followed by a single blank column. */
+const RAIL_WIDTH = MARKER_WIDTH + GUTTER_WIDTH + 1 + TIME_WIDTH + 1 + SENDER_WIDTH + 1 + TICK_WIDTH + 1;
 /** Below this the rail is worth more than the sliver of text it would leave. */
 const MINIMUM_CONTENT_WIDTH = 8;
+/**
+ * `pre`'s left rule: the character plus one separator column, echoing the
+ * rail fields above (a fixed-width field followed by a blank column). Reuses
+ * the same glyph as app.tsx's own VERTICAL_RULE (pane divider) rather than
+ * inventing a second rule character for what is, visually, the same idea --
+ * a vertical line marking a block's edge.
+ */
+const PRE_RULE = '│ ';
+const PRE_RULE_WIDTH = measureTextWidth({ text: PRE_RULE });
 
 /** A gap this long starts a new group even from the same sender. */
 const GROUP_GAP_SECONDS = 300;
+
+/** Shown in place of a sender-and-text preview when the target isn't (or isn't yet) in `messages` -- still says something rather than leaving the reply unexplained. */
+const REPLY_FALLBACK_TEXT = 'Replying to an earlier message';
 
 const MARKER = ' '.repeat(MARKER_WIDTH);
 const BLANK_GUTTER = ' '.repeat(GUTTER_WIDTH);
 const BLANK_TIME = ' '.repeat(TIME_WIDTH);
 const BLANK_SENDER = ' '.repeat(SENDER_WIDTH);
+const BLANK_TICK = ' '.repeat(TICK_WIDTH);
+// The single "sent" tick sits in the same first column the read state's own
+// first ✓ occupies, so a message going from sent to read never shifts the
+// tick already on screen -- only fills in the second column beside it.
+const TICK_SENT = '✓ ';
+const TICK_READ = '✓✓';
+
+/** The kinds the M1 spec renders as coloured, underlined text rather than a modifier tag. */
+const LINK_KINDS: readonly TEntityKind[] = [
+  EntityKinds.URL, EntityKinds.TEXT_URL, EntityKinds.MENTION, EntityKinds.HASHTAG,
+];
 
 interface IRenderedRow {
   key: string;
   messageIndex: number;
+  /** 'quote' rows render their one content span dimmed, ignoring entity/ownership colour entirely -- see the render loop below. */
+  kind: 'content' | 'quote';
   gutter: string;
   time: string;
   sender: string;
-  content: string;
+  tick: string;
+  content: IStyledSpan[];
   own: boolean;
+  revealed: boolean;
+  /** True for a row carrying `pre` content -- prefixed with PRE_RULE ahead of `content` at render time. Always false for a quote row. */
+  rulePrefix: boolean;
 }
+
+/**
+ * Ticks are per-message, unlike time/sender which show once per consecutive
+ * group (startsGroup below) -- two own messages sent seconds apart can still
+ * disagree on whether the other side has read them yet, so each needs its own
+ * mark rather than inheriting its group's.
+ */
+const resolveTick = (opts: { own: boolean; messageId: number; readOutboxMaxId: number }): string => {
+  const { own, messageId, readOutboxMaxId } = opts;
+  if (!own) {
+    return BLANK_TICK;
+  }
+  return messageId <= readOutboxMaxId ? TICK_READ : TICK_SENT;
+};
 
 /** `date` is a Unix timestamp in seconds -- what telegram-adapter.ts stores. */
 const formatTime = (opts: { date: number }): string => {
@@ -74,20 +142,267 @@ const startsGroup = (opts: { message: IMessageRow; previous: IMessageRow | undef
 };
 
 /**
- * One entry per rendered row, in order. Wrapping here rather than leaving it to
- * the renderer is the whole fix: a `<text>` allowed to wrap itself makes one
- * child several rows tall, the column shrinks it to fit instead of clipping
- * it, and shrunk children overdraw one another into rows belonging to no
- * message at all.
+ * `█` repeated to the span's *display* width, not its character count -- an
+ * emoji inside a spoiler is two columns, and a mask narrower than what it
+ * covers would shift every column after it once the row is padded out.
+ */
+const maskSpoilerSpans = (opts: { spans: IStyledSpan[]; revealed: boolean }): IStyledSpan[] => {
+  if (opts.revealed) {
+    return opts.spans;
+  }
+  return opts.spans.map(span => {
+    if (!span.kinds.includes(EntityKinds.SPOILER)) {
+      return span;
+    }
+    return { ...span, text: '█'.repeat(measureTextWidth({ text: span.text })) };
+  });
+};
+
+const isLineBreakGrapheme = (grapheme: string): boolean =>
+  grapheme === '\n' || grapheme === '\r' || grapheme === '\r\n';
+
+/**
+ * Mirrors wrap-text.ts's toLogicalLines, over styled spans instead of a raw
+ * string. `wrapSpans` has no concept of a line break -- an embedded newline
+ * would otherwise be just another non-space grapheme inside one very long
+ * word instead of starting a new row -- so this splits first, the same way
+ * toLogicalLines does before wrapText ever wraps a word. A width-0 grapheme
+ * that is not the line break itself is an unrenderable control character by
+ * measureGrapheme's own definition; a raw tab becomes a single space for the
+ * reason toLogicalLines gives one -- a real terminal expands it at its own
+ * tab stop, which desyncs the column the rail depends on -- and anything else
+ * in that class is dropped. Styling survives every split because it is
+ * carried per span rather than thrown away, which is the one job wrapText
+ * itself could never have done here.
+ */
+const toLogicalSpanLines = (opts: { spans: IStyledSpan[] }): IStyledSpan[][] => {
+  const lines: IStyledSpan[][] = [];
+  let current: IStyledSpan[] = [];
+  let segment = '';
+
+  const closeSegment = (span: IStyledSpan): void => {
+    if (segment !== '') {
+      current.push({ text: segment, kinds: span.kinds, url: span.url });
+      segment = '';
+    }
+  };
+
+  for (const span of opts.spans) {
+    for (const { grapheme, width } of toGraphemes({ text: span.text })) {
+      if (isLineBreakGrapheme(grapheme)) {
+        closeSegment(span);
+        lines.push(current);
+        current = [];
+        continue;
+      }
+      if (width > 0) {
+        segment += grapheme;
+        continue;
+      }
+      if (grapheme === '\t') {
+        segment += ' ';
+      }
+    }
+    closeSegment(span);
+  }
+  lines.push(current);
+
+  return lines.map(line => (line.length > 0 ? line : [{ text: '', kinds: [], url: null }]));
+};
+
+const isPlainSpan = (span: IStyledSpan): boolean => span.kinds.length === 0;
+const isPreSpan = (span: IStyledSpan): boolean => span.kinds.includes(EntityKinds.PRE);
+
+interface IWrappedRow {
+  spans: IStyledSpan[];
+  isPre: boolean;
+}
+
+/**
+ * Splits one logical line (already newline-free, from toLogicalSpanLines)
+ * into consecutive runs that agree on pre-ness, so a `pre` span's boundary is
+ * never straddled by a run mixing it with plain content -- a `code` span
+ * (inline, spec §3.1) is deliberately excluded and stays free to share a row.
+ * Real Telegram sends `pre` as a whole block rather than interleaved with
+ * other text on the same line, so in practice every run here is either the
+ * entire line or none of it; splitting defensively rather than assuming that
+ * shape costs nothing and does not misrender the ordinary case.
+ */
+const splitPreRuns = (opts: { spans: IStyledSpan[] }): IWrappedRow[] => {
+  const runs: IWrappedRow[] = [];
+  let current: IStyledSpan[] = [];
+  let currentIsPre: boolean | null = null;
+
+  for (const span of opts.spans) {
+    const spanIsPre = isPreSpan(span);
+    if (currentIsPre !== null && spanIsPre !== currentIsPre) {
+      runs.push({ spans: current, isPre: currentIsPre });
+      current = [];
+    }
+    current.push(span);
+    currentIsPre = spanIsPre;
+  }
+  if (current.length > 0) {
+    runs.push({ spans: current, isPre: currentIsPre! });
+  }
+  return runs;
+};
+
+/**
+ * One logical line to the rows it wraps into, each tagged with whether it
+ * came from a `pre` run -- a `pre` run wraps narrower, leaving room for
+ * PRE_RULE, so the row it produces can carry the rule without overrunning
+ * contentWidth once padRowContent pads it back out.
+ */
+const wrapLogicalLine = (opts: { spans: IStyledSpan[]; contentWidth: number; preContentWidth: number }): IWrappedRow[] => {
+  const { spans, contentWidth, preContentWidth } = opts;
+  return splitPreRuns({ spans }).flatMap(run =>
+    wrapSpans({ spans: run.spans, width: run.isPre ? preContentWidth : contentWidth })
+      .map(rowSpans => ({ spans: rowSpans, isPre: run.isPre })),
+  );
+};
+
+/**
+ * `messages` here is `props.messages` -- everything this pane currently
+ * holds, not the whole cache -- so a reply to something outside that window
+ * (scrolled past, or simply never loaded) falls back to REPLY_FALLBACK_TEXT
+ * rather than an empty or misleading quote.
+ */
+const buildQuoteText = (opts: {
+  replyToMessageId: number;
+  messages: IMessageRow[];
+  resolveSenderName: (opts: { fromId: string | null }) => string;
+}): string => {
+  const { replyToMessageId, messages, resolveSenderName } = opts;
+  const target = messages.find(candidate => candidate.id === replyToMessageId);
+  if (!target) {
+    return REPLY_FALLBACK_TEXT;
+  }
+  const senderName = resolveSenderName({ fromId: target.fromId });
+  const firstLine = target.text.split(/\r\n|\r|\n/)[0] ?? '';
+  return `Replying to ${senderName}: ${firstLine}`;
+};
+
+/**
+ * Every rendered row must sum to exactly `width` columns, or the highlighted
+ * cursor row's background stops wherever the text ran out instead of reaching
+ * the pane's edge -- the styled-span equivalent of the old
+ * `padToWidth({ text: line, width: contentWidth })`. The padding is appended
+ * to the row's last span only when that span is already plain; extending a
+ * link's underline or carrying a code span's colour into blank trailing
+ * columns would draw a style nothing asked for, so a styled last span gets
+ * its own unstyled trailing span instead.
+ */
+const padRowContent = (opts: { spans: IStyledSpan[]; width: number }): IStyledSpan[] => {
+  const { spans, width } = opts;
+  const used = spans.reduce((total, span) => total + measureTextWidth({ text: span.text }), 0);
+  const deficit = width - used;
+  if (deficit <= 0) {
+    return spans;
+  }
+
+  const padding = ' '.repeat(deficit);
+  const last = spans[spans.length - 1]!;
+  if (isPlainSpan(last)) {
+    return [...spans.slice(0, -1), { ...last, text: last.text + padding }];
+  }
+  return [...spans, { text: padding, kinds: [], url: null }];
+};
+
+const isLinkKind = (kinds: TEntityKind[]): boolean => LINK_KINDS.some(kind => kinds.includes(kind));
+const isUnderlinedKind = (kinds: TEntityKind[]): boolean => kinds.includes(EntityKinds.UNDERLINE) || isLinkKind(kinds);
+
+/**
+ * Priority for a span whose kinds would otherwise disagree on colour.
+ * Telegram does not in practice send code or a link overlapping an
+ * unrevealed spoiler, so any fixed order is defensible -- this one favours
+ * the mask colour first, since a still-hidden spoiler must never read as
+ * anything else, then the two other content colours in the brief's table
+ * order.
+ */
+const resolveContentColour = (opts: { kinds: TEntityKind[]; revealed: boolean; own: boolean; tokens: ITokens }): string => {
+  const { kinds, revealed, own, tokens } = opts;
+  if (kinds.includes(EntityKinds.SPOILER) && !revealed) {
+    return tokens.messageCursor;
+  }
+  if (kinds.includes(EntityKinds.CODE) || kinds.includes(EntityKinds.PRE)) {
+    return tokens.textCode;
+  }
+  if (isLinkKind(kinds)) {
+    return tokens.textLink;
+  }
+  return own ? tokens.messageOwn : tokens.messageOther;
+};
+
+/** OpenTUI's `<b>`/`<i>`/`<u>` OR their attribute into whatever their parent already carries, so nesting composes instead of overriding. */
+const wrapWithModifiers = (opts: { text: string; kinds: TEntityKind[] }): ReactNode => {
+  const { text, kinds } = opts;
+  let node: ReactNode = text;
+  if (isUnderlinedKind(kinds)) {
+    node = <u>{node}</u>;
+  }
+  if (kinds.includes(EntityKinds.ITALIC)) {
+    node = <i>{node}</i>;
+  }
+  if (kinds.includes(EntityKinds.BOLD)) {
+    node = <b>{node}</b>;
+  }
+  return node;
+};
+
+/**
+ * Strike has no dedicated JSX tag the way bold/italic/underline do -- OpenTUI's
+ * component catalogue offers only span/b/strong/i/em/u/br/a
+ * (@opentui/react's components/index.ts) -- so it is carried as a bit in the
+ * numeric `attributes` field every span-like renderable accepts instead
+ * (TextAttributes.STRIKETHROUGH, @opentui/core). Set on the outer `<span>`
+ * rather than the modifiers themselves: TextNodeRenderable.mergeStyles ORs a
+ * node's own attributes with whatever it inherits (`this._attributes |
+ * parentStyle.attributes`, verified in @opentui/core's compiled
+ * TextNodeRenderable), so a strike-and-bold span still ends up with both bits
+ * set on its innermost text node.
+ */
+const resolveAttributes = (opts: { kinds: TEntityKind[] }): number | undefined =>
+  opts.kinds.includes(EntityKinds.STRIKE) ? TextAttributes.STRIKETHROUGH : undefined;
+
+const renderContentSpan = (opts: {
+  span: IStyledSpan;
+  own: boolean;
+  revealed: boolean;
+  tokens: ITokens;
+  spanKey: string;
+}): ReactNode => {
+  const { span, own, revealed, tokens, spanKey } = opts;
+  const fg = resolveContentColour({ kinds: span.kinds, revealed, own, tokens });
+  return (
+    <span key={spanKey} fg={fg} attributes={resolveAttributes({ kinds: span.kinds })}>
+      {wrapWithModifiers({ text: span.text, kinds: span.kinds })}
+    </span>
+  );
+};
+
+/**
+ * One entry per rendered row, in order. Wrapping here rather than leaving it
+ * to the renderer is the whole fix: a `<text>` allowed to wrap itself makes
+ * one child several rows tall, the column shrinks it to fit instead of
+ * clipping it, and shrunk children overdraw one another -- see
+ * src/tui/viewport.ts. Entities change how many rows a message produces
+ * (a masked spoiler is narrower, a link never grows one), so every row still
+ * comes from this one pass rather than being guessed at elsewhere.
  */
 const buildRows = (opts: {
   messages: IMessageRow[];
   cursor: number;
   contentWidth: number;
   resolveSenderName: (opts: { fromId: string | null }) => string;
+  revealedSpoilers: Set<number>;
+  readOutboxMaxId: number;
 }): IRenderedRow[] => {
-  const { messages, cursor, contentWidth, resolveSenderName } = opts;
+  const { messages, cursor, contentWidth, resolveSenderName, revealedSpoilers, readOutboxMaxId } = opts;
   const rows: IRenderedRow[] = [];
+  // Never below 1: a pane so narrow that contentWidth itself sits at
+  // MINIMUM_CONTENT_WIDTH still leaves splitLongWord something to cut into.
+  const preContentWidth = Math.max(1, contentWidth - PRE_RULE_WIDTH);
 
   messages.forEach((message, index) => {
     const senderName = resolveSenderName({ fromId: message.fromId });
@@ -95,20 +410,62 @@ const buildRows = (opts: {
     // Hybrid numbering as in relativenumber + number: the cursor row shows its
     // absolute index, every other row its distance from the cursor.
     const gutter = index === cursor ? String(index + 1) : String(Math.abs(index - cursor));
+    const revealed = revealedSpoilers.has(message.id);
+    const own = message.out === 1;
+    const tick = resolveTick({ own, messageId: message.id, readOutboxMaxId });
 
-    wrapText({ text: message.text, width: contentWidth }).forEach((line, lineIndex) => {
+    // Pushed before the message's own content rows, so it sits directly above
+    // them and, sharing this message's `messageIndex`, scrolls and highlights
+    // with the rest of it exactly as a wrapped continuation row already does.
+    if (message.replyToMessageId !== null) {
+      const quoteText = buildQuoteText({ replyToMessageId: message.replyToMessageId, messages, resolveSenderName });
+      rows.push({
+        key: `${message.id}:quote`,
+        messageIndex: index,
+        kind: 'quote',
+        // Blank, like a wrapped continuation row: the quote is not itself a
+        // dated, sent-by someone message, so the rail has nothing to show.
+        gutter: BLANK_GUTTER,
+        time: BLANK_TIME,
+        sender: BLANK_SENDER,
+        tick: BLANK_TICK,
+        content: padRowContent({
+          spans: [{ text: truncateToWidth({ text: quoteText, width: contentWidth }), kinds: [], url: null }],
+          width: contentWidth,
+        }),
+        own,
+        revealed,
+        rulePrefix: false,
+      });
+    }
+
+    const styled = maskSpoilerSpans({
+      spans: toStyledSpans({ text: message.text, entities: message.entities }),
+      revealed,
+    });
+    const wrappedRows = toLogicalSpanLines({ spans: styled })
+      .flatMap(line => wrapLogicalLine({ spans: line, contentWidth, preContentWidth }));
+
+    wrappedRows.forEach(({ spans: rowSpans, isPre }, lineIndex) => {
       const opensMessage = lineIndex === 0;
+      const rowWidth = isPre ? preContentWidth : contentWidth;
       rows.push({
         key: `${message.id}:${lineIndex}`,
         messageIndex: index,
+        kind: 'content',
         gutter: opensMessage ? padStartToWidth({ text: gutter, width: GUTTER_WIDTH }) : BLANK_GUTTER,
         time: opensMessage && opensGroup ? formatTime({ date: message.date }) : BLANK_TIME,
         sender:
           opensMessage && opensGroup
             ? padToWidth({ text: truncateToWidth({ text: senderName, width: SENDER_WIDTH }), width: SENDER_WIDTH })
             : BLANK_SENDER,
-        content: padToWidth({ text: line, width: contentWidth }),
-        own: message.out === 1,
+        // Every own message's own row, not gated on opensGroup the way
+        // time/sender are -- see resolveTick's own comment above.
+        tick: opensMessage ? tick : BLANK_TICK,
+        content: padRowContent({ spans: rowSpans, width: rowWidth }),
+        own,
+        revealed,
+        rulePrefix: isPre,
       });
     });
   });
@@ -117,7 +474,7 @@ const buildRows = (opts: {
 };
 
 export const MessageView = (props: IMessageViewProps) => {
-  const { messages, cursor, focused, tokens, height, width, resolveSenderName } = props;
+  const { messages, cursor, focused, tokens, height, width, resolveSenderName, revealedSpoilers, readOutboxMaxId } = props;
 
   if (messages.length === 0) {
     return (
@@ -128,7 +485,7 @@ export const MessageView = (props: IMessageViewProps) => {
   }
 
   const contentWidth = Math.max(MINIMUM_CONTENT_WIDTH, width - RAIL_WIDTH);
-  const rows = buildRows({ messages, cursor, contentWidth, resolveSenderName });
+  const rows = buildRows({ messages, cursor, contentWidth, resolveSenderName, revealedSpoilers, readOutboxMaxId });
 
   // A cursor pointing past the end of the history would otherwise anchor the
   // window at -1 and scroll the pane off its own top.
@@ -154,8 +511,17 @@ export const MessageView = (props: IMessageViewProps) => {
             bg={highlighted ? tokens.messageCursor : undefined}
           >
             <span fg={highlighted ? tokens.chatUnread : tokens.dim}>{`${MARKER}${row.gutter} `}</span>
-            <span fg={tokens.dim}>{`${row.time} ${row.sender} `}</span>
-            <span fg={row.own ? tokens.messageOwn : tokens.messageOther}>{row.content}</span>
+            <span fg={tokens.dim}>{`${row.time} ${row.sender} ${row.tick} `}</span>
+            {row.kind === 'quote' ? (
+              <span fg={tokens.dim}>{row.content[0]?.text ?? ''}</span>
+            ) : (
+              <>
+                {row.rulePrefix && <span key={`${row.key}:rule`} fg={tokens.border}>{PRE_RULE}</span>}
+                {row.content.map((span, spanIndex) =>
+                  renderContentSpan({ span, own: row.own, revealed: row.revealed, tokens, spanKey: `${row.key}:${spanIndex}` }),
+                )}
+              </>
+            )}
           </text>
         );
       })}

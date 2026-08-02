@@ -4,8 +4,13 @@ import { ApplicationLogger, toError, type ILogger } from '@venizia/ignis-helpers
 import { BindingKeys } from '../common/index.ts';
 import type { ApplicationStoreService, IApplicationState } from './application-store.ts';
 import type { DatabaseService, IMessageRow } from './cache/index.ts';
+import type { ITelegramEntity } from './common/index.ts';
 
-const SEND_REFRESH_LIMIT = 200;
+const REPUBLISH_LIMIT = 200;
+// Telegram rate-limits ReadHistory the same as everything else; a cursor
+// resting on the newest message would otherwise call markRead on every
+// keystroke and earn a self-inflicted FLOOD_WAIT.
+const MARK_READ_DEBOUNCE_MILLISECONDS = 2000;
 
 export interface IRawMessage {
   id: number;
@@ -14,21 +19,49 @@ export interface IRawMessage {
   date: number;
   text: string;
   out: number;
+  entities: ITelegramEntity[];
+  replyToMessageId: number | null;
+}
+
+/**
+ * A message as the live update stream delivers it: the message itself, and the
+ * account-wide `pts` the delivering update carried. The pts rides along rather
+ * than living on IRawMessage because it belongs to the update, not the
+ * message -- a message fetched by `fetchHistory` or returned by `send` has no
+ * pts at all.
+ *
+ * null means "this update carried no pts this account can store": a channel
+ * update numbers its own sequence, so writing its pts into the account-wide
+ * row would send the next `updates.getDifference` to a position that does not
+ * exist there.
+ */
+export interface ILiveMessage {
+  message: IRawMessage;
+  pts: number | null;
 }
 
 export interface IMessageAdapter {
   fetchHistory(opts: { peerId: string; limit: number }): Promise<IRawMessage[]>;
-  send(opts: { peerId: string; text: string }): Promise<IRawMessage>;
-  subscribeToNewMessages(opts: { onMessage: (message: IRawMessage) => void }): () => void;
+  send(opts: { peerId: string; text: string; replyToMessageId?: number }): Promise<IRawMessage>;
+  edit(opts: { peerId: string; messageId: number; text: string }): Promise<IRawMessage>;
+  delete(opts: { peerId: string; messageId: number; forEveryone: boolean }): Promise<void>;
+  markRead(opts: { peerId: string; maxId: number }): Promise<void>;
+  subscribeToNewMessages(opts: { onMessage: (live: ILiveMessage) => void }): () => void;
 }
 
 export class MessageService {
   private readonly _logger: ILogger = ApplicationLogger.get(MessageService.name);
   // The limit the view is currently displaying, so a republish after send()
-  // shows the same page size loadHistory() last asked for rather than a
-  // hardcoded one -- see SEND_REFRESH_LIMIT, its fallback before loadHistory
-  // has ever run.
+  // or edit() shows the same page size loadHistory() last asked for rather
+  // than a hardcoded one -- see REPUBLISH_LIMIT, its fallback before
+  // loadHistory has ever run.
   private _historyLimit: number | null = null;
+  // When markRead last ran for a given peer, keyed so reading one chat can
+  // never suppress a mark-read for a different one landing in the same
+  // window. Set before the adapter call, not after it resolves: two overlapping
+  // calls for the same peer must both see the timestamp already claimed, or
+  // both would slip past the check before either finishes.
+  private readonly _lastMarkReadAt = new Map<string, number>();
 
   constructor(
     @inject({ key: BindingKeys.MESSAGE_ADAPTER }) private readonly _adapter: IMessageAdapter,
@@ -55,6 +88,8 @@ export class MessageService {
           date: message.date,
           text: message.text,
           out: message.out,
+          entities: message.entities,
+          replyToMessageId: message.replyToMessageId,
         })),
       });
       this._store.setState({
@@ -89,8 +124,8 @@ export class MessageService {
     }
   };
 
-  send = async (opts: { peerId: string; text: string }): Promise<void> => {
-    const { peerId, text } = opts;
+  send = async (opts: { peerId: string; text: string; replyToMessageId?: number }): Promise<void> => {
+    const { peerId, text, replyToMessageId } = opts;
 
     if (text.trim() === '') {
       return;
@@ -98,7 +133,7 @@ export class MessageService {
 
     let sent: IRawMessage;
     try {
-      sent = await this._adapter.send({ peerId, text });
+      sent = await this._adapter.send({ peerId, text, replyToMessageId });
     } catch (error) {
       this._logger.for(this.send.name).error('Send failed | Reason: %s', error);
       this._store.setState({ patch: { statusMessage: `Send failed: ${toError(error).message}` } });
@@ -120,18 +155,21 @@ export class MessageService {
           date: sent.date,
           text: sent.text,
           out: sent.out,
+          entities: sent.entities,
+          replyToMessageId: sent.replyToMessageId,
         }],
       });
 
       const patch: Partial<IApplicationState> = {
         messages: this.forDisplay({
-          rows: this._database.listMessages({ peerId, limit: this._historyLimit ?? SEND_REFRESH_LIMIT }),
+          rows: this._database.listMessages({ peerId, limit: this._historyLimit ?? REPUBLISH_LIMIT }),
         }),
         activePeerId: peerId,
         statusMessage: null,
       };
       if (stillUnchanged) {
         patch.composerText = '';
+        patch.replyToMessageId = null;
       }
       this._store.setState({ patch });
     } catch (error) {
@@ -146,8 +184,190 @@ export class MessageService {
       };
       if (stillUnchanged) {
         patch.composerText = '';
+        patch.replyToMessageId = null;
       }
       this._store.setState({ patch });
+    }
+  };
+
+  /**
+   * Mirrors send() exactly: the adapter call in its own try, the cache write
+   * in another, the composer (and the editing state riding alongside it)
+   * cleared only on success and only if the user has not since typed
+   * something new. insertMessages() upserts on (peerId, id), so writing the
+   * edited row back under the same messageId updates it in place rather than
+   * appending a second one.
+   */
+  edit = async (opts: { peerId: string; messageId: number; text: string }): Promise<void> => {
+    const { peerId, messageId, text } = opts;
+
+    let edited: IRawMessage;
+    try {
+      edited = await this._adapter.edit({ peerId, messageId, text });
+    } catch (error) {
+      this._logger.for(this.edit.name).error('Edit failed | Reason: %s', error);
+      this._store.setState({ patch: { statusMessage: `Edit failed: ${toError(error).message}` } });
+      return;
+    }
+
+    // Same snapshot-after-the-only-await rule as send(): only clear the
+    // composer if the user has not since typed something new.
+    const stillUnchanged = this._store.getState().composerText === text;
+
+    try {
+      this._database.insertMessages({
+        messages: [{
+          peerId: edited.peerId,
+          id: edited.id,
+          fromId: edited.fromId,
+          date: edited.date,
+          text: edited.text,
+          out: edited.out,
+          entities: edited.entities,
+          replyToMessageId: edited.replyToMessageId,
+        }],
+      });
+
+      const patch: Partial<IApplicationState> = {
+        messages: this.forDisplay({
+          rows: this._database.listMessages({ peerId, limit: this._historyLimit ?? REPUBLISH_LIMIT }),
+        }),
+        activePeerId: peerId,
+        statusMessage: null,
+      };
+      if (stillUnchanged) {
+        patch.composerText = '';
+        patch.editingMessageId = null;
+        patch.composerTextBeforeEdit = null;
+      }
+      this._store.setState({ patch });
+    } catch (error) {
+      // The edit already reached Telegram; only the local copy is stale.
+      // Reporting this as a failed edit would invite a retry -- harmless
+      // here (re-editing to the same text is idempotent, unlike a duplicate
+      // send) but still not what "failed" should tell the user happened.
+      this._logger.for(this.edit.name).error('Edited but could not cache | Reason: %s', error);
+
+      const patch: Partial<IApplicationState> = {
+        statusMessage: `Edited, but could not save it locally: ${toError(error).message}`,
+      };
+      if (stillUnchanged) {
+        patch.composerText = '';
+        patch.editingMessageId = null;
+        patch.composerTextBeforeEdit = null;
+      }
+      this._store.setState({ patch });
+    }
+  };
+
+  /**
+   * The only irreversible operation in this file. forEveryone is decided
+   * here, from state.messages -- the same array DELETE_REQUEST itself
+   * resolved messageId from, so the confirmation the user answered and the
+   * delete this performs can never disagree about whose message it is.
+   * GramJS ignores the flag in channels and megagroups regardless, deleting
+   * for everyone unconditionally there.
+   *
+   * Mirrors send()/edit(): the adapter call in its own try, the cache write
+   * in another. Unlike them there is no composerText to protect, so there is
+   * no "still unchanged?" guard -- App clears pendingConfirmation the instant
+   * CONFIRM is dispatched, before this ever runs, so nothing here depends on
+   * whether the network call has resolved yet.
+   */
+  delete = async (opts: { peerId: string; messageId: number }): Promise<void> => {
+    const { peerId, messageId } = opts;
+    const target = this._store.getState().messages.find(message => message.id === messageId);
+    const forEveryone = target?.out === 1;
+
+    try {
+      await this._adapter.delete({ peerId, messageId, forEveryone });
+    } catch (error) {
+      this._logger.for(this.delete.name).error('Delete failed | Reason: %s', error);
+      this._store.setState({ patch: { statusMessage: `Delete failed: ${toError(error).message}` } });
+      return;
+    }
+
+    try {
+      this._database.deleteMessage({ peerId, id: messageId });
+      this._store.setState({
+        patch: {
+          messages: this.forDisplay({
+            rows: this._database.listMessages({ peerId, limit: this._historyLimit ?? REPUBLISH_LIMIT }),
+          }),
+          activePeerId: peerId,
+          statusMessage: forEveryone ? 'Deleted for everyone' : 'Deleted for you',
+        },
+      });
+    } catch (error) {
+      // The delete already reached Telegram; only the local copy is stale --
+      // the same split send() and edit() draw between a network call that
+      // failed and one that succeeded but failed only to cache.
+      this._logger.for(this.delete.name).error('Deleted but could not update the cache | Reason: %s', error);
+      this._store.setState({
+        patch: { statusMessage: `Deleted, but could not update the local cache: ${toError(error).message}` },
+      });
+    }
+  };
+
+  /**
+   * A call to the server that, once it actually succeeds, also clears the
+   * dialog's unread badge locally (spec §3.3: "clears locally and in the chat
+   * list") -- the tick shown for an already-sent own message is a separate
+   * fact, still driven by the dialog's readOutboxMaxId and still only ever
+   * refreshed by DialogService.sync().
+   *
+   * The clear is unconditional (zero, not a decrement), and it only ever runs
+   * after this method's own adapter call resolves -- never from a cursor
+   * merely passing over a chat in the list, since nothing but this method and
+   * DialogService.sync() ever calls clearUnreadCount/upsertDialog with an
+   * unread figure that moves backward. That keeps a message arriving mid-read
+   * correct rather than resurrecting whatever the count was before the clear:
+   * UpdateService.touchDialog increments from whatever clearUnreadCount just
+   * wrote, a real re-read of the cache, not a stale in-memory figure, so a
+   * live arrival after the badge clears becomes a fresh, accurate 1 rather
+   * than the old count coming back.
+   *
+   * Deliberately not called from loadHistory(): fetching a chat's history is
+   * not the same fact as the user having read it, and the two must stay
+   * decoupled so a caller has to ask for this separately, on purpose, once it
+   * actually knows the user reached the newest message. See app.tsx's
+   * CHAT_OPEN/CURSOR_MOVE/CURSOR_EDGE handling for the two moments that
+   * qualify.
+   *
+   * Debounced per peer rather than per call: App fires this on every
+   * qualifying cursor move with no debounce of its own (see app.tsx), relying
+   * entirely on this one window so a cursor resting on the newest message
+   * cannot hammer the server on every keystroke. A debounced-away call skips
+   * both the network round trip and the clear below -- the prior successful
+   * call already cleared the count, so there is nothing left to do.
+   */
+  markRead = async (opts: { peerId: string; maxId: number }): Promise<void> => {
+    const { peerId, maxId } = opts;
+    const now = Date.now();
+    const last = this._lastMarkReadAt.get(peerId);
+    if (last !== undefined && now - last < MARK_READ_DEBOUNCE_MILLISECONDS) {
+      return;
+    }
+    this._lastMarkReadAt.set(peerId, now);
+
+    try {
+      await this._adapter.markRead({ peerId, maxId });
+    } catch (error) {
+      // Never rethrown: this is attached to whatever read path called it
+      // (opening a chat, moving the cursor), and a flaky mark-read must not
+      // take that down. The badge stays as it was -- nothing was actually
+      // read as far as the server is concerned.
+      this._logger.for(this.markRead.name).error('Could not mark read | Reason: %s', error);
+      return;
+    }
+
+    try {
+      this._database.clearUnreadCount({ peerId });
+      this._store.setState({ patch: { dialogs: this._database.listDialogs() } });
+    } catch (error) {
+      // The server has already marked this read; only the local mirror of
+      // that fact failed to update. Not rethrown, same reasoning as above.
+      this._logger.for(this.markRead.name).error('Could not clear the local unread count | Reason: %s', error);
     }
   };
 }

@@ -3,6 +3,7 @@ import { getError } from '@venizia/ignis-inversion';
 import { and, desc, eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/bun-sqlite';
 
+import type { ITelegramEntity } from '../common/index.ts';
 import { runMigrations } from './migrate.ts';
 import { dialogs, messages, peers, syncState } from './schema.ts';
 
@@ -20,6 +21,8 @@ export interface IDialogInput {
   unreadCount: number;
   lastMessageAt: number;
   topMessageId: number;
+  /** The highest id of the user's own messages the other side has read. Drives the tick in message-view.tsx; unrelated to markRead, which moves the inbox pointer instead. */
+  readOutboxMaxId: number;
 }
 
 export interface IMessageInput {
@@ -29,6 +32,8 @@ export interface IMessageInput {
   date: number;
   text: string;
   out: number;
+  entities: ITelegramEntity[];
+  replyToMessageId: number | null;
 }
 
 export interface IDialogRow {
@@ -38,6 +43,8 @@ export interface IDialogRow {
   unreadCount: number;
   lastMessageAt: number | null;
   topMessageId: number | null;
+  /** See IDialogInput.readOutboxMaxId. */
+  readOutboxMaxId: number;
 }
 
 export interface IMessageRow {
@@ -47,6 +54,8 @@ export interface IMessageRow {
   date: number;
   text: string;
   out: number;
+  entities: ITelegramEntity[];
+  replyToMessageId: number | null;
 }
 
 export type TDrizzleDatabase = ReturnType<typeof drizzle>;
@@ -105,6 +114,7 @@ export class DatabaseService {
         unreadCount: dialog.unreadCount,
         lastMessageAt: dialog.lastMessageAt,
         topMessageId: dialog.topMessageId,
+        readOutboxMaxId: dialog.readOutboxMaxId,
       })
       .onConflictDoUpdate({
         target: dialogs.peerId,
@@ -113,8 +123,26 @@ export class DatabaseService {
           unreadCount: dialog.unreadCount,
           lastMessageAt: dialog.lastMessageAt,
           topMessageId: dialog.topMessageId,
+          readOutboxMaxId: dialog.readOutboxMaxId,
         },
       })
+      .run();
+  };
+
+  /**
+   * A direct UPDATE rather than a read-modify-write through upsertDialog:
+   * the caller (MessageService.markRead) has no reason to know or preserve
+   * pinned/lastMessageAt/topMessageId/readOutboxMaxId just to zero one
+   * column, and a read-then-write would cost a round trip this doesn't need.
+   * A peer with no dialog row yet -- markRead racing ahead of
+   * DialogService.sync()'s first fetch -- matches zero rows and is a no-op,
+   * not an error.
+   */
+  clearUnreadCount = (opts: { peerId: string }): void => {
+    this.require('clearUnreadCount')
+      .update(dialogs)
+      .set({ unreadCount: 0 })
+      .where(eq(dialogs.peerId, opts.peerId))
       .run();
   };
 
@@ -127,6 +155,7 @@ export class DatabaseService {
         unreadCount: dialogs.unreadCount,
         lastMessageAt: dialogs.lastMessageAt,
         topMessageId: dialogs.topMessageId,
+        readOutboxMaxId: dialogs.readOutboxMaxId,
       })
       .from(dialogs)
       .innerJoin(peers, eq(peers.id, dialogs.peerId))
@@ -146,6 +175,8 @@ export class DatabaseService {
             date: message.date,
             text: message.text,
             out: message.out,
+            entities: JSON.stringify(message.entities),
+            replyToMsgId: message.replyToMessageId,
           })
           .onConflictDoUpdate({
             target: [messages.peerId, messages.id],
@@ -154,6 +185,8 @@ export class DatabaseService {
               date: message.date,
               text: message.text,
               out: message.out,
+              entities: JSON.stringify(message.entities),
+              replyToMsgId: message.replyToMessageId,
             },
           })
           .run();
@@ -162,10 +195,7 @@ export class DatabaseService {
   };
 
   listMessages = (opts: { peerId: string; limit: number }): IMessageRow[] => {
-    // `text` is nullable at the schema level to leave room for media-only
-    // messages in a later milestone; M1a always writes a string, so the row
-    // shape here still promises non-null text to its caller.
-    return this.require('listMessages')
+    const rows = this.require('listMessages')
       .select({
         peerId: messages.peerId,
         id: messages.id,
@@ -173,12 +203,42 @@ export class DatabaseService {
         date: messages.date,
         text: messages.text,
         out: messages.out,
+        entities: messages.entities,
+        replyToMessageId: messages.replyToMsgId,
       })
       .from(messages)
       .where(and(eq(messages.peerId, opts.peerId), eq(messages.deleted, 0)))
       .orderBy(desc(messages.date), desc(messages.id))
       .limit(opts.limit)
-      .all() as IMessageRow[];
+      .all();
+
+    return rows.map(row => ({
+      ...row,
+      // `text` is nullable at the schema level to leave room for media-only
+      // messages in a later milestone; M1a always writes a string, so the row
+      // shape here still promises non-null text to its caller.
+      text: row.text as string,
+      // Written as JSON since M1a; nothing wrote it before this task, so an
+      // existing row's column reads back SQL NULL rather than '[]' -- callers
+      // downstream iterate this without a null check, so it must never surface
+      // as null here.
+      entities: row.entities ? (JSON.parse(row.entities) as ITelegramEntity[]) : [],
+    }));
+  };
+
+  /**
+   * Flags the row rather than running a real DELETE: removing it would open
+   * a hole in the peer's id range, which is exactly the fact history paging
+   * (scrolling past the top of a contiguous range) reasons about to tell
+   * "cached" from "never fetched". listMessages already excludes deleted=1,
+   * so this alone is what makes a deleted message stop appearing.
+   */
+  deleteMessage = (opts: { peerId: string; id: number }): void => {
+    this.require('deleteMessage')
+      .update(messages)
+      .set({ deleted: 1 })
+      .where(and(eq(messages.peerId, opts.peerId), eq(messages.id, opts.id)))
+      .run();
   };
 
   getSyncState = (opts: { key: string }): number | null => {

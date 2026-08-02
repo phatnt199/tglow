@@ -15,6 +15,8 @@ export interface IRawDialog {
   unreadCount: number;
   lastMessageAt: number;
   topMessageId: number;
+  /** See IDialogInput.readOutboxMaxId (src/core/cache/database.ts). */
+  readOutboxMaxId: number;
 }
 
 export interface IDialogAdapter {
@@ -49,6 +51,7 @@ export class DialogService {
           unreadCount: dialog.unreadCount,
           lastMessageAt: dialog.lastMessageAt,
           topMessageId: dialog.topMessageId,
+          readOutboxMaxId: dialog.readOutboxMaxId,
         });
       }
 

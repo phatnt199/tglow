@@ -19,7 +19,7 @@ export class TelegramClientService {
     const { configuration } = opts;
     const session = new StringSession(this._sessionStore.load({ filePath: configuration.sessionPath }));
 
-    return new TelegramClient(session, configuration.apiId, configuration.apiHash, {
+    const client = new TelegramClient(session, configuration.apiId, configuration.apiHash, {
       connectionRetries: CONNECTION_RETRIES,
       retryDelay: RETRY_DELAY_MILLISECONDS,
       autoReconnect: true,
@@ -28,6 +28,14 @@ export class TelegramClientService {
       appVersion: '0.1.0',
       baseLogger: new Logger('error' as never),
     });
+
+    // GramJS parses the message as Markdown by default, so `__init__.py` would
+    // send as bold "init" plus ".py" with nothing on screen to show it happened.
+    // The composer is plain text and what you type is what you send; composing
+    // formatting is a deliberate feature, not a side effect.
+    client.setParseMode(undefined);
+
+    return client;
   };
 
   persistSession = (opts: { client: TelegramClient; configuration: IApplicationConfiguration }): void => {

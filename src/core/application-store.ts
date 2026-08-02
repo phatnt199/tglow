@@ -13,10 +13,40 @@ export interface IApplicationState {
   chatCursor: number;
   messageCursor: number;
   composerText: string;
+  /** The message `r` targeted, or null when no reply is pending. Cleared on a successful send and on escape; preserved on a failed send. */
+  replyToMessageId: number | null;
+  /** The message `e` is editing, or null when no edit is in progress. EDIT_START refuses to set this at all when the target's `out !== 1` -- you cannot edit someone else's message. Cleared on a successful edit and on the escape that cancels one; preserved on a failed edit. */
+  editingMessageId: number | null;
+  /** What composerText held the instant before EDIT_START overwrote it with the message's own text. Restored by the escape that cancels an edit, so an accidental `e` never costs the user a draft; null whenever editingMessageId is null. */
+  composerTextBeforeEdit: string | null;
   connection: TConnectionState;
   statusMessage: string | null;
+  /**
+   * The one status the user must not be able to miss: messages were, or may
+   * have been, lost. Its own field rather than a severity on statusMessage
+   * because statusMessage is *routinely* cleared -- loadHistory, send, edit and
+   * delete all patch it to null on success -- and main.ts calls loadHistory
+   * immediately after catch-up, so a data-integrity warning written to
+   * statusMessage was erased before the first frame every single time. Nothing
+   * clears this but the user, with <C-l>.
+   */
+  integrityWarning: string | null;
   /** Which full-pane overlay is showing, if any. Orthogonal to engine.context: opening one leaves mode and pane focus exactly as they were. */
   overlay: TOverlay | null;
+  /**
+   * Set by `dd`'s DELETE_REQUEST while the status line waits for y/n; null
+   * once answered either way. The only irreversible action in the app gates
+   * on this being non-null: App checks it before engine resolution, the same
+   * category of App-level gate as `overlay` and the reply/edit escapes above,
+   * and swallows every key except y, n and escape while it is set.
+   */
+  pendingConfirmation: { kind: 'delete'; messageId: number } | null;
+  /**
+   * Ids of messages whose spoilers `zs` has revealed. Not persisted: reopening
+   * a chat rebuilds the store from scratch, so a spoiler revealed yesterday is
+   * hidden again today, which is the intended behaviour, not a bug to fix.
+   */
+  revealedSpoilers: Set<number>;
 }
 
 const INITIAL_STATE: IApplicationState = {
@@ -27,9 +57,15 @@ const INITIAL_STATE: IApplicationState = {
   chatCursor: 0,
   messageCursor: 0,
   composerText: '',
+  replyToMessageId: null,
+  editingMessageId: null,
+  composerTextBeforeEdit: null,
   connection: 'offline',
   statusMessage: null,
+  integrityWarning: null,
   overlay: null,
+  pendingConfirmation: null,
+  revealedSpoilers: new Set(),
 };
 
 export class ApplicationStoreService {

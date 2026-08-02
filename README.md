@@ -83,6 +83,11 @@ by accident.
 | `3j` | down three messages |
 | `gg` / `G` | oldest loaded / newest |
 | `<C-d>` / `<C-u>` | half page down / up |
+| `zs` | reveal a spoiler under the cursor |
+| `K` | show the URL of a link under the cursor |
+| `r` | reply to the message under the cursor |
+| `e` | edit your own message under the cursor |
+| `dd` | delete the message under the cursor (asks `y`/`n` to confirm) |
 | `nf` | focus the chat list |
 | `<C-w>h` / `<C-w>l` | move focus between chat list and messages |
 | `Enter` (chat list) | open the chat |
@@ -90,6 +95,7 @@ by accident.
 | `i` / `a` | write a message |
 | `jk` or `Esc` | leave insert mode |
 | `Enter` (insert) | send |
+| `<C-l>` (normal) | dismiss a data-integrity warning on the status line |
 | `<C-c>` (normal) | quit |
 
 ## Security

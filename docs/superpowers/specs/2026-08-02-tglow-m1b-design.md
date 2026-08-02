@@ -34,7 +34,9 @@ Nothing may be marked done until every row is accounted for.
 | **rich text entities** (bold, italic, code, link, spoiler) | | **✅** | |
 | **reply, edit, delete** | | **✅** | |
 | **mark as read + read receipts** | | **✅** | |
-| **`pts` gap recovery** | | **✅** | |
+| **`pts` gap recovery — private chats and basic groups** | | **✅** | |
+| **`pts` gap recovery — channels and supergroups** | | ❌ outstanding | |
+| **`pts` gap recovery — non-message updates** | | ❌ outstanding | |
 | **vim operators, registers, `.` repeat** | | | **✅** |
 | **`<C-p>` fuzzy chat jump** | | | **✅** |
 | **`/` incremental search over cached history** | | | **✅** |
@@ -42,6 +44,32 @@ Nothing may be marked done until every row is accounted for.
 
 M1b-1 is the message layer — what you hit reading and answering. M1b-2 is the
 editor layer. **This document specs both; only M1b-1 is planned now.**
+
+> **What `pts` gap recovery actually delivers.** The row above was a single ✅
+> until the final whole-branch review; splitting it is the correction. A ✅ that
+> overstates is how three features shipped missing from M1a, and this row was
+> covering two absences.
+>
+> **Delivered.** `updates.getDifference` from a stored `pts`/`qts`/`date`/`seq`,
+> applied through the same `UpdateService.apply` a live message takes. That is
+> the **common** update sequence: private chats and basic groups. The stored
+> state now advances on live arrivals too, not only at catch-up, and
+> `differenceTooLong` re-fetches history rather than trusting the `pts` jump.
+>
+> **Not delivered.** `updates.getChannelDifference` is not implemented, so
+> **channels and supergroups are not backfilled at all** — the peers most
+> accounts get the most volume from. A live channel message still arrives, but
+> its `pts` belongs to that channel's own sequence and is deliberately
+> discarded (`telegram-adapter.ts`), because storing it in the account-wide row
+> would send the next `getDifference` somewhere the account never was. Per-channel
+> `pts` rows keyed `channel:<id>:pts`, as §3.4 specifies, are outstanding.
+>
+> **Also not delivered.** `otherUpdates` — every non-message update in a
+> difference: edits, deletions, read receipts, and the `pts` gap detection §3.4
+> asks for ("on an update whose `pts` exceeds the expected next value, fetch the
+> difference"). All of it is discarded at the adapter. A message edited or
+> deleted while tglow was closed still shows its old text, and a read receipt
+> from that window never arrives.
 
 Deferred beyond M1b, unchanged: media and stickers, reactions, voice waveforms,
 typing indicators, online status (M2); folders, archive, forum topics (M4).

@@ -31,6 +31,16 @@ export class ActionTypes {
   static readonly COMPOSER_BACKSPACE = 'composer.backspace';
   static readonly APPLICATION_QUIT = 'application.quit';
   static readonly OVERLAY_TOGGLE = 'overlay.toggle';
+  static readonly SPOILER_REVEAL = 'spoiler.reveal';
+  static readonly REPLY_START = 'reply.start';
+  static readonly REPLY_CANCEL = 'reply.cancel';
+  static readonly EDIT_START = 'edit.start';
+  static readonly EDIT_CANCEL = 'edit.cancel';
+  static readonly DELETE_REQUEST = 'delete.request';
+  static readonly CONFIRM = 'confirmation.confirm';
+  static readonly CANCEL_CONFIRMATION = 'confirmation.cancel';
+  static readonly LINK_SHOW = 'link.show';
+  static readonly WARNING_DISMISS = 'warning.dismiss';
 }
 
 const SUPPORTED_MODES: readonly string[] = [

@@ -32,7 +32,17 @@ export type TAction =
   | { type: typeof ActionTypes.COMPOSER_INSERT_TEXT; text: string }
   | { type: typeof ActionTypes.COMPOSER_BACKSPACE }
   | { type: typeof ActionTypes.APPLICATION_QUIT }
-  | { type: typeof ActionTypes.OVERLAY_TOGGLE; overlay: TOverlay };
+  | { type: typeof ActionTypes.OVERLAY_TOGGLE; overlay: TOverlay }
+  | { type: typeof ActionTypes.SPOILER_REVEAL }
+  | { type: typeof ActionTypes.REPLY_START }
+  | { type: typeof ActionTypes.REPLY_CANCEL }
+  | { type: typeof ActionTypes.EDIT_START }
+  | { type: typeof ActionTypes.EDIT_CANCEL }
+  | { type: typeof ActionTypes.DELETE_REQUEST }
+  | { type: typeof ActionTypes.CONFIRM }
+  | { type: typeof ActionTypes.CANCEL_CONFIRMATION }
+  | { type: typeof ActionTypes.LINK_SHOW }
+  | { type: typeof ActionTypes.WARNING_DISMISS };
 
 export interface IEngineState {
   mode: TVimMode;

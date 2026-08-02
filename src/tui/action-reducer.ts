@@ -2,11 +2,12 @@ import { getError } from '@venizia/ignis-inversion';
 
 // Type-only import, erased at runtime under verbatimModuleSyntax, so this
 // path choice has no bearing on the telegram/global.window crash the test
-// files' value imports had to avoid (see __tests__/tui/action-reducer.test.ts)
+// files' value imports had to avoid (see src/__tests__/tui/action-reducer.test.ts)
 // -- points at the concrete module rather than the core/ barrel purely
 // because that is where IApplicationState is actually defined.
 import type { IApplicationState } from '../core/application-store.ts';
-import { ActionTypes, type TAction } from '../keys/common/index.ts';
+import { ActionTypes, VimContexts, VimModes, type TAction } from '../keys/common/index.ts';
+import { extractLinkUrls } from './entities.ts';
 
 const clamp = (opts: { value: number; maximum: number }): number => {
   if (opts.maximum < 0) {
@@ -61,6 +62,117 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
       // second time must return to null rather than re-opening the same
       // overlay it already is.
       return { overlay: state.overlay === action.overlay ? null : action.overlay };
+    }
+
+    case ActionTypes.SPOILER_REVEAL: {
+      const message = state.messages[state.messageCursor];
+      if (!message) {
+        return {};
+      }
+      // A fresh Set, cloned from the current one rather than mutated: the
+      // store is read through useSyncExternalStore, which compares by
+      // reference and bails out on an unchanged one, leaving the spoiler
+      // masked on screen even though state.revealedSpoilers itself now has
+      // the id in it.
+      return { revealedSpoilers: new Set(state.revealedSpoilers).add(message.id) };
+    }
+
+    // Spec §3.1: "url, text_url -- the URL shown on K". A key that appears to
+    // do nothing reads as broken, so a message with no link says so rather
+    // than leaving the status line untouched -- the same reasoning
+    // EDIT_START's refusal branch already applies below.
+    case ActionTypes.LINK_SHOW: {
+      const message = state.messages[state.messageCursor];
+      if (!message) {
+        return {};
+      }
+      const urls = extractLinkUrls({ text: message.text, entities: message.entities });
+      if (urls.length === 0) {
+        return { statusMessage: 'No link in this message' };
+      }
+      if (urls.length === 1) {
+        return { statusMessage: urls[0] };
+      }
+      return { statusMessage: `${urls[0]} (+${urls.length - 1} more)` };
+    }
+
+    // The only thing that clears integrityWarning. Nothing else may: the field
+    // exists precisely because statusMessage is cleared as a matter of course
+    // by loadHistory/send/edit/delete, which is how "some missed messages
+    // could not be saved" was erased before the user ever saw it.
+    case ActionTypes.WARNING_DISMISS: {
+      return { integrityWarning: null };
+    }
+
+    case ActionTypes.REPLY_START: {
+      const message = state.messages[state.messageCursor];
+      if (!message) {
+        return {};
+      }
+      return { replyToMessageId: message.id };
+    }
+
+    case ActionTypes.REPLY_CANCEL: {
+      return { replyToMessageId: null };
+    }
+
+    case ActionTypes.EDIT_START: {
+      const message = state.messages[state.messageCursor];
+      if (!message) {
+        return {};
+      }
+      // Refused here, in the interface, rather than left to fail at the
+      // server: out !== 1 means this message is not the user's own.
+      if (message.out !== 1) {
+        return { statusMessage: 'Can only edit your own messages' };
+      }
+      // Unlike REPLY_START, this is the only action `e` dispatches -- there
+      // is no separate FOCUS_SET/MODE_SET pair the way `i` has, because
+      // those would fire unconditionally even on the refusal branch above.
+      // So this one action also carries what i's two normally would.
+      return {
+        editingMessageId: message.id,
+        // Captured only when no edit is already under way. Unconditionally,
+        // a second `e` overwrote the saved draft with the *first* message's
+        // own text, so the <escape> that cancels restored that instead --
+        // `e` `jk` `e` `<escape>` destroyed the very draft this field exists
+        // to protect.
+        composerTextBeforeEdit: state.editingMessageId === null
+          ? state.composerText
+          : state.composerTextBeforeEdit,
+        composerText: message.text,
+        engine: { ...state.engine, context: VimContexts.COMPOSER, mode: VimModes.INSERT },
+      };
+    }
+
+    case ActionTypes.EDIT_CANCEL: {
+      return {
+        editingMessageId: null,
+        composerText: state.composerTextBeforeEdit ?? '',
+        composerTextBeforeEdit: null,
+      };
+    }
+
+    case ActionTypes.DELETE_REQUEST: {
+      const message = state.messages[state.messageCursor];
+      if (!message) {
+        return {};
+      }
+      return {
+        pendingConfirmation: { kind: 'delete', messageId: message.id },
+        statusMessage: 'Delete this message? (y/n)',
+      };
+    }
+
+    // CONFIRM and CANCEL_CONFIRMATION both end the question the same way --
+    // only CONFIRM additionally deletes, which is App's side effect to
+    // perform (the only place that can reach onDelete), the same split
+    // COMPOSER_SEND/CHAT_OPEN draw below. Clearing unconditionally here,
+    // not only once a successful delete comes back, keeps a failed or
+    // hung network call from leaving every other key swallowed.
+    case ActionTypes.CONFIRM:
+    case ActionTypes.CANCEL_CONFIRMATION: {
+      return { pendingConfirmation: null, statusMessage: null };
     }
 
     // Side-effecting actions are App's to perform; the reducer has no patch.

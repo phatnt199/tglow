@@ -10,8 +10,10 @@ export class BindingKeys {
   static readonly DIALOG_SERVICE = '@tglow/core/dialog-service';
   static readonly MESSAGE_SERVICE = '@tglow/core/message-service';
   static readonly UPDATE_SERVICE = '@tglow/core/update-service';
+  static readonly DIFFERENCE_SERVICE = '@tglow/core/difference-service';
   static readonly DIALOG_ADAPTER = '@tglow/core/dialog-adapter';
   static readonly MESSAGE_ADAPTER = '@tglow/core/message-adapter';
+  static readonly DIFFERENCE_ADAPTER = '@tglow/core/difference-adapter';
 
   static readonly KEY_NORMALIZER = '@tglow/keys/key-normalizer';
   static readonly VIM_ENGINE = '@tglow/keys/vim-engine';

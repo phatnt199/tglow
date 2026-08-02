@@ -35,6 +35,54 @@ export class KeymapService {
       action: count => [{ type: ActionTypes.CURSOR_MOVE, unit: 'message', delta: -HALF_PAGE_MESSAGES * count }],
     },
 
+    // Message actions — z is otherwise unbound, so it becomes a pending
+    // prefix exactly as g does for gg, mirroring vim's own z fold prefix.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: 'zs', description: 'Reveal spoiler',
+      action: () => [{ type: ActionTypes.SPOILER_REVEAL }],
+    },
+    // <escape> cancels the reply this starts, but only when one is pending --
+    // that condition lives in IApplicationState, which no binding's action()
+    // can see, so App intercepts it directly (app.tsx) the same way it
+    // already does for the which-key overlay's own escape, rather than a
+    // second binding here.
+    // K is already this project's LSP-hover-style key (M1 spec §5: "message
+    // details / sender info"); showing a link's URL is the natural first
+    // occupant. Capital letters arrive as <S-x>, never a bare 'X'
+    // (ignis-style.md) -- OpenTUI lowercases a shifted letter into `name` and
+    // reports the shift separately, so a bare 'K' binding would be dead.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: '<S-k>', description: 'Show link URL',
+      action: () => [{ type: ActionTypes.LINK_SHOW }],
+    },
+    {
+      context: '*', mode: VimModes.NORMAL, keys: 'r', description: 'Reply to message',
+      action: () => [{ type: ActionTypes.REPLY_START }],
+    },
+    // EDIT_START itself decides mode and focus (moving straight to INSERT,
+    // unlike REPLY_START), since it also has to decide -- looking at
+    // out on the message under the cursor -- whether to do that at all.
+    // That refusal only IApplicationState can see, so like reply's own
+    // escape, <escape> cancelling an edit in progress is intercepted
+    // directly in App (app.tsx) rather than expressed as a second binding.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: 'e', description: 'Edit message',
+      action: () => [{ type: ActionTypes.EDIT_START }],
+    },
+    // dd, not bare d: resolve() checks for an exact match before it checks
+    // for a prefix (see vim-engine.ts's own resolve, and the invariant test
+    // pinning this in vim-engine.test.ts), so a bare `d` binding would make
+    // `dd` permanently unreachable. Operator-pending with a timeout, which
+    // would let both coexist the way real vim does, is M1b-2 work. The
+    // confirmation this starts is intercepted directly in App (app.tsx),
+    // the same way the reply/edit escapes above are -- y and n only mean
+    // anything while IApplicationState.pendingConfirmation is set, which a
+    // static keymap entry has no way to see.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: 'dd', description: 'Delete message',
+      action: () => [{ type: ActionTypes.DELETE_REQUEST }],
+    },
+
     // Panes — nf echoes the author's NvimTreeFocus mapping.
     {
       context: '*', mode: VimModes.NORMAL, keys: 'nf', description: 'Focus chat list',
@@ -118,7 +166,16 @@ export class KeymapService {
       action: () => [{ type: ActionTypes.OVERLAY_TOGGLE, overlay: 'whichkey' }],
     },
 
-    // Application
+    // Application. <C-l> echoes vim's own redraw-the-screen key, which is what
+    // a reader reaches for to clear something stuck on their statusline.
+    // Dismissal has to be a real key: IApplicationState.integrityWarning is
+    // deliberately unreachable from the patches that clear statusMessage (a
+    // warning that messages were lost must outlive an ordinary load), so
+    // without this it would sit there for the rest of the session.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: '<C-l>', description: 'Dismiss warning',
+      action: () => [{ type: ActionTypes.WARNING_DISMISS }],
+    },
     {
       context: '*', mode: VimModes.NORMAL, keys: '<C-c>', description: 'Quit',
       action: () => [{ type: ActionTypes.APPLICATION_QUIT }],

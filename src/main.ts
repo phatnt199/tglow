@@ -16,6 +16,7 @@ import {
   ConfigurationService,
   DatabaseService,
   DialogService,
+  DifferenceService,
   MessageService,
   SessionStoreService,
   TelegramAuthenticationGateway,
@@ -105,9 +106,27 @@ const main = async (): Promise<void> => {
   const dialogService = container.get<DialogService>({ key: BindingKeys.DIALOG_SERVICE });
   const messageService = container.get<MessageService>({ key: BindingKeys.MESSAGE_SERVICE });
   const updateService = container.get<UpdateService>({ key: BindingKeys.UPDATE_SERVICE });
+  const differenceService = container.get<DifferenceService>({ key: BindingKeys.DIFFERENCE_SERVICE });
 
   store.setState({ patch: { connection: 'connected' } });
   await dialogService.sync();
+
+  // After dialogService.sync(), because a recovered message can only be
+  // cached once its chat has a peers row, and sync() is what writes those.
+  // Before firstDialog is read and before the first loadHistory() call below
+  // -- catch-up hands every message it recovers to the same
+  // UpdateService.apply a live event goes through, and that also touches
+  // this chat's dialog row (touchDialog), so a chat catch-up just heard from
+  // can still be the one firstDialog picks below, and opens already
+  // containing what was missed rather than needing a second fetch.
+  //
+  // Awaited, and unguarded: catchUp() does not reject. Running here rather
+  // than last used to cost the user its integrity warnings -- loadHistory()'s
+  // success patch below clears statusMessage unconditionally, so "some missed
+  // messages could not be saved" was erased before the first frame. Those
+  // warnings now go to IApplicationState.integrityWarning, which nothing but
+  // the user's own <C-l> clears, so this ordering costs nothing.
+  await differenceService.catchUp();
 
   const firstDialog = store.getState().dialogs[0];
   if (firstDialog) {
@@ -155,14 +174,45 @@ const main = async (): Promise<void> => {
           return dialogs.find(dialog => dialog.peerId === activePeerId)?.title ?? 'them';
         },
         onSend: async (text: string): Promise<void> => {
-          const peerId = store.getState().activePeerId;
-          if (peerId) {
-            await messageService.send({ peerId, text });
+          // Read alongside activePeerId rather than threaded through
+          // IAppProps.onSend's own signature: App already hands MessageService
+          // the composer text it owns, and the reply target is the same kind
+          // of App-level state (IApplicationState, not IEngineState) -- the
+          // store already closed over here is the natural place to read it.
+          const { activePeerId, replyToMessageId } = store.getState();
+          if (activePeerId) {
+            await messageService.send({ peerId: activePeerId, text, replyToMessageId: replyToMessageId ?? undefined });
+          }
+        },
+        // Same reasoning as onSend above: activePeerId is App-level state
+        // read off the same store closure rather than threaded through
+        // IAppProps.onEdit's own signature.
+        onEdit: async (opts: { messageId: number; text: string }): Promise<void> => {
+          const { activePeerId } = store.getState();
+          if (activePeerId) {
+            await messageService.edit({ peerId: activePeerId, messageId: opts.messageId, text: opts.text });
+          }
+        },
+        // Same reasoning as onSend/onEdit above: activePeerId is App-level
+        // state read off the same store closure rather than threaded through
+        // IAppProps.onDelete's own signature.
+        onDelete: async (opts: { messageId: number }): Promise<void> => {
+          const { activePeerId } = store.getState();
+          if (activePeerId) {
+            await messageService.delete({ peerId: activePeerId, messageId: opts.messageId });
           }
         },
         onQuit: quit,
         onOpenChat: async (opts: { peerId: string }): Promise<void> => {
           await messageService.loadHistory({ peerId: opts.peerId, limit: HISTORY_LIMIT });
+        },
+        // A direct pass-through: App already decides *when* a chat has been
+        // read (opening one, or the cursor reaching its newest message) and
+        // hands over exactly the peerId/maxId markRead needs -- there is
+        // nothing left here for main.ts to resolve off the store closure the
+        // way onSend/onEdit/onDelete do above.
+        onMarkRead: async (opts: { peerId: string; maxId: number }): Promise<void> => {
+          await messageService.markRead(opts);
         },
       }),
     ),
