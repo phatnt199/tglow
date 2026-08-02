@@ -17,15 +17,32 @@ Highest published version of each, verified working together on this machine.
 | --- | --- | --- |
 | `typescript` | `7.0.2` | Highest stable. Typechecks IGNIS decorators cleanly — verified. |
 | `@venizia/ignis-inversion` | `0.1.1-6` | Highest. DI container, `getError`, `ApplicationError`. |
-| `@venizia/ignis-helpers` | `0.1.1-14` | Highest. **Prerelease drops the `@hono/zod-openapi` dependency** — 15 packages instead of 50. |
+| `@venizia/ignis-helpers` | `0.1.1-14` | Highest. Supplies `ApplicationLogger` / `LoggerFactory` / `ILogger`. |
+| `@hono/zod-openapi` | `1.5.1` | **Required transitively by helpers**, not used by tglow directly — see below. |
+| `hono` | `4.12.33` | Peer of `@hono/zod-openapi`. |
 | `@opentui/core` / `@opentui/react` | `0.4.5` | Only published version. |
 | `react` | `19.2.8` | `@types/react` stops at 19.2.18; the 19.3 canary has no types and would break `strict`. |
 | `telegram` (GramJS) | `2.26.22` | Only published version. |
 | `reflect-metadata` | `0.2.2` | Required for `@inject` metadata. |
 
-> **Do not downgrade `@venizia/*` to `0.1.0`.** The stable 0.1.0 helpers cannot
-> be imported without installing `hono` and `@hono/zod-openapi`. The prerelease
-> fixed exactly that.
+> **`@venizia/ignis-helpers` cannot be imported without `@hono/zod-openapi`.**
+> Its root barrel reaches `dist/modules/error/types.js`, which requires it at
+> runtime — on the `ApplicationLogger` / `LoggerFactory` path, not only on
+> HTTP-specific paths. Verified in an isolated directory:
+>
+> ```
+> Cannot find module '@hono/zod-openapi'
+>   from node_modules/@venizia/ignis-helpers/dist/modules/error/types.js
+> ```
+>
+> So `@hono/zod-openapi` and `hono` are declared as direct dependencies. tglow
+> imports neither; they exist purely to satisfy that require. Cost is six extra
+> packages. The `./common` subpath avoids them but carries no logger, so it
+> cannot replace the root import.
+>
+> **Do not downgrade `@venizia/*` to `0.1.0`.** It is older than `0.1.1-6`
+> despite looking newer to some tooling, and `0.1.1-6` is what the DI API in
+> this document describes.
 
 `experimentalDecorators` and `emitDecoratorMetadata` must be **inline** in
 `tsconfig.json`. Bun does not resolve them through `extends`, and `@inject` is
@@ -62,6 +79,29 @@ logger.for('connect').error('Could not connect | Reason: %s', reason);
 
 `ILogger` is `debug | info | warn | error | emerg | log(level, …) | for(method)`.
 
+### Capital letters are `<S-x>`, never `'X'`
+
+OpenTUI lowercases the letter into `name` and reports the shift separately, so a
+real Shift+G press arrives as `{ name: 'g', shift: true }` and normalises to
+`<S-g>`. Verified empirically — `pressKey('G')`, `pressKey('g', {shift:true})`
+and `typeText('G')` all produce exactly that.
+
+A binding written `keys: 'G'` is therefore **dead**: nothing a user can type will
+ever match it, and no test that constructs its key by hand will reveal that. Any
+binding on a capital letter must be written `<S-g>`, `<S-u>`, `<S-v>`.
+
+### Terminal tests: wrap every key press in `act()`
+
+```ts
+await act(async () => { renderer.mockInput.pressKey('j'); });
+await renderer.flush();
+```
+
+Without `act()` the React state update does not flush, so the next assertion
+reads a stale frame. Nothing errors and nothing warns in the result — the test
+simply passes having checked nothing. Verified by controlled comparison; it
+holds for `testRender` and for `src/test/render.tsx` alike.
+
 ### The logger must never write to stdout
 
 A TUI owns the alternate screen. The default provider is winston writing to
@@ -84,7 +124,8 @@ LoggerFactory.use({ provider: { get: (scope: string): ILogger => buildFileLogger
 | Type alias | `T` prefix | `TVimMode`, `TBindingKey` |
 | Class | PascalCase + suffix | `MessageRepository`, `TelegramClientService` |
 | File | kebab-case | `chat-list.tsx`, `vim-engine.ts` |
-| Private field | underscore prefix | `_messages`, `_container` |
+| Private **data** field | underscore prefix | `_messages`, `_container`, `_logger` |
+| Private **method** | no prefix | `matchesMode`, `accumulateCount` |
 | Binding key | `@tglow/[component]/[feature]` | `@tglow/core/message-store` |
 | Constants | `static readonly` class, never `enum` | `class VimModes { static readonly NORMAL = 'normal'; }` |
 | Barrel | `index.ts` at every folder level | `src/core/index.ts` |
@@ -93,6 +134,11 @@ LoggerFactory.use({ provider: { get: (scope: string): ILogger => buildFileLogger
 **Never abbreviate.** `configuration` not `cfg`. `database` not `db`. `message`
 not `msg`. `repository` not `repo`. This applies to type parameters too:
 `<TDocument>` not `<TDoc>`.
+
+Because every member is an arrow-function property, "field" and "method" are the
+same construct syntactically. The split above is by role: state carries `_`,
+behaviour does not. IGNIS's own code is inconsistent here (`BaseLogger._scope`
+versus `Binding.bindScope`), so this is tglow's ruling, not an inherited one.
 
 ---
 
@@ -104,8 +150,14 @@ not `msg`. `repository` not `repo`. This applies to type parameters too:
 - **Explicit return types** on every function.
 - **Options object** for arguments, conventionally named `opts`:
   `resolve(opts: { state: IEngineState; key: IKey })`, not `resolve(state, key)`.
-  A single unambiguous argument may stay positional (`ApplicationLogger.get(scope)`
-  is IGNIS's own precedent).
+  Two exceptions:
+  - A single unambiguous primitive may stay positional — `ApplicationLogger.get(scope)`
+    is IGNIS's own precedent.
+  - A single, fully-typed **domain object** is named for what it is, not `opts`:
+    `upsertPeer(peer: IPeerInput)`, `upsertDialog(dialog: IDialogInput)`. The rule
+    exists to stop callers mixing up positional arguments; one named, typed entity
+    cannot be mixed up, and `peer` tells the reader more than `opts` would.
+    `opts` is for an ad-hoc bag of arguments — `listMessages(opts: { peerId, limit })`.
 - Naming verbs: `generate*`, `build*`, `to*`, `is*`, `extract*`, `resolve*`.
 
 ---

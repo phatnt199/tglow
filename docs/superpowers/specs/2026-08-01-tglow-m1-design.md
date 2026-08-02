@@ -56,7 +56,19 @@ Two negative findings that **constrain the design**:
 **Chosen stack:** Bun 1.3 · TypeScript 7.0.2 · `@opentui/react` 0.4.5 · React
 19.2.8 · `telegram` (GramJS) 2.26.22 · `bun:sqlite` (built in, zero deps) ·
 `@venizia/ignis-inversion` 0.1.1-6 · `@venizia/ignis-helpers` 0.1.1-14 ·
-`sharp` (M2).
+`drizzle-orm` 0.45.2 · `drizzle-kit` 0.31.10 · `sharp` (M2).
+
+**On the data layer.** §7's schema is expressed as Drizzle tables, and
+`drizzle-kit generate` diffs them to produce migrations. The original plan used
+`CREATE TABLE IF NOT EXISTS`, which is a no-op against a database that already
+exists — a column added in M2 would never have reached anyone who had already
+run the application, silently. Drizzle is also what IGNIS uses, so this moves
+toward its stack. Pinned to 0.45.2/0.31.10, not the 1.0 RC, whose
+`drizzle-kit generate` crashes with `SQLiteSyncDialect is not a constructor`.
+
+**On tests.** Every test lives under `__tests__/`, mirroring `src/`, so source
+directories contain only source. `tsconfig.json`'s `include` covers both — with
+`src` alone, typecheck silently stops covering tests.
 
 ### IGNIS
 
@@ -76,10 +88,13 @@ Three findings that shape the design:
 
 - **`@injectable` does not exist in `0.1.1-6`.** Removed since 0.1.0. Scope is
   set on the binding via `.setScope(...)`; only `@inject` remains.
-- **The published `0.1.0` helpers cannot be imported without `hono`** — its root
-  barrel pulls `@hono/zod-openapi`. The `0.1.1-14` prerelease removes that
-  dependency (15 packages instead of 50), so the higher version is required, not
-  merely preferred.
+- **`ignis-helpers` cannot be imported without `@hono/zod-openapi`** at any
+  version, including `0.1.1-14`. Its root barrel reaches
+  `dist/modules/error/types.js`, which requires it at runtime on the
+  `ApplicationLogger` path. `@hono/zod-openapi` and `hono` are therefore direct
+  dependencies that tglow never imports itself — six extra packages, the price
+  of a scoped logger that can be diverted off stdout. The `./common` subpath
+  avoids them but carries no logger.
 - **The default logger provider writes to stdout**, which corrupts a TUI's
   alternate screen. `main.ts` must register a file-writing provider before
   anything can log.
@@ -127,38 +142,42 @@ matters is the import restriction above, and Task 2's boundary test enforces it.
 
 ```
 src/
-├── keys/                    PURE — exhaustively unit-testable
-│   ├── types.ts             Mode, Context, Key, Action, Binding
-│   ├── engine.ts            resolve(state, key, keymap) → {state, actions}
-│   ├── keymap.ts            the binding table (single source of truth)
-│   ├── motions.ts           j k gg G { } <C-d> <C-u> H M L
-│   ├── operators.ts         d y c + counts, operator-pending state
-│   └── registers.ts         named registers, "+ via OSC 52
+├── common/
+│   └── binding-keys.ts       every DI key, one static-readonly class
 │
-├── core/                    Headless — runs and is tested without a terminal
-│   ├── client.ts            GramJS lifecycle, reconnect with backoff
-│   ├── auth.ts              phone → code → 2FA → ready (explicit state machine)
-│   ├── session.ts           session persistence, 0600, encrypted at rest
-│   ├── dialogs.ts           chat list: fetch, ordering, unread counts
-│   ├── messages.ts          history paging, send, edit, delete, reply
-│   ├── entities.ts          Telegram entities → styled spans
-│   ├── updates.ts           live update dispatch + pts gap recovery
-│   ├── store.ts             observable state + typed event bus
+├── keys/                    deterministic — no Telegram, React or I/O
+│   ├── common/              constants (VimModes, ActionTypes) + types
+│   ├── key-normalizer.ts    terminal event → canonical key string
+│   ├── vim-engine.ts        resolve(...) → { state, actions }
+│   └── keymap.ts            the binding table (single source of truth)
+│
+├── core/                    headless — runs and is tested without a terminal
+│   ├── common/              IApplicationConfiguration
+│   ├── configuration.ts     ~/.config/tglow/config.toml
+│   ├── logger-provider.ts   file-writing ILogger; keeps logs off stdout
+│   ├── session-store.ts     session persistence at 0600
+│   ├── telegram-client.ts   GramJS lifecycle
+│   ├── authentication.ts    phone → code → 2FA → ready state machine
+│   ├── application-store.ts observable state + subscribers
+│   ├── dialog-service.ts    chat list: fetch, cache, order
+│   ├── message-service.ts   history paging, send
+│   ├── telegram-adapter.ts  the only file that knows GramJS shapes
 │   └── cache/
-│       ├── schema.sql       tables + indices
-│       ├── migrate.ts       versioned migrations
-│       └── db.ts            bun:sqlite wrapper
+│       ├── schema.ts        Drizzle table definitions
+│       ├── migrate.ts       applies generated migrations on open
+│       └── database.ts      DatabaseService over drizzle-orm/bun-sqlite
 │
 ├── tui/                     OpenTUI React — dumb by design
-│   ├── App.tsx
-│   ├── panes/               ChatList · MessageView · Composer · StatusLine
-│   ├── overlays/            WhichKey(\) · Picker(<C-p>) · Search(/) · Cmdline(:)
-│   ├── theme/
-│   │   ├── palettes/        all 12 devglow palettes as typed objects
-│   │   └── tokens.ts        semantic mapping (palette → UI role)
-│   └── hooks/               useStore, useKeys, useDimensions
+│   ├── panes/               status-line · chat-list · message-view · composer
+│   ├── theme/               devglow palettes → semantic tokens
+│   ├── action-reducer.ts
+│   └── app.tsx
 │
+├── container.ts             builds the IGNIS container
 └── main.ts
+
+__tests__/                   mirrors src/; source dirs hold only source
+drizzle/                     generated migrations, committed
 ```
 
 ### Data flow
@@ -273,6 +292,18 @@ can never drift apart.
 Leader is `\`, matching `vim.g.mapleader`. Mappings deliberately echo the
 author's neovim config so the keys are already learned.
 
+**What is bound today.** This section is the full M1 design target, not a
+changelog of what has shipped. The M1a walking-skeleton plan implements a
+foundational slice of it: from Navigation below, `j`/`k`, `3j` and other
+counts, `gg`/`G`, `<C-d>`/`<C-u>`, `<C-w>h/l` and `nf`; from Message actions,
+`i`/`a`; plus the which-key popup at `\`. Everything else in this section —
+`<A-j>`/`<A-k>`, `zz`, `\nv`, `]u`/`[u`, `]m`/`[m`, `r`/`e`/`dd`/`yy`/`\y`/`K`/
+`gd`, `v`/`V`, `<C-p>`, `/`/`?`/`n`/`N`, `:`, and the whole Ex commands
+subsection — is M1b work (see that plan's own scope note). `README.md`'s key
+table is the one place that only ever lists what is bound right now; if this
+section and the keymap ever disagree, the keymap and `README.md` are correct
+and this needs updating, not the other way around.
+
 ### Navigation (NORMAL)
 
 | Key | Action | Echoes |
@@ -284,6 +315,7 @@ author's neovim config so the keys are already learned.
 | `<A-j>` / `<A-k>` | scroll view one line | their `<A-j>`/`<A-k>` |
 | `zz` | centre current message | vim |
 | `<C-w>h/l` | move focus between panes | vim windows |
+| `<Esc>` (chat list) | back to messages, without opening anything | vim's ubiquitous "cancel" |
 | `nf` | focus chat list | their `nf` → NvimTreeFocus |
 | `\nv` | toggle chat-list sidebar | their `<leader>nv` → NvimTreeToggle |
 | `]u` / `[u` | next / previous **unread** chat | their `]q`/`[q` pattern |
@@ -585,6 +617,40 @@ must not assume exactly two levels. M1 therefore models navigation as a
 rewrite.
 
 ---
+
+## 12b. Alternatives considered: Rust and Zig
+
+Evaluated after M1a Task 1, with the stack already proven. Decision: **stay on
+Bun + TypeScript.**
+
+**Zig — rejected.** No MTProto *client* library exists. The one serious Zig
+Telegram project, `mtproto.zig`, is a proxy: it relays traffic without speaking
+the client protocol. Adopting Zig means implementing RSA, AES-IGE, the DH
+handshake and TL-schema codegen for ~1,500 types before the first message sends.
+Note that OpenTUI's renderer is already Zig, so its rendering performance is
+already in hand.
+
+**Rust — credible, and better in exactly one place.** `grammers` 0.10.0 is
+actively maintained (moved to Codeberg; releases Oct 2025, Feb 2026, Jul 2026),
+`ratatui` 0.30.2 is mature, and `ratatui-image` covers sixel/kitty/iterm2/
+halfblocks. Its README warns the crypto is unaudited.
+
+The one genuine advantage is animated stickers: the `rlottie` crate (0.5.4,
+updated 2026-03) wraps **Telegram's own Lottie renderer**, which is strictly
+better than this spec's ThorVG-WASM plan — the single M2 component never proved
+out. Performance was not a factor: a chat client is network-bound, and Bun's
+startup and memory cost never matter for a long-running process.
+
+**Why Bun won:** IGNIS is TypeScript-only. Adopting Rust discards the DI
+container, `getError`/`ApplicationError`, `ILogger`, and most of the style
+standard's concrete rules, which is a deliberate project requirement (§2). The
+two are mutually exclusive.
+
+**Carried into M2:** if ThorVG-WASM rasterisation proves too slow or too
+inaccurate, the fallback is a **small Rust sidecar built on `rlottie`** that
+rasterises `.tgs` to frames, invoked from the TUI — `rlottie`'s quality without
+rewriting the client. The half-block renderer is the same algorithm in any
+language, so nothing in §12's M2 plan is wasted either way.
 
 ## 13. Open questions
 

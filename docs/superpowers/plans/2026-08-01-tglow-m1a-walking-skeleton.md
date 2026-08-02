@@ -15,8 +15,9 @@ First of two plans for milestone M1 of `docs/superpowers/specs/2026-08-01-tglow-
 **Read `docs/superpowers/conventions/ignis-style.md` before writing any code.** It is binding on every file and carries the verified IGNIS API. The rules below are the ones most often broken; the document is the full set.
 
 - **Runtime:** Bun ≥ 1.3. Never `npm`/`node`. Tests run with `bun test`.
-- **Exact versions** — highest published, verified working together. Do **not** downgrade `@venizia/*` to `0.1.0`: its helpers cannot be imported without `hono`.
-  - `typescript` `7.0.2` · `@venizia/ignis-inversion` `0.1.1-6` · `@venizia/ignis-helpers` `0.1.1-14` · `@opentui/core` and `@opentui/react` `0.4.5` · `react` `19.2.8` · `@types/react` `19.2.18` · `telegram` `2.26.22` · `reflect-metadata` `0.2.2`
+- **Exact versions** — highest published, verified working together. Do **not** downgrade `@venizia/*` to `0.1.0`: it is older than `0.1.1-6` despite looking newer, and has a different DI API.
+  - `typescript` `7.0.2` · `@venizia/ignis-inversion` `0.1.1-6` · `@venizia/ignis-helpers` `0.1.1-14` · `@opentui/core` and `@opentui/react` `0.4.5` · `react` `19.2.8` · `@types/react` `19.2.18` · `telegram` `2.26.22` · `reflect-metadata` `0.2.2` · `@hono/zod-openapi` `^1.5.1` · `hono` `^4.12.33`
+- **`@hono/zod-openapi` and `hono` are dependencies tglow never imports.** `@venizia/ignis-helpers` requires `@hono/zod-openapi` at runtime from `dist/modules/error/types.js`, on the `ApplicationLogger` path — omitting them makes every helpers import fail with `Cannot find module '@hono/zod-openapi'`. Do not remove them as unused.
 - **`experimentalDecorators` and `emitDecoratorMetadata` must be inline in `tsconfig.json`.** Bun does not resolve them through `extends`; without them `@inject` is silently dropped and dependencies arrive `undefined` with no error.
 - **`@injectable` does not exist in `0.1.1-6`.** Set scope on the binding: `.setScope(BindingScopes.SINGLETON)`. Only `@inject({ key })` remains.
 - **IGNIS style, non-negotiable:** `I` prefix on interfaces, `T` on type aliases, kebab-case filenames, arrow functions only (never `function`), named exports only, explicit return types, options object named `opts`, `static readonly` constant classes (never `enum`), barrel `index.ts` at every folder level, `_` prefix on private fields, **never abbreviate** (`database` not `db`, `configuration` not `cfg`, `message` not `msg`).
@@ -25,6 +26,7 @@ First of two plans for milestone M1 of `docs/superpowers/specs/2026-08-01-tglow-
 - **Control flow:** always braces; early return over nesting; `switch` needs braces per case and a `default` that throws via `getError`.
 - **The logger must never write to stdout** — it would corrupt the alternate screen. `main.ts` registers a file-writing provider before anything can log.
 - **Dependency rule, enforced by Task 2's boundary test:** `keys/` imports only `@venizia/ignis-inversion` and relative paths. `core/` never imports `react` or `@opentui/*`. `tui/` never imports `telegram`.
+- **Tests preload a logger provider.** `bunfig.toml` preloads `src/test/setup.ts`, which calls `installFileLogger` once per test process. Without it, any test whose code-under-test logs in a `catch` block dies with `No logger provider is registered and the default (winston) could not be loaded` — winston is an optional peer this project does not install. Do NOT register a provider per test file; the preload covers the whole suite.
 - **No network in tests.** Every test passes with no internet and no Telegram account. Live connection is exercised only by the manual smoke test in Task 16.
 - **Commit after every task.**
 
@@ -37,8 +39,14 @@ Confirmed by running code on this machine — see `docs/superpowers/probes/`. Do
 - `ILoggerProvider` is exactly `{ get(scope: string): ILogger }`.
 - `ILogger` is `debug | info | warn | error | emerg | log(level, …) | for(methodName)`.
 - OpenTUI `KeyEvent` reports Alt as `option` or `meta`, **never `alt`**.
-- **`testRender` from `@opentui/react/test-utils` does not work for keyboard tests.** It renders with no `AppContext` provider, so `useAppContext().keyHandler` is null and `useKeyboard` no-ops behind its `?.` guard — tests pass while asserting on a UI that received nothing. Task 2 builds the working replacement.
-- `renderer.keyInput` is the `KeyHandler` to supply to `AppContext`.
+- **Capital letters arrive as lowercase + `shift: true`.** Shift+G is `{ name: 'g', shift: true }`, which normalises to `<S-g>`. A binding written `keys: 'G'` is dead — nothing a user types can match it, and a hand-constructed test key will not reveal that. Verified empirically.
+- **Every simulated key press must be wrapped in React's `act()`**, or the state update never flushes and the assertion reads a stale frame — silently, with no failure that points at the cause:
+  ```ts
+  await act(async () => { renderer.mockInput.pressKey('j'); });
+  await renderer.flush();
+  ```
+  Verified by controlled comparison — without `act()` the frame is unchanged; with it the frame updates. True of `testRender` and `renderWithKeys` alike. This is the easiest way to write a TUI test that passes while testing nothing.
+- `renderer.keyInput` is the `KeyHandler` supplied to `AppContext`. `createRoot(...).render()` already self-wraps the tree in an `AppContext` provider, so `testRender` is functional. Task 2's `renderWithKeys` wires the provider explicitly anyway: it does not rely on that internal behaviour, and it matches how `main.ts` wires the real renderer, so tests and production share one shape.
 - JSX intrinsics: `box`, `text`, `span`, `scrollbox`, `input`, `textarea`, `select`, `b`, `i`, `u`, `a`, `br`, `code`.
 - GramJS: `TelegramClient`, `Api` from `telegram`; `StringSession` from `telegram/sessions`; `Logger` from `telegram/extensions/Logger`.
 
@@ -71,6 +79,8 @@ Confirmed by running code on this machine — see `docs/superpowers/probes/`. Do
 | `src/tui/action-reducer.ts` | `applyAction` |
 | `src/tui/app.tsx` | Layout + key dispatch |
 | `src/test/render.tsx` | Working test renderer |
+| `src/test/setup.ts` | Test preload: registers the file logger once per test process |
+| `bunfig.toml` | Points `bun test` at the preload |
 | `src/container.ts` | `buildContainer` |
 | `src/main.ts` | Entry point |
 
@@ -101,10 +111,12 @@ Confirmed by running code on this machine — see `docs/superpowers/probes/`. Do
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@hono/zod-openapi": "^1.5.1",
     "@opentui/core": "0.4.5",
     "@opentui/react": "0.4.5",
     "@venizia/ignis-helpers": "0.1.1-14",
     "@venizia/ignis-inversion": "0.1.1-6",
+    "hono": "^4.12.33",
     "react": "19.2.8",
     "reflect-metadata": "0.2.2",
     "telegram": "2.26.22"
@@ -298,15 +310,16 @@ import { AppContext, createRoot } from '@opentui/react';
 import { createTestRenderer, type TestRendererSetup } from '@opentui/core/testing';
 
 /**
- * Render a component tree for testing with keyboard input actually connected.
+ * Render a component tree for testing, with the AppContext wiring made explicit.
  *
- * Do not replace this with `testRender` from `@opentui/react/test-utils`: that
- * helper renders without an AppContext provider, so `useAppContext().keyHandler`
- * is null and `useKeyboard` no-ops behind its optional-chaining guard. Tests
- * then pass while asserting on a UI that never received a key.
+ * `testRender` from `@opentui/react/test-utils` also works: `createRoot().render()`
+ * self-wraps the tree in an AppContext provider. This helper does not depend on
+ * that internal, and it mirrors how `main.ts` wires the real renderer, so tests
+ * and production share one shape.
  *
- * Driving `createTestRenderer` directly means the renderer exists before the
- * first render, so `renderer.keyInput` can be supplied as the key handler.
+ * Callers MUST wrap key presses in React's `act()`. Without it the state update
+ * does not flush and the next assertion reads a stale frame — the failure mode
+ * is a passing test that checked nothing.
  */
 export const renderWithKeys = async (
   node: ReactNode,
@@ -407,11 +420,15 @@ directories are empty and become meaningful as they fill.
 
 ```bash
 git add src/test/
-git commit -m "Add working TUI test harness and dependency boundary tests
+git commit -m "Add TUI test harness and dependency boundary tests
 
-The documented testRender helper renders without an AppContext provider,
-so useKeyboard never receives events and keyboard tests pass while
-asserting on a UI that got no input."
+renderWithKeys wires the AppContext provider explicitly rather than
+relying on createRoot's internal self-wrap, and mirrors how main.ts
+wires the real renderer.
+
+Key presses must be wrapped in act(): without it the state update never
+flushes and the assertion reads a stale frame, so the test passes having
+checked nothing."
 ```
 
 ---
@@ -897,6 +914,33 @@ test('resolve never mutates the state it is given', () => {
   buildEngine().resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('3'), keymap });
   expect(INITIAL_ENGINE_STATE).toEqual(before);
 });
+
+// Otherwise `j` in the chat list would move the message cursor, and which one
+// won would depend on the order bindings happen to be declared in.
+test('a context-specific binding beats a wildcard one for the same keys', () => {
+  const withOverride = [
+    ...keymap,
+    {
+      context: VimContexts.CHAT_LIST, mode: VimModes.NORMAL, keys: 'j', description: 'next chat',
+      action: (count: number) => [{ type: ActionTypes.CURSOR_MOVE, unit: 'chat' as const, delta: count }],
+    },
+  ];
+  const engine = buildEngine();
+
+  // In the chat list, the specific binding wins even though '*' is declared first.
+  expect(
+    engine.resolve({
+      state: { ...INITIAL_ENGINE_STATE, context: VimContexts.CHAT_LIST },
+      key: buildKey('j'),
+      keymap: withOverride,
+    }).actions,
+  ).toEqual([{ type: ActionTypes.CURSOR_MOVE, unit: 'chat', delta: 1 }]);
+
+  // Elsewhere the wildcard still applies.
+  expect(
+    engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('j'), keymap: withOverride }).actions,
+  ).toEqual([{ type: ActionTypes.CURSOR_MOVE, unit: 'message', delta: 1 }]);
+});
 ```
 
 - [ ] **Step 2: Run it and watch it fail**
@@ -1015,7 +1059,12 @@ export class VimEngineService {
 
     const sequence = state.pending + token;
 
-    const exact = candidates.find(binding => binding.keys === sequence);
+    // A context-specific binding beats a wildcard one for the same keys, so
+    // `j` in the chat list moves the chat cursor rather than the message cursor.
+    // Without this, resolution depends on keymap declaration order.
+    const exact =
+      candidates.find(binding => binding.keys === sequence && binding.context !== '*') ??
+      candidates.find(binding => binding.keys === sequence);
     if (exact) {
       const applied = this.applyStateActions({ state, binding: exact, count: state.count ?? 1 });
       return { state: applied.state, actions: applied.actions, status: 'resolved' };
@@ -1149,7 +1198,7 @@ test('gg and G jump to the ends of history', () => {
   const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('g'), keymap });
   expect(engine.resolve({ state: pending.state, key: buildKey('g'), keymap }).actions)
     .toEqual([{ type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'first' }]);
-  expect(engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('G', { shift: true }), keymap }).actions)
+  expect(engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('g', { shift: true }), keymap }).actions)
     .toEqual([{ type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'last' }]);
 });
 
@@ -1210,7 +1259,7 @@ export class KeymapService {
       action: () => [{ type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'first' }],
     },
     {
-      context: '*', mode: VimModes.NORMAL, keys: 'G', description: 'Newest message',
+      context: '*', mode: VimModes.NORMAL, keys: '<S-g>', description: 'Newest message',
       action: () => [{ type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'last' }],
     },
     {
@@ -1316,9 +1365,10 @@ export * from './vim-engine.ts';
 Run: `bun test src/keys/`
 Expected: PASS — 10 keymap tests plus the earlier engine and normalizer tests.
 
-If `j` in the chat-list context resolves to a message move rather than a chat
-move, `resolve` is picking the first match rather than the most specific: make
-`candidates` prefer bindings whose `context` is not `'*'`.
+`j` in the chat-list context must move the chat cursor, not the message cursor.
+Task 5's engine guarantees that by preferring context-specific bindings over
+wildcard ones. If it fails here, that preference is missing or inverted — fix it
+in the engine, not by reordering this table.
 
 - [ ] **Step 6: Commit**
 
@@ -1717,9 +1767,9 @@ git commit -m "Add configuration service with actionable setup errors"
 
 ```ts
 import { test, expect } from 'bun:test';
-import { existsSync, mkdtempSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { SessionStoreService } from './session-store.ts';
 
@@ -1761,6 +1811,19 @@ test('clearing a missing file is not an error', () => {
   expect(() => service.clear({ filePath: buildPath() })).not.toThrow();
 });
 
+// writeFileSync's mode is honoured only on creation, so overwriting a file that
+// already exists with looser permissions would silently leave it world-readable.
+test('saving over an existing loose-permission file tightens it to 0600', () => {
+  const filePath = buildPath();
+  mkdirSync(dirname(filePath), { recursive: true });
+  writeFileSync(filePath, 'stale', { mode: 0o644 });
+  expect(statSync(filePath).mode & 0o777).toBe(0o644);
+
+  service.save({ filePath, value: 'fresh' });
+  expect(statSync(filePath).mode & 0o777).toBe(0o600);
+  expect(service.load({ filePath })).toBe('fresh');
+});
+
 test('surrounding whitespace is stripped on load', () => {
   const filePath = buildPath();
   service.save({ filePath, value: '  padded  ' });
@@ -1776,7 +1839,7 @@ Expected: FAIL — `Cannot find module './session-store.ts'`
 - [ ] **Step 3: Write `src/core/session-store.ts`**
 
 ```ts
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 const SESSION_FILE_MODE = 0o600;
@@ -1798,6 +1861,10 @@ export class SessionStoreService {
   save = (opts: { filePath: string; value: string }): void => {
     mkdirSync(dirname(opts.filePath), { recursive: true, mode: SESSION_DIRECTORY_MODE });
     writeFileSync(opts.filePath, opts.value, { mode: SESSION_FILE_MODE });
+    // writeFileSync's mode applies only when it creates the inode, so an
+    // existing file keeps whatever permissions it already had. Tighten
+    // unconditionally: this file is equivalent to a logged-in device.
+    chmodSync(opts.filePath, SESSION_FILE_MODE);
   };
 
   clear = (opts: { filePath: string }): void => {
@@ -3159,11 +3226,11 @@ const EMBER: IPalette = {
   TEAL: '#7BBDBD',
   SKY: '#6AADAD',
   WINE: '#B45A42',
-  DARK_00: '#1A1917',
-  DARK_01: '#211F1D',
-  DARK_02: '#2E2B28',
-  DARK_03: '#3D3935',
-  DARK_04: '#847C74',
+  DARK_00: '#0D0D0B',
+  DARK_01: '#1A1917',
+  DARK_02: '#2E2C28',
+  DARK_03: '#3A3835',
+  DARK_04: '#78716C',
 };
 
 export const PALETTES: Record<string, IPalette> = { sage: SAGE, ember: EMBER };
