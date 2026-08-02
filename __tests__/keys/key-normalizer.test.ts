@@ -6,7 +6,14 @@ const service = new KeyNormalizerService();
 
 test('plain keys stringify to their name', () => {
   expect(service.toCanonicalString({ key: { name: 'j', ctrl: false, alt: false, shift: false } })).toBe('j');
-  expect(service.toCanonicalString({ key: { name: 'escape', ctrl: false, alt: false, shift: false } })).toBe('escape');
+});
+
+// "escape" as a bare word would be a string-level prefix of nothing typed by
+// coincidence -- except vim-engine's prefix search cannot tell "the letter e"
+// from "the start of the word escape", so a named key must always be wrapped.
+test('a named key with no modifiers is still wrapped, so it cannot collide with typed text', () => {
+  expect(service.toCanonicalString({ key: { name: 'escape', ctrl: false, alt: false, shift: false } })).toBe('<escape>');
+  expect(service.toCanonicalString({ key: { name: 'return', ctrl: false, alt: false, shift: false } })).toBe('<return>');
 });
 
 test('modifiers use vim notation', () => {
@@ -20,7 +27,7 @@ test('modifier order is fixed so a binding matches exactly one key', () => {
 });
 
 test('shift is not notated on named keys, only single characters', () => {
-  expect(service.toCanonicalString({ key: { name: 'escape', ctrl: false, alt: false, shift: true } })).toBe('escape');
+  expect(service.toCanonicalString({ key: { name: 'escape', ctrl: false, alt: false, shift: true } })).toBe('<escape>');
 });
 
 // OpenTUI reports Alt as `option` or `meta`, never `alt`.

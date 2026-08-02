@@ -32,8 +32,21 @@ export class KeyNormalizerService {
       modifiers.push('S');
     }
 
-    if (modifiers.length === 0) {
+    // A bare single character is exactly what a human typed, and stays
+    // unwrapped so it matches the letter keys of the keymap directly. Every
+    // other key -- a named key like "escape", or any modifier combination --
+    // is wrapped in angle brackets, vim's own notation for "this is a key,
+    // not literal text". Without the wrap, a named key with no modifiers
+    // would canonicalize to its bare English name (e.g. "escape"), which is a
+    // string-level prefix of nothing a human types except by coincidence --
+    // except vim-engine's prefix search cannot tell the difference, so typing
+    // the single letter "e" would register as a pending prefix of "escape"
+    // and vanish rather than reach the composer. Verified empirically.
+    if (modifiers.length === 0 && key.name.length === 1) {
       return key.name;
+    }
+    if (modifiers.length === 0) {
+      return `<${key.name}>`;
     }
 
     return `<${modifiers.join('-')}-${key.name}>`;

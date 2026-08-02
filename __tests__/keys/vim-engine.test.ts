@@ -37,7 +37,7 @@ const keymap: IKeyBinding[] = [
     action: () => [{ type: ActionTypes.MODE_SET, mode: VimModes.INSERT }],
   },
   {
-    context: '*', mode: VimModes.INSERT, keys: 'escape', description: 'normal',
+    context: '*', mode: VimModes.INSERT, keys: '<escape>', description: 'normal',
     action: () => [{ type: ActionTypes.MODE_SET, mode: VimModes.NORMAL }],
   },
   {

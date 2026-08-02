@@ -49,7 +49,7 @@ export class KeymapService {
       action: count => [{ type: ActionTypes.CURSOR_MOVE, unit: 'chat', delta: -count }],
     },
     {
-      context: VimContexts.CHAT_LIST, mode: VimModes.NORMAL, keys: 'return', description: 'Open chat',
+      context: VimContexts.CHAT_LIST, mode: VimModes.NORMAL, keys: '<return>', description: 'Open chat',
       action: () => [
         { type: ActionTypes.CHAT_OPEN },
         { type: ActionTypes.FOCUS_SET, context: VimContexts.MESSAGES },
@@ -76,16 +76,19 @@ export class KeymapService {
       context: '*', mode: VimModes.INSERT, keys: 'jk', description: 'Leave insert mode',
       action: () => [{ type: ActionTypes.MODE_SET, mode: VimModes.NORMAL }],
     },
+    // Angle brackets, not the bare word: KeyNormalizerService wraps every
+    // named key this way precisely so "escape" can never be confused with a
+    // pending prefix of the single letter "e" a composer's user types.
     {
-      context: '*', mode: VimModes.INSERT, keys: 'escape', description: 'Leave insert mode',
+      context: '*', mode: VimModes.INSERT, keys: '<escape>', description: 'Leave insert mode',
       action: () => [{ type: ActionTypes.MODE_SET, mode: VimModes.NORMAL }],
     },
     {
-      context: '*', mode: VimModes.INSERT, keys: 'return', description: 'Send message',
+      context: '*', mode: VimModes.INSERT, keys: '<return>', description: 'Send message',
       action: () => [{ type: ActionTypes.COMPOSER_SEND }],
     },
     {
-      context: '*', mode: VimModes.INSERT, keys: 'backspace', description: 'Delete character',
+      context: '*', mode: VimModes.INSERT, keys: '<backspace>', description: 'Delete character',
       action: () => [{ type: ActionTypes.COMPOSER_BACKSPACE }],
     },
 
