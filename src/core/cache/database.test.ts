@@ -49,6 +49,20 @@ test('messages are read back newest-first', () => {
   database.close();
 });
 
+// Telegram routinely delivers more than one message within the same second,
+// so `date` alone cannot order them — this is what `id DESC` is for.
+test('listMessages breaks a same-date tie by id, highest first', () => {
+  const database = buildDatabase();
+  database.insertMessages({
+    messages: [
+      { peerId: 'u1', id: 5, fromId: 'u1', date: 100, text: 'sent first', out: 0 },
+      { peerId: 'u1', id: 7, fromId: 'u1', date: 100, text: 'sent second', out: 0 },
+    ],
+  });
+  expect(database.listMessages({ peerId: 'u1', limit: 10 }).map(message => message.id)).toEqual([7, 5]);
+  database.close();
+});
+
 test('inserting the same message twice updates it', () => {
   const database = buildDatabase();
   const message = { peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'hi', out: 0 };
@@ -82,6 +96,31 @@ test('sync state round-trips', () => {
   database.close();
 });
 
-test('using the database before open reports the class and method', () => {
-  expect(() => new DatabaseService().listDialogs()).toThrow(/\[DatabaseService\]/);
+test('calling open twice does not leak the first handle and leaves a working database', () => {
+  const database = new DatabaseService();
+  database.open({ filePath: ':memory:' });
+  database.open({ filePath: ':memory:' });
+  expect(() => {
+    database.upsertPeer({ id: 'u1', type: 'user', accessHash: null, title: 'Alice', username: null });
+    database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 1, topMessageId: 1 });
+  }).not.toThrow();
+  expect(database.listDialogs()).toHaveLength(1);
+  database.close();
+});
+
+test('every method rejects use before open, naming itself in the error', () => {
+  const database = new DatabaseService();
+  const attempts: Array<{ method: string; call: () => unknown }> = [
+    { method: 'upsertPeer', call: () => database.upsertPeer({ id: 'u1', type: 'user', accessHash: null, title: 'A', username: null }) },
+    { method: 'upsertDialog', call: () => database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 1, topMessageId: 1 }) },
+    { method: 'listDialogs', call: () => database.listDialogs() },
+    { method: 'insertMessages', call: () => database.insertMessages({ messages: [] }) },
+    { method: 'listMessages', call: () => database.listMessages({ peerId: 'u1', limit: 1 }) },
+    { method: 'getSyncState', call: () => database.getSyncState({ key: 'pts' }) },
+    { method: 'setSyncState', call: () => database.setSyncState({ key: 'pts', value: 1 }) },
+  ];
+
+  for (const attempt of attempts) {
+    expect(attempt.call, attempt.method).toThrow(`[DatabaseService][${attempt.method}]`);
+  }
 });

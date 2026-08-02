@@ -59,6 +59,7 @@ export class DatabaseService {
   };
 
   open = (opts: { filePath: string }): void => {
+    this.close();
     const database = new Database(opts.filePath);
     database.run('PRAGMA journal_mode = WAL');
     database.run('PRAGMA foreign_keys = ON');
