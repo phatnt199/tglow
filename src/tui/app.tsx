@@ -253,7 +253,7 @@ export const App = (props: IAppProps) => {
         unreadCount={activeDialog?.unreadCount ?? 0}
         position={state.messages.length === 0 ? 0 : state.messageCursor + 1}
         total={state.messages.length}
-        hint="\\ for keys"
+        hint="\ for keys"
         tokens={tokens}
       />
     </box>

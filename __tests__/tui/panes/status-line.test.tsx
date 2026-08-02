@@ -10,7 +10,7 @@ const tokens = buildTokens({ paletteName: 'sage' });
 test('shows mode, chat, unread count and position', async () => {
   const renderer = await renderWithKeys(
     <StatusLine mode={VimModes.NORMAL} title="Alice" unreadCount={3} position={4} total={312}
-                hint="\\ for keys" tokens={tokens} />,
+                hint="\ for keys" tokens={tokens} />,
     { width: 60, height: 1 },
   );
   await renderer.flush();
@@ -19,6 +19,10 @@ test('shows mode, chat, unread count and position', async () => {
   expect(frame).toContain('Alice');
   expect(frame).toContain('3 unread');
   expect(frame).toContain('4/312');
+  // A JSX attribute is not a string literal: "\\ for keys" puts two
+  // backslashes on the screen, which is what App shipped.
+  expect(frame).toContain('\\ for keys');
+  expect(frame).not.toContain('\\\\');
 });
 
 test('the mode label is upper case, like lualine', async () => {

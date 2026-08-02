@@ -99,7 +99,11 @@ const main = async (): Promise<void> => {
     await messageService.loadHistory({ peerId: firstDialog.peerId, limit: HISTORY_LIMIT });
   }
 
-  const renderer = await createCliRenderer({});
+  // Ctrl-C is a binding, not an exit: the renderer's own handler tears itself
+  // down and leaves the database and the client open, and in INSERT it would
+  // fire on a keystroke that is meant to reach the composer. quit() below is
+  // the only way out, so it always runs.
+  const renderer = await createCliRenderer({ exitOnCtrlC: false });
   const root = createRoot(renderer);
 
   const quit = (): void => {
@@ -119,8 +123,16 @@ const main = async (): Promise<void> => {
         keymapService: container.get<KeymapService>({ key: BindingKeys.KEYMAP }),
         keyNormalizer: container.get<KeyNormalizerService>({ key: BindingKeys.KEY_NORMALIZER }),
         tokens: buildTokens({ paletteName: configuration.palette }),
-        resolveSenderName: (opts: { fromId: string | null }): string =>
-          opts.fromId === 'me' ? 'me' : (firstDialog?.title ?? 'them'),
+        // Resolved from the store on every call, not from the dialog that
+        // happened to be open at startup: closing over firstDialog labelled
+        // every message in every other chat with the first chat's title.
+        resolveSenderName: (opts: { fromId: string | null }): string => {
+          if (opts.fromId === 'me') {
+            return 'me';
+          }
+          const { dialogs, activePeerId } = store.getState();
+          return dialogs.find(dialog => dialog.peerId === activePeerId)?.title ?? 'them';
+        },
         onSend: async (text: string): Promise<void> => {
           const peerId = store.getState().activePeerId;
           if (peerId) {

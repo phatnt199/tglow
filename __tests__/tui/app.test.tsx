@@ -108,6 +108,9 @@ test('starts in NORMAL mode with both panes on screen', async () => {
   expect(frame).toContain('NORMAL');
   expect(frame).toContain('Alice');
   expect(frame).toContain('msg1');
+  // The leader is one backslash. A JSX attribute performs no escaping, so
+  // hint="\\ for keys" put both on the status line.
+  expect(frame).not.toContain('\\\\');
 });
 
 test('j moves the cursor — engine to store to render', async () => {

@@ -48,8 +48,9 @@ by accident.
 account. It is written mode `0600` and git-ignored. Never share it.
 
 Third-party MTProto clients can attract account restrictions if they behave
-abnormally. tglow honours `FLOOD_WAIT`, does not poll aggressively, and reports
-a truthful device model.
+abnormally. tglow does not poll, and reports a truthful device model. It does
+not yet handle `FLOOD_WAIT`: a rate limit surfaces as a failed send with the
+error in the status line, and retrying before it expires will extend it.
 
 ## Development
 
