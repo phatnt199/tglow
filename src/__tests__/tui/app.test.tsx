@@ -1728,7 +1728,7 @@ test('the which-key popup lists the engine-intrinsic operator, register and repe
 // own store.setState above) still points at a real dialog.
 const pickerDialogs: IDialogRow[] = [
   { peerId: 'u1', title: 'Alice', pinned: 0, unreadCount: 2, lastMessageAt: 400, topMessageId: 3, readOutboxMaxId: 0 },
-  { peerId: 'u2', title: 'Đức anh hoàng', pinned: 0, unreadCount: 0, lastMessageAt: 300, topMessageId: 1, readOutboxMaxId: 0 },
+  { peerId: 'u2', title: 'Nguyễn Tấn Phát', pinned: 0, unreadCount: 0, lastMessageAt: 300, topMessageId: 1, readOutboxMaxId: 0 },
   { peerId: 'u3', title: 'Em Việt Tú', pinned: 0, unreadCount: 0, lastMessageAt: 200, topMessageId: 1, readOutboxMaxId: 0 },
   { peerId: 'u4', title: 'Nga Trần', pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 1, readOutboxMaxId: 0 },
 ];
@@ -1761,15 +1761,15 @@ test('escape closes the chat picker without opening anything or changing the act
 
 // The headline case task-8-brief.md names directly: typing narrows the list,
 // and it does so with a plain ASCII query against a diacritic candidate --
-// "duc" is not in "Đức anh hoàng" as a literal substring at all, only as a
-// fold of it -- proving the wiring end to end, not just fuzzy-match.ts alone.
-test('typing "duc" narrows the list to Đức anh hoàng, and Enter opens it', async () => {
+// "nguyen" is not in "Nguyễn Tấn Phát" as a literal substring at all, only as
+// a fold of it -- proving the wiring end to end, not just fuzzy-match.ts alone.
+test('typing "nguyen" narrows the list to Nguyễn Tấn Phát, and Enter opens it', async () => {
   const { renderer, store, opened } = await mount({ dialogs: pickerDialogs });
   await act(async () => { renderer.mockInput.pressKey('p', { ctrl: true }); });
   await renderer.flush();
-  await act(async () => { await renderer.mockInput.typeText('duc'); });
+  await act(async () => { await renderer.mockInput.typeText('nguyen'); });
   await renderer.flush();
-  expect(store.getState().chatPickerQuery).toBe('duc');
+  expect(store.getState().chatPickerQuery).toBe('nguyen');
 
   await act(async () => { renderer.mockInput.pressEnter(); });
   await renderer.flush();

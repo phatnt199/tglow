@@ -33,9 +33,9 @@ const measureRenderedCells = async (sample: string): Promise<number> => {
 const SAMPLES: readonly string[] = [
   'plain ascii',
   '',
-  'Đức anh hoàng',
+  'Nguyễn Tấn Phát',
   'Em Việt Tú',
-  'Đức anh hoàng'.normalize('NFD'),
+  'Nguyễn Tấn Phát'.normalize('NFD'),
   'Em Việt Tú'.normalize('NFD'),
   '你好世界',
   'こんにちは',
@@ -69,7 +69,7 @@ test('a wide ideograph counts two columns, not one code point', () => {
 });
 
 test('a combining mark counts nothing of its own', () => {
-  const decomposed = 'Đức'.normalize('NFD');
+  const decomposed = 'Tấn'.normalize('NFD');
   expect(decomposed.length).toBeGreaterThan(3);
   expect(measureTextWidth({ text: decomposed })).toBe(3);
 });
@@ -90,8 +90,8 @@ test('truncateToWidth never exceeds the width it is given', () => {
 });
 
 test('truncateToWidth marks a shortened string with an ellipsis', () => {
-  expect(truncateToWidth({ text: 'Đức anh hoàng', width: 8 })).toBe('Đức anh…');
-  expect(truncateToWidth({ text: 'Đức anh hoàng', width: 40 })).toBe('Đức anh hoàng');
+  expect(truncateToWidth({ text: 'Nguyễn Tấn Phát', width: 10 })).toBe('Nguyễn Tấ…');
+  expect(truncateToWidth({ text: 'Nguyễn Tấn Phát', width: 40 })).toBe('Nguyễn Tấn Phát');
 });
 
 // A wide glyph cannot be split down the middle: dropping to the previous

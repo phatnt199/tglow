@@ -4,10 +4,10 @@
  * one caller; kept separate so the scoring algorithm is testable against
  * plain strings, with no renderer in the loop.
  *
- * The owner's own chat list is mostly Vietnamese (`Đức anh hoàng`, `Em Việt
+ * The owner's own chat list is mostly Vietnamese (`Nguyễn Tấn Phát`, `Em Việt
  * Tú`, `Nga Trần`), so matching folds away case and diacritics on both sides
- * before comparing: `duc` finds `Đức anh hoàng`, and so does `Đức` typed with
- * its own diacritics still on. See toFoldedText below for how `Đ`/`đ` --
+ * before comparing: `nguyen` finds `Nguyễn Tấn Phát`, and so does `Nguyễn`
+ * typed with its own diacritics still on. See toFoldedText below for how `Đ`/`đ` --
  * letters in their own right, not `D`/`d` plus an accent -- are handled,
  * since `String.prototype.normalize('NFD')` alone does not touch them.
  */

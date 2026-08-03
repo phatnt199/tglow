@@ -316,7 +316,7 @@ test('a wide or decomposed sender name keeps the content column aligned', async 
     { peerId: 'u1', id: 4, fromId: 'd', date: 300_000, text: 'emoji', out: 0, entities: [], replyToMessageId: null },
   ];
   const names: Record<string, string> = {
-    a: 'Alice', b: '张伟同学', c: 'Đức anh hoàng'.normalize('NFD'), d: '🔥 Em Việt Tú',
+    a: 'Alice', b: '张伟同学', c: 'Nguyễn Tấn Phát'.normalize('NFD'), d: '🔥 Em Việt Tú',
   };
   const renderer = await render({
     messages: mixed,

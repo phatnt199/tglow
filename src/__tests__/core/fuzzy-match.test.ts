@@ -64,9 +64,18 @@ test('a match at a word boundary scores above one mid-word, and sorts first', ()
 // chat list is mostly Vietnamese. An ASCII-only matcher is useless to them --
 // this is the difference between the feature working and being decoration.
 
-test('duc finds Đức anh hoàng -- Đ is its own letter, not D plus a diacritic', () => {
-  const candidates = ['Đức anh hoàng', 'Alice', 'Bob'];
-  expect(indexesOf({ candidates, query: 'duc' })).toEqual([0]);
+test('nguyen finds Nguyễn Tấn Phát', () => {
+  const candidates = ['Nguyễn Tấn Phát', 'Alice', 'Bob'];
+  expect(indexesOf({ candidates, query: 'nguyen' })).toEqual([0]);
+});
+
+// Đ/đ are U+0110/U+0111, single letters of the Vietnamese alphabet rather than
+// D carrying a mark, so NFD leaves them whole and only the explicit fold in
+// toFoldedText reaches them. No name in the rest of this file contains one --
+// without this case the fold is untested.
+test('da finds Đà Nẵng -- Đ is its own letter, not D plus a diacritic', () => {
+  const candidates = ['Đà Nẵng', 'Alice', 'Bob'];
+  expect(indexesOf({ candidates, query: 'da' })).toEqual([0]);
 });
 
 test('viet finds Việt', () => {
@@ -74,15 +83,18 @@ test('viet finds Việt', () => {
 });
 
 test('an exact diacritic query still matches', () => {
-  expect(indexesOf({ candidates: ['Đức anh hoàng'], query: 'Đức' })).toEqual([0]);
+  expect(indexesOf({ candidates: ['Nguyễn Tấn Phát'], query: 'Nguyễn' })).toEqual([0]);
 });
 
+// Đà Nẵng rather than a personal name here on purpose: the matcher aligns the
+// query as a subsequence, and `nga` is a subsequence of `Nguyễn Tấn Phát`
+// (N-g-...-a), which would make this assert the opposite of what it reads as.
 test('nga finds Nga Trần among a realistic Vietnamese chat list, and nothing else', () => {
-  const candidates = ['Đức anh hoàng', 'Em Việt Tú', 'Nga Trần'];
+  const candidates = ['Đà Nẵng', 'Em Việt Tú', 'Nga Trần'];
   expect(indexesOf({ candidates, query: 'nga' })).toEqual([2]);
 });
 
 test('a query with no Vietnamese match returns nothing, not every chat', () => {
-  const candidates = ['Đức anh hoàng', 'Em Việt Tú', 'Nga Trần'];
+  const candidates = ['Nguyễn Tấn Phát', 'Em Việt Tú', 'Nga Trần'];
   expect(indexesOf({ candidates, query: 'zzz' })).toEqual([]);
 });

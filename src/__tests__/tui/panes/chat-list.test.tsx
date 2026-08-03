@@ -137,7 +137,7 @@ test('renders an empty list without crashing', async () => {
 // and leaves the column ragged.
 test('Vietnamese and CJK names are truncated by column, not by code point', async () => {
   const wide: IDialogRow[] = [
-    { peerId: 'v1', title: 'Đức anh hoàng', pinned: 0, unreadCount: 3, lastMessageAt: 5, topMessageId: 1, readOutboxMaxId: 0 },
+    { peerId: 'v1', title: 'Nguyễn Tấn Phát', pinned: 0, unreadCount: 3, lastMessageAt: 5, topMessageId: 1, readOutboxMaxId: 0 },
     { peerId: 'v2', title: 'Em Việt Tú'.normalize('NFD'), pinned: 0, unreadCount: 0, lastMessageAt: 4, topMessageId: 1, readOutboxMaxId: 0 },
     { peerId: 'c2', title: '张伟同学的群聊天室', pinned: 0, unreadCount: 12, lastMessageAt: 3, topMessageId: 1, readOutboxMaxId: 0 },
     { peerId: 'e1', title: '🔥🔥🔥 hot takes only, no exceptions', pinned: 0, unreadCount: 0, lastMessageAt: 2, topMessageId: 1, readOutboxMaxId: 0 },

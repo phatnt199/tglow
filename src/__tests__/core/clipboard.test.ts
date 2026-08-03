@@ -23,7 +23,7 @@ test('wraps ASCII text in the exact OSC 52 clipboard-copy sequence', () => {
 // payload back out and checking it reproduces the original string exactly,
 // not just that some base64 was produced.
 test('encodes a Vietnamese string from its UTF-8 bytes, round-tripping exactly', () => {
-  const text = 'Đức anh hoàng';
+  const text = 'Nguyễn Tấn Phát';
   const sequence = buildOsc52Sequence({ text });
   expect(sequence).toBe(`${OSC52_PREFIX}${Buffer.from(text, 'utf-8').toString('base64')}${OSC52_TERMINATOR}`);
   expect(Buffer.from(extractPayload(sequence), 'base64').toString('utf-8')).toBe(text);
@@ -38,7 +38,7 @@ test('encodes an emoji (non-BMP code point), round-tripping exactly', () => {
 });
 
 test('a mix of Vietnamese, emoji and ASCII round-trips exactly', () => {
-  const text = 'Đức anh hoàng 🔥 says hi';
+  const text = 'Nguyễn Tấn Phát 🔥 says hi';
   const sequence = buildOsc52Sequence({ text });
   expect(Buffer.from(extractPayload(sequence), 'base64').toString('utf-8')).toBe(text);
 });

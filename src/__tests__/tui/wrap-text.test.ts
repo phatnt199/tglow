@@ -124,10 +124,10 @@ test('a wide glyph is never split down the middle', () => {
 });
 
 test('a decomposed Vietnamese name is measured and split by grapheme', () => {
-  const decomposed = 'Đức anh hoàng'.normalize('NFD');
+  const decomposed = 'Nguyễn Tấn Phát'.normalize('NFD');
   const lines = wrapText({ text: decomposed, width: 8 });
-  expect(widthsOf(lines)).toEqual([7, 5]);
-  expect(lines.map(line => line.normalize('NFC'))).toEqual(['Đức anh', 'hoàng']);
+  expect(widthsOf(lines)).toEqual([6, 8]);
+  expect(lines.map(line => line.normalize('NFC'))).toEqual(['Nguyễn', 'Tấn Phát']);
 });
 
 test('an emoji sequence stays whole', () => {

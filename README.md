@@ -3,6 +3,10 @@
 A vim-native Telegram client for the terminal, themed with devglow and built to
 the IGNIS Code Style Standard.
 
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy_Me_A_Coffee-EBC17A?style=for-the-badge&logo=buymeacoffee&logoColor=080808)](https://buymeacoffee.com/tanphat199)
+[![GitHub](https://img.shields.io/badge/Source-phatnt199/tglow-87AFAF?style=for-the-badge&logo=github&logoColor=080808)](https://github.com/phatnt199/tglow)
+[![phatnt.com](https://img.shields.io/badge/phatnt.com-7DB9B6?style=for-the-badge&logo=firefoxbrowser&logoColor=080808)](https://phatnt.com)
+
 ## Install
 
 tglow ships as one self-contained binary. There is nothing else to install — no
