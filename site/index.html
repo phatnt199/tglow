@@ -16,6 +16,7 @@
 :root{
   --void:#080808; --fg:#E6E6E6; --dim:#797979; --rule:#282828; --raised:#111111;
   --gold:#EBC17A; --teal:#7DB9B6; --green:#87AFAF; --sky:#7EAAC7; --pink:#D68C8C;
+  --red:#AF5F5F;              /* sage RED — tokens.error. Earned, never decorative. */
   --cell:0.62rem;             /* one character cell, the page's only unit of rhythm */
   --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,"JetBrains Mono","Ubuntu Mono","DejaVu Sans Mono",monospace;
 }
@@ -88,6 +89,22 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--gold);outline-offse
 .frame .cur{background:#383838}
 .caption{margin-top:.7rem;color:var(--dim);font-size:.78rem}
 
+/* inline links row */
+.links{font-size:.9rem}
+.links .sep{color:var(--rule);margin:0 .6rem}
+
+/* a status line in its confirming state — the one place sage RED belongs */
+.statusdemo{
+  margin-top:1.25rem;display:flex;align-items:stretch;font-size:.8rem;line-height:2.4;
+  border-top:1px solid var(--rule);border-bottom:1px solid var(--rule);
+  background:var(--void);overflow:hidden;white-space:nowrap;
+}
+.statusdemo .m{background:var(--teal);color:var(--void);padding:0 .8rem;font-weight:700;letter-spacing:.06em}
+.statusdemo .q{padding:0 .9rem;color:var(--red)}
+.statusdemo .sp{flex:1}
+.statusdemo .r{padding:0 .9rem;color:var(--dim);display:none}
+@media(min-width:34rem){.statusdemo .r{display:block}}
+
 /* ── keys ─────────────────────────────────────────────────────────────── */
 .keys{display:grid;grid-template-columns:repeat(auto-fill,minmax(15.5rem,1fr));gap:.2rem 2rem;margin-top:.5rem}
 .k{display:flex;gap:1rem;align-items:baseline;padding:.16rem 0}
@@ -117,6 +134,18 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--gold);outline-offse
 .not{max-width:62ch;color:var(--dim);font-size:.93rem}
 .not li{list-style:none;padding:.3rem 0 .3rem 1.5rem;position:relative}
 .not li::before{content:"—";position:absolute;left:0;color:var(--rule)}
+
+/* ── elsewhere ────────────────────────────────────────────────────────── */
+.elsewhere{list-style:none;max-width:62ch}
+.elsewhere li{
+  display:flex;flex-wrap:wrap;align-items:baseline;gap:.4rem 1.25rem;
+  padding:.7rem 0;border-bottom:1px solid var(--rule);
+}
+.elsewhere li:first-child{border-top:1px solid var(--rule)}
+.elsewhere a{color:var(--gold);text-decoration:none;flex:0 0 auto;min-width:13rem}
+.elsewhere a:hover,.elsewhere a:focus-visible{text-decoration:underline;text-underline-offset:.25em}
+.elsewhere a::before{content:"❯ ";color:var(--rule)}
+.elsewhere span{color:var(--dim);font-size:.85rem}
 
 /* ── status line, pinned like lualine ─────────────────────────────────── */
 .status{
@@ -150,7 +179,13 @@ footer{margin-top:4.5rem;padding-bottom:2rem;color:var(--dim);font-size:.82rem}
     <div class="body">
       <div class="wordmark"><span class="prompt" aria-hidden="true">❯</span><h1>tglow</h1></div>
       <p class="lede tagline">A Telegram client that never leaves the keyboard. Read, reply, search and send from the terminal — in vim's own grammar.</p>
-      <span class="version">v0.2.0 · Linux x64</span>
+      <p class="links" style="margin-top:1.9rem">
+        <a href="https://github.com/phatnt199/tglow">Source on GitHub</a>
+        <span class="sep" aria-hidden="true">·</span>
+        <a href="https://github.com/phatnt199/tglow/releases/latest">Download v0.2.0</a>
+        <span class="sep" aria-hidden="true">·</span>
+        <span class="muted">Linux x64</span>
+      </p>
 
       <div class="frame" role="img" aria-label="A tglow message view: four messages with a relative-number gutter, timestamps, sender names, a link, inline code and read receipts.">
 <span class="n">    3</span> <span class="t">09:14</span> <span class="who">Đức       </span>    <span class="them">morning — spec is up at <span class="lnk">this link</span> if you want</span>
@@ -226,6 +261,10 @@ footer{margin-top:4.5rem;padding-bottom:2rem;color:var(--dim);font-size:.82rem}
         <div class="item">
           <h3>Your text survives a failure</h3>
           <p>A send that fails leaves what you typed exactly where it was. Delete asks first, every time, because a mistyped <kbd>dd</kbd> cannot be undone.</p>
+          <div class="statusdemo" role="img" aria-label="The status line asking: Delete this message? y slash n, in red.">
+            <span class="m">NORMAL</span><span class="q">Delete this message? (y/n)</span><span class="sp"></span><span class="r">4/11</span>
+          </div>
+          <p style="margin-top:.55rem;font-size:.78rem">Every other key is ignored until you answer.</p>
         </div>
         <div class="item">
           <h3>It speaks your language</h3>
@@ -253,8 +292,8 @@ footer{margin-top:4.5rem;padding-bottom:2rem;color:var(--dim);font-size:.82rem}
 
       <div class="step">
         <h3 data-n="1">Get the binary</h3>
-        <div class="cmd"><span class="c"># from the releases page</span>
-chmod +x tglow-linux-x64
+        <p class="muted" style="font-size:.93rem;margin-top:.5rem">From <a href="https://github.com/phatnt199/tglow/releases/latest">the latest release</a>.</p>
+        <div class="cmd">chmod +x tglow-linux-x64
 sha256sum -c tglow.sha256</div>
       </div>
 
@@ -292,10 +331,25 @@ printf 'api_id = 0\napi_hash = ""\n' &gt; ~/.config/tglow/config.toml</div>
     </div>
   </section>
 
-  <footer class="row">
+  <hr class="rule">
+
+  <!-- elsewhere ────────────────────────────────────────────────────── -->
+  <section class="row" data-section="elsewhere">
     <div class="gutter" aria-hidden="true">6</div>
     <div class="body">
-      <p class="muted" style="font-size:.82rem">Built on Bun, OpenTUI and GramJS. Coloured with <span style="color:var(--gold)">devglow · sage</span>.</p>
+      <h2>Elsewhere</h2>
+      <ul class="elsewhere">
+        <li><a href="https://github.com/phatnt199/tglow">Source and releases</a><span>github.com/phatnt199/tglow</span></li>
+        <li><a href="https://phatnt.com">Phat Nguyen</a><span>phatnt.com</span></li>
+        <li><a href="https://buymeacoffee.com/tanphat199">Buy me a coffee</a><span>if tglow saved you a trip to the mouse</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <footer class="row">
+    <div class="gutter" aria-hidden="true">7</div>
+    <div class="body">
+      <p class="muted" style="font-size:.82rem">By <a href="https://phatnt.com">Phat Nguyen</a>. Built on Bun, OpenTUI and GramJS. Coloured with <a href="https://github.com/phatnt199/devglow" style="color:var(--gold)">devglow · sage</a>, the same palette across his neovim, zsh and terminal.</p>
       <p class="muted" style="font-size:.82rem;margin-top:.4rem">Your session file is equivalent to a logged-in device. It is written <code>0600</code>. Do not share it.</p>
     </div>
   </footer>
