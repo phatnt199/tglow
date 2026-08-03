@@ -1,5 +1,5 @@
 import { BindingScopes, Container } from '@venizia/ignis-inversion';
-import type { TelegramClient } from 'telegram';
+import type { TelegramClient } from 'teleproto';
 
 import { BindingKeys } from './common/index.ts';
 import {

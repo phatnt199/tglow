@@ -62,9 +62,12 @@ test('cli/ never imports React or OpenTUI', async () => {
   expect(offenders).toEqual([]);
 });
 
-test('tui/ never imports telegram', async () => {
-  const offenders = (await collectImports('src/tui')).filter(record =>
-    record.specifier.startsWith('telegram'),
+// Both names: teleproto is the fork tglow now uses, telegram the archived
+// GramJS it came from. Naming only the current one would let a stray import of
+// the other back in, and the rule is about the MTProto layer, not the package.
+test('tui/ never imports the MTProto client', async () => {
+  const offenders = (await collectImports('src/tui')).filter(
+    record => record.specifier.startsWith('teleproto') || record.specifier.startsWith('telegram'),
   );
   expect(offenders).toEqual([]);
 });

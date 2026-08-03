@@ -1,8 +1,8 @@
 import { getError } from '@venizia/ignis-inversion';
-import { Api, utils } from 'telegram';
-import type { TelegramClient } from 'telegram';
-import { NewMessage } from 'telegram/events';
-import type { NewMessageEvent } from 'telegram/events';
+import { Api, utils } from 'teleproto';
+import type { TelegramClient } from 'teleproto';
+import { NewMessage } from 'teleproto/events';
+import type { NewMessageEvent } from 'teleproto/events';
 
 import { EntityKinds, type ITelegramEntity, type TEntityKind } from './common/index.ts';
 import type { IDialogAdapter, IRawDialog } from './dialog-service.ts';

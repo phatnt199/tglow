@@ -1,6 +1,6 @@
-import { TelegramClient } from 'telegram';
-import { StringSession } from 'telegram/sessions';
-import { Logger } from 'telegram/extensions/Logger';
+import { TelegramClient } from 'teleproto';
+import { StringSession } from 'teleproto/sessions';
+import { Logger } from 'teleproto/extensions/Logger';
 
 import type { IApplicationConfiguration } from './common/index.ts';
 import type { SessionStoreService } from './session-store.ts';

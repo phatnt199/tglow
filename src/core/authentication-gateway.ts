@@ -1,7 +1,7 @@
 import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
 import { getError } from '@venizia/ignis-inversion';
-import { Api, type TelegramClient } from 'telegram';
-import { computeCheck } from 'telegram/Password';
+import { Api, type TelegramClient } from 'teleproto';
+import { computeCheck } from 'teleproto/Password';
 
 import type { IAuthenticationGateway } from './authentication.ts';
 

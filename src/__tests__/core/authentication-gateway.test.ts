@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test';
 
-import { Api } from 'telegram';
+import { Api } from 'teleproto';
 
 import { TelegramAuthenticationGateway } from '../../core/authentication-gateway.ts';
 

@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test';
 
-import { Api } from 'telegram';
+import { Api } from 'teleproto';
 
 import { ApplicationStoreService } from '../../core/application-store.ts';
 import { DatabaseService } from '../../core/cache/index.ts';
