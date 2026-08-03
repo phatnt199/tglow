@@ -99,7 +99,7 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--gold);outline-offse
   border-top:1px solid var(--rule);border-bottom:1px solid var(--rule);
   background:var(--void);overflow:hidden;white-space:nowrap;
 }
-.statusdemo .m{background:var(--teal);color:var(--void);padding:0 .8rem;font-weight:700;letter-spacing:.06em}
+.statusdemo .m{background:var(--red);color:var(--void);padding:0 .8rem;font-weight:700;letter-spacing:.06em}
 .statusdemo .q{padding:0 .9rem;color:var(--red)}
 .statusdemo .sp{flex:1}
 .statusdemo .r{padding:0 .9rem;color:var(--dim);display:none}
@@ -261,10 +261,10 @@ footer{margin-top:4.5rem;padding-bottom:2rem;color:var(--dim);font-size:.82rem}
         <div class="item">
           <h3>Your text survives a failure</h3>
           <p>A send that fails leaves what you typed exactly where it was. Delete asks first, every time, because a mistyped <kbd>dd</kbd> cannot be undone.</p>
-          <div class="statusdemo" role="img" aria-label="The status line asking: Delete this message? y slash n, in red.">
+          <div class="statusdemo" role="img" aria-label="The status line in its confirming state: a red NORMAL block, then the question, Delete this message? y slash n.">
             <span class="m">NORMAL</span><span class="q">Delete this message? (y/n)</span><span class="sp"></span><span class="r">4/11</span>
           </div>
-          <p style="margin-top:.55rem;font-size:.78rem">Every other key is ignored until you answer.</p>
+          <p style="margin-top:.55rem;font-size:.78rem">The block turns red and every other key is ignored until you answer.</p>
         </div>
         <div class="item">
           <h3>It speaks your language</h3>
