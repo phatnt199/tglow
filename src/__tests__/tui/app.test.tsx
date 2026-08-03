@@ -8,8 +8,16 @@ import type { TestRendererSetup } from '@opentui/core/testing';
 import { BindingKeys } from '../../common/index.ts';
 // Concrete module, not the core/ barrel -- see src/tui/action-reducer.ts for why.
 import { ApplicationStoreService } from '../../core/application-store.ts';
-import type { IDialogRow, IMessageRow } from '../../core/cache/index.ts';
-import { VimContexts } from '../../keys/common/index.ts';
+import { DatabaseService, type IDialogRow, type IMessageRow } from '../../core/cache/index.ts';
+// Concrete module, not the core/ barrel -- same reasoning as
+// ApplicationStoreService above (src/tui/action-reducer.ts explains why):
+// a value import (mount() below constructs one), off the root barrel's
+// telegram/global.window crash path. core/cache/index.ts, used for
+// DatabaseService just above, is its own safe sub-barrel -- it re-exports
+// only database.ts/migrate.ts/schema.ts, none of which touch telegram or
+// global.window, which is why it was already fine to use directly there.
+import { MessageSearchService } from '../../core/message-search.ts';
+import { ActionTypes, VimContexts, VimModes, type IKeyBinding } from '../../keys/common/index.ts';
 import { KeyNormalizerService, KeymapService, VimEngineService } from '../../keys/index.ts';
 import { renderWithKeys } from '../helpers/render.tsx';
 import { buildTokens } from '../../tui/theme/index.ts';
@@ -22,6 +30,17 @@ const TERMINAL_WIDTH = 70;
 const TERMINAL_HEIGHT = 14;
 const SIDEBAR_WIDTH = 22;
 const CHROME_HEIGHT = 3;
+
+// Wide enough that the which-key popup's own column-major layout
+// (resolveWhichKeyHeight, which-key.tsx) never has to clip a row off the
+// bottom of the frame -- at TERMINAL_WIDTH/TERMINAL_HEIGHT above, a popup
+// listing every NORMAL/messages binding overflows long before reaching the
+// engine-intrinsic entries appended last (keymap.ts's own describe()), which
+// is exactly the gap a captureCharFrame assertion on those entries would
+// otherwise miss for reasons that have nothing to do with what it is testing.
+// 100x24 is also exactly what task-discoverability-report.md captures.
+const WIDE_TERMINAL_WIDTH = 100;
+const WIDE_TERMINAL_HEIGHT = 24;
 
 const dialogs: IDialogRow[] = [
   { peerId: 'u1', title: 'Alice', pinned: 0, unreadCount: 2, lastMessageAt: 300, topMessageId: 3, readOutboxMaxId: 0 },
@@ -63,6 +82,14 @@ const SEND_SETTLE_MILLISECONDS = SEND_ROUND_TRIP_MILLISECONDS + 10;
 // lets that chain actually settle before an assertion reads `marked`.
 const MARK_READ_SETTLE_MILLISECONDS = 20;
 
+// Mirrors IApplicationConfiguration's own default (src/core/configuration.ts) -- vim's timeoutlen.
+const TIMEOUT_MILLISECONDS = 400;
+// Comfortably past TIMEOUT_MILLISECONDS, the same margin SEND_SETTLE_MILLISECONDS
+// gives SEND_ROUND_TRIP_MILLISECONDS above -- long enough that a bare `n`'s own
+// ambiguity against `nf` (M1b-2 Task 9) has genuinely timed out by the time an
+// assertion runs, not merely "probably has by now".
+const AMBIGUOUS_KEY_SETTLE_MILLISECONDS = TIMEOUT_MILLISECONDS + 100;
+
 const pressEscape = async (renderer: TestRendererSetup): Promise<void> => {
   await act(async () => {
     renderer.mockInput.pressEscape();
@@ -72,21 +99,78 @@ const pressEscape = async (renderer: TestRendererSetup): Promise<void> => {
 };
 
 const mount = async (opts: {
+  dialogs?: IDialogRow[];
   messages?: IMessageRow[];
   onSend?: (text: string) => Promise<void>;
   onEdit?: (edit: { messageId: number; text: string }) => Promise<void>;
   onDelete?: (deletion: { messageId: number }) => Promise<void>;
   onOpenChat?: (chat: { peerId: string }) => Promise<void>;
+  /**
+   * Appended to the real 28-binding keymap rather than replacing it, so
+   * everything else these tests rely on (dd's own confirmation included)
+   * keeps working unchanged. Task 2's timeout tests are the only callers:
+   * the real keymap's own ambiguous sequence (bare `d` against `dd`, Task 3)
+   * resolves its short half to operator-pending state with no action of its
+   * own to observe, so these tests still need a synthetic short binding
+   * whose resolution -- unlike operator-pending's -- is something an
+   * assertion can see.
+   */
+  extraBindings?: IKeyBinding[];
+  /**
+   * Defaults to TERMINAL_WIDTH/TERMINAL_HEIGHT, like every existing caller
+   * expects. The which-key discoverability test below is the only caller
+   * that needs more room -- see WIDE_TERMINAL_WIDTH/HEIGHT's own comment.
+   */
+  width?: number;
+  height?: number;
 } = {}) => {
   const container = new Container({ scope: 'AppTest' });
   container.bind({ key: BindingKeys.KEY_NORMALIZER }).toClass(KeyNormalizerService).setScope(BindingScopes.SINGLETON);
   container.bind({ key: BindingKeys.VIM_ENGINE }).toClass(VimEngineService).setScope(BindingScopes.SINGLETON);
   container.bind({ key: BindingKeys.KEYMAP }).toClass(KeymapService).setScope(BindingScopes.SINGLETON);
 
+  const keymapService = container.get<KeymapService>({ key: BindingKeys.KEYMAP });
+  if (opts.extraBindings) {
+    // getBindings is a plain, mutable instance property (not readonly), so
+    // reassigning it is type-safe with no cast and no subclass -- and scoped
+    // to this one container/test, since every mount() builds its own.
+    const extendedBindings = [...keymapService.getBindings(), ...opts.extraBindings];
+    keymapService.getBindings = () => extendedBindings;
+  }
+
+  const seedDialogs = opts.dialogs ?? dialogs;
+  const seedMessages = opts.messages ?? messages;
+
   const store = new ApplicationStoreService();
   store.setState({
-    patch: { dialogs, messages: opts.messages ?? messages, activePeerId: 'u1', connection: 'connected' },
+    patch: {
+      dialogs: seedDialogs,
+      messages: seedMessages,
+      activePeerId: 'u1',
+      connection: 'connected',
+    },
   });
+
+  // M1b-2 Task 9: `/` search reads the real cache, not state.messages --
+  // seeded here with exactly what the store above was, so the two can never
+  // silently disagree about what a chat's messages are, the same invariant
+  // production keeps by populating state.messages *from* this same database
+  // in the first place (MessageService.loadHistory). Peers for every dialog
+  // (not only 'u1'), deduplicated, since a message's peerId is a foreign key
+  // the schema enforces -- inserting a message for a peer with no row would
+  // otherwise throw.
+  const database = new DatabaseService();
+  database.open({ filePath: ':memory:' });
+  const seededPeerIds = new Set<string>();
+  for (const dialog of seedDialogs) {
+    if (seededPeerIds.has(dialog.peerId)) {
+      continue;
+    }
+    seededPeerIds.add(dialog.peerId);
+    database.upsertPeer({ id: dialog.peerId, type: 'user', accessHash: null, title: dialog.title, username: null });
+  }
+  database.insertMessages({ messages: seedMessages });
+  const messageSearchService = new MessageSearchService(database);
 
   const sent: string[] = [];
   // What the composer held at the moment the send handler ran. MessageService
@@ -152,10 +236,12 @@ const mount = async (opts: {
     <App
       store={store}
       engine={container.get<VimEngineService>({ key: BindingKeys.VIM_ENGINE })}
-      keymapService={container.get<KeymapService>({ key: BindingKeys.KEYMAP })}
+      keymapService={keymapService}
       keyNormalizer={container.get<KeyNormalizerService>({ key: BindingKeys.KEY_NORMALIZER })}
+      timeoutMilliseconds={TIMEOUT_MILLISECONDS}
       tokens={tokens}
       resolveSenderName={() => 'Alice'}
+      messageSearchService={messageSearchService}
       onSend={onSend}
       onEdit={onEdit}
       onDelete={onDelete}
@@ -163,10 +249,10 @@ const mount = async (opts: {
       onOpenChat={onOpenChat}
       onMarkRead={onMarkRead}
     />,
-    { width: TERMINAL_WIDTH, height: TERMINAL_HEIGHT },
+    { width: opts.width ?? TERMINAL_WIDTH, height: opts.height ?? TERMINAL_HEIGHT },
   );
   await renderer.flush();
-  return { renderer, store, sent, composerAtSend, edited, deleted, opened, marked, quit };
+  return { renderer, store, sent, composerAtSend, edited, deleted, opened, marked, quit, database };
 };
 
 test('starts in NORMAL mode with both panes on screen', async () => {
@@ -563,6 +649,488 @@ test('the status line turns the danger colour while a delete is pending confirma
   const span = statusRow.spans.find(candidate => candidate.text.includes('Delete'));
   expect(span).toBeDefined();
   expect(rgbToHex(span!.fg).toLowerCase()).toBe(tokens.error.toLowerCase());
+});
+
+// --- M1b-2 Task 4: doubled operators (dd/yy/cc) -----------------------------
+//
+// dd's own confirmation (M1b-1's guarantee) must survive operators becoming
+// a second way to reach it: a count must not become a route around asking.
+test('3dd asks for confirmation instead of deleting three messages outright', async () => {
+  const { renderer, store, deleted } = await mount();
+  await act(async () => {
+    renderer.mockInput.pressKey('3');
+    renderer.mockInput.pressKey('d');
+    renderer.mockInput.pressKey('d');
+  });
+  await renderer.flush();
+  expect(deleted).toEqual([]);
+  expect(store.getState().pendingConfirmation).not.toBeNull();
+  expect(store.getState().messages).toHaveLength(4);
+  expect(renderer.captureCharFrame()).toContain('Delete');
+});
+
+// The Minor from M1b-1's final review, driven through real key presses: dd
+// used to be `context: '*'`, so pressing it while focused on the chat list
+// deleted a message in the messages pane the cursor was not even in.
+// Operators make this more reachable, not less (bare d/y/c commit with no
+// per-context keymap entry to filter them at all), so this must hold now.
+test('dd does nothing while focused on the chat list', async () => {
+  const { renderer, store, deleted } = await mount();
+  await act(async () => {
+    renderer.mockInput.pressKey('n');
+    renderer.mockInput.pressKey('f');
+  });
+  await renderer.flush();
+  expect(store.getState().engine.context).toBe(VimContexts.CHAT_LIST);
+
+  await act(async () => { renderer.mockInput.pressKey('d'); renderer.mockInput.pressKey('d'); });
+  await renderer.flush();
+
+  expect(store.getState().pendingConfirmation).toBeNull();
+  expect(deleted).toEqual([]);
+  expect(store.getState().messages).toHaveLength(4);
+  expect(store.getState().engine.context).toBe(VimContexts.CHAT_LIST);
+});
+
+// M1b-2 Task 5: registers. An unnamed yy writes UNNAMED_REGISTER, vim's own
+// name for the unnamed register -- exactly what this always did before
+// named registers existed, just under a different key.
+test('yy yanks the message under the cursor into the default register', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('y'); renderer.mockInput.pressKey('y'); });
+  await renderer.flush();
+  expect(store.getState().registers['"']).toBe('msg1');
+});
+
+// The same count guarantee dd needs, proven end to end through an operator
+// that (unlike delete) actually acts on the full range: two messages come
+// back joined, not the anchor alone and not four.
+test('2yy yanks two messages, not four', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => {
+    renderer.mockInput.pressKey('2');
+    renderer.mockInput.pressKey('y');
+    renderer.mockInput.pressKey('y');
+  });
+  await renderer.flush();
+  expect(store.getState().registers['"']).toBe('msg1\nmsg2');
+});
+
+// --- M1b-2 Task 5: registers -------------------------------------------------
+
+// "ayy: a named register, not the default one -- the brief's own headline example.
+test('"ayy yanks into register a, not the default register', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => {
+    renderer.mockInput.pressKey('"');
+    renderer.mockInput.pressKey('a');
+    renderer.mockInput.pressKey('y');
+    renderer.mockInput.pressKey('y');
+  });
+  await renderer.flush();
+  expect(store.getState().registers.a).toBe('msg1');
+  expect(store.getState().registers['"']).toBeUndefined();
+});
+
+// Decision 2 (task-5-brief.md): a register name must not survive a cancelled
+// operation. Proven end to end: after "a, escape, and an entirely unrelated
+// yy, the text must land in the default register, not register a.
+test('"a then escape does not leave a register pending for a later, unrelated yy', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => {
+    renderer.mockInput.pressKey('"');
+    renderer.mockInput.pressKey('a');
+  });
+  await renderer.flush();
+  expect(store.getState().engine.register).toBe('a');
+
+  await pressEscape(renderer);
+  expect(store.getState().engine.register).toBeNull();
+
+  await act(async () => { renderer.mockInput.pressKey('y'); renderer.mockInput.pressKey('y'); });
+  await renderer.flush();
+  expect(store.getState().registers.a).toBeUndefined();
+  expect(store.getState().registers['"']).toBe('msg1');
+});
+
+// Decision 3 (task-5-brief.md): registers follow the same M1b-1 rule
+// operators do -- dd already does nothing from the chat list (above); "
+// must not do anything there either.
+test('" does nothing while focused on the chat list', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('n'); renderer.mockInput.pressKey('f'); });
+  await renderer.flush();
+  expect(store.getState().engine.context).toBe(VimContexts.CHAT_LIST);
+
+  await act(async () => { renderer.mockInput.pressKey('"'); renderer.mockInput.pressKey('a'); });
+  await renderer.flush();
+  expect(store.getState().engine.register).toBeNull();
+});
+
+// Decision 1 (task-5-brief.md): delete also writes to a register, named when
+// "a preceded it, and does so immediately -- not gated on the confirmation
+// that follows, since the register is a harmless, local, freely-overwritable
+// value, unlike the confirmation guarding the one irreversible, networked
+// effect.
+test('"add writes the deleted message into register a immediately, not gated on the confirmation', async () => {
+  const { renderer, store, deleted } = await mount();
+  await act(async () => {
+    renderer.mockInput.pressKey('"');
+    renderer.mockInput.pressKey('a');
+    renderer.mockInput.pressKey('d');
+    renderer.mockInput.pressKey('d');
+  });
+  await renderer.flush();
+  expect(store.getState().pendingConfirmation).not.toBeNull();
+  expect(store.getState().registers.a).toBe('msg1');
+  expect(deleted).toEqual([]);
+
+  await act(async () => { renderer.mockInput.pressKey('y'); });
+  await renderer.flush();
+  expect(deleted).toHaveLength(1);
+  expect(store.getState().registers.a).toBe('msg1');
+});
+
+// --- M1b-2 Task 6: system clipboard ------------------------------------------
+//
+// copyToClipboardOSC52 is a plain, mutable instance method (not readonly), so
+// reassigning it on the real (test) renderer is type-safe with no cast and no
+// subclass -- the same pattern mount()'s own extraBindings support uses for
+// KeymapService.getBindings. Stubbing it here also means these tests never
+// depend on the test renderer's own OSC 52 capability detection: the real
+// implementation checks isOsc52Supported() and no-ops if it is ever false,
+// which this stub bypasses entirely by never calling through to it.
+test('"+yy copies the yanked message to the system clipboard, not just the register', async () => {
+  const { renderer, store } = await mount();
+  const copied: string[] = [];
+  renderer.renderer.copyToClipboardOSC52 = (text: string): boolean => { copied.push(text); return true; };
+
+  await act(async () => {
+    renderer.mockInput.pressKey('"');
+    renderer.mockInput.pressKey('+');
+    renderer.mockInput.pressKey('y');
+    renderer.mockInput.pressKey('y');
+  });
+  await renderer.flush();
+
+  expect(store.getState().registers['+']).toBe('msg1');
+  expect(copied).toEqual(['msg1']);
+});
+
+// The ordinary case (Task 5's own default-register yy) must not gain a side
+// effect it never had: only the register named `+` reaches the clipboard.
+test('a plain yy (default register) does not touch the system clipboard', async () => {
+  const { renderer, store } = await mount();
+  const copied: string[] = [];
+  renderer.renderer.copyToClipboardOSC52 = (text: string): boolean => { copied.push(text); return true; };
+
+  await act(async () => { renderer.mockInput.pressKey('y'); renderer.mockInput.pressKey('y'); });
+  await renderer.flush();
+
+  expect(store.getState().registers['"']).toBe('msg1');
+  expect(copied).toEqual([]);
+});
+
+// Delete writes a register exactly as yank does (Task 5, above), so "+dd
+// must copy to the clipboard exactly as "+yy does -- and, like "add's own
+// register write, immediately on OPERATOR_APPLY resolving, not gated on the
+// y/n confirmation that follows (the confirmation guards only the one
+// irreversible, networked effect; the register and the clipboard write it now
+// drives are both harmless, local, freely-overwritable side effects).
+test('"+dd copies the deleted message to the system clipboard immediately, not gated on the confirmation', async () => {
+  const { renderer, store, deleted } = await mount();
+  const copied: string[] = [];
+  renderer.renderer.copyToClipboardOSC52 = (text: string): boolean => { copied.push(text); return true; };
+
+  await act(async () => {
+    renderer.mockInput.pressKey('"');
+    renderer.mockInput.pressKey('+');
+    renderer.mockInput.pressKey('d');
+    renderer.mockInput.pressKey('d');
+  });
+  await renderer.flush();
+
+  expect(store.getState().pendingConfirmation).not.toBeNull();
+  expect(store.getState().registers['+']).toBe('msg1');
+  expect(copied).toEqual(['msg1']);
+  expect(deleted).toEqual([]);
+});
+
+// --- M1b-2 Task 7: `.` repeats the last change -------------------------------
+//
+// Task 5's own report found a bug an engine-only test could not have caught:
+// REGISTER_SET briefly resolved with status 'pending', which app.tsx's
+// commitResolution silently drops (it only ever runs a result's actions when
+// status is 'resolved'). `.` carries the identical risk, so every test below
+// drives it through real key presses against the real store rather than
+// calling engine.resolve() directly -- if `.` ever regressed to 'pending',
+// every assertion here that checks an actual mutation would fail.
+
+test('. with no prior change does nothing, silently', async () => {
+  const { renderer, store, deleted } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('.'); });
+  await renderer.flush();
+  expect(store.getState().pendingConfirmation).toBeNull();
+  expect(store.getState().messageCursor).toBe(0);
+  expect(store.getState().registers).toEqual({});
+  expect(deleted).toEqual([]);
+});
+
+// Requirement 1: a motion is not a change. If `j` were mistakenly recorded as
+// one, `.` here would move the cursor a second time.
+test('a motion (j) is not a change -- . after it does nothing', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('j'); });
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(1);
+
+  await act(async () => { renderer.mockInput.pressKey('.'); });
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(1);
+  expect(store.getState().pendingConfirmation).toBeNull();
+});
+
+// M1b-1's guarantee, tested explicitly a third time (Tasks 4 and 5 both
+// already had to preserve it): a repeated delete must still confirm, not
+// delete outright.
+test('. repeating a delete still asks for confirmation -- it does not delete outright', async () => {
+  const { renderer, store, deleted } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('d'); renderer.mockInput.pressKey('d'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('y'); });
+  await renderer.flush();
+  expect(deleted).toEqual([{ messageId: 1 }]);
+
+  await act(async () => { renderer.mockInput.pressKey('.'); });
+  await renderer.flush();
+  expect(deleted).toEqual([{ messageId: 1 }]); // not yet a second delete
+  expect(store.getState().pendingConfirmation).not.toBeNull();
+  expect(renderer.captureCharFrame()).toContain('Delete');
+
+  await act(async () => { renderer.mockInput.pressKey('y'); });
+  await renderer.flush();
+  expect(deleted).toHaveLength(2);
+});
+
+// Requirement 3, the brief's own example: dd, j, . must delete the message
+// now under the cursor, not the one dd originally targeted. onDelete never
+// removes anything from state.messages in this stub (matching every other
+// dd test in this file), so messageCursor 1 after `j` is msg2 -- a repeat
+// that still targeted msg1 would prove the engine replayed an absolute
+// target instead of a cursor-relative delta.
+test('. after dd repeats on the message now under the cursor, not the original one', async () => {
+  const { renderer, store, deleted } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('d'); renderer.mockInput.pressKey('d'); });
+  await renderer.flush();
+  expect(store.getState().pendingConfirmation).toEqual({ kind: 'delete', messageId: 1 });
+  await act(async () => { renderer.mockInput.pressKey('y'); });
+  await renderer.flush();
+
+  await act(async () => { renderer.mockInput.pressKey('j'); });
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(1);
+
+  await act(async () => { renderer.mockInput.pressKey('.'); });
+  await renderer.flush();
+  expect(store.getState().pendingConfirmation).toEqual({ kind: 'delete', messageId: 2 });
+
+  await act(async () => { renderer.mockInput.pressKey('y'); });
+  await renderer.flush();
+  expect(deleted).toEqual([{ messageId: 1 }, { messageId: 2 }]);
+});
+
+// Requirement 5 (task-7-brief.md's own open question) -- decision: a
+// cancelled delete still counts as the last change. lastChange is recorded
+// the instant OPERATOR_APPLY resolves (vim-engine.ts's recordChange), before
+// App ever asks for confirmation -- the identical timing Task 5 already
+// relies on for a register write surviving a cancelled dd ("a cancelled dd
+// still 'copies' the message", action-reducer.ts). Real vim's own `.` has no
+// concept of a cancelled change to begin with, since nothing in stock vim
+// gates a change behind a y/n prompt; tglow's confirmation is a layer on top
+// of that, and it reapplies independently on the repeat too (the second
+// assertion below), so nothing unsafe follows from treating the cancelled
+// attempt as real.
+test('. after a cancelled (n) delete still repeats it -- and still asks again', async () => {
+  const { renderer, store, deleted } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('d'); renderer.mockInput.pressKey('d'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('n'); });
+  await renderer.flush();
+  expect(deleted).toEqual([]);
+  expect(store.getState().pendingConfirmation).toBeNull();
+
+  await act(async () => { renderer.mockInput.pressKey('.'); });
+  await renderer.flush();
+  expect(store.getState().pendingConfirmation).toEqual({ kind: 'delete', messageId: 1 });
+  expect(deleted).toEqual([]);
+});
+
+// A bare `.` repeats the exact recorded range verbatim -- 2yy's own count
+// stays 2, not reset to 1.
+test('2yy then a bare . repeats the same two-message range', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => {
+    renderer.mockInput.pressKey('2');
+    renderer.mockInput.pressKey('y');
+    renderer.mockInput.pressKey('y');
+  });
+  await renderer.flush();
+  expect(store.getState().registers['"']).toBe('msg1\nmsg2');
+
+  await act(async () => { renderer.mockInput.pressKey('.'); });
+  await renderer.flush();
+  expect(store.getState().registers['"']).toBe('msg1\nmsg2');
+});
+
+// The brief's own headline, end to end: a freshly typed count replaces the
+// recorded one -- 3. after a plain (count-1) yy yanks three messages, not
+// one and not the original range multiplied.
+test('3. after a plain yy replaces the count with three', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('y'); renderer.mockInput.pressKey('y'); });
+  await renderer.flush();
+  expect(store.getState().registers['"']).toBe('msg1');
+
+  await act(async () => {
+    renderer.mockInput.pressKey('3');
+    renderer.mockInput.pressKey('.');
+  });
+  await renderer.flush();
+  expect(store.getState().registers['"']).toBe('msg1\nmsg2\nmsg3');
+});
+
+// Operators do nothing from the chat list (M1b-1's guarantee, preserved by
+// Tasks 3-5); `.` re-emits an operator application, so it follows the same
+// rule.
+test('. does nothing while focused on the chat list', async () => {
+  const { renderer, store, deleted } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('d'); renderer.mockInput.pressKey('d'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('y'); });
+  await renderer.flush();
+
+  await act(async () => { renderer.mockInput.pressKey('n'); renderer.mockInput.pressKey('f'); });
+  await renderer.flush();
+  expect(store.getState().engine.context).toBe(VimContexts.CHAT_LIST);
+
+  await act(async () => { renderer.mockInput.pressKey('.'); });
+  await renderer.flush();
+  expect(store.getState().pendingConfirmation).toBeNull();
+  expect(deleted).toEqual([{ messageId: 1 }]);
+});
+
+// `.` must still reach the composer as a literal character in INSERT mode --
+// otherwise "end of sentence." would silently lose its period.
+test('. in insert mode reaches the composer as literal text', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await act(async () => { await renderer.mockInput.typeText('hi.'); });
+  await renderer.flush();
+  expect(store.getState().composerText).toBe('hi.');
+});
+
+test('cc on an own message loads it into the composer for editing, same as e', async () => {
+  const { renderer, store } = await mount({ messages: [ownMessage] });
+  await act(async () => { renderer.mockInput.pressKey('c'); renderer.mockInput.pressKey('c'); });
+  await renderer.flush();
+  expect(store.getState().composerText).toBe('typo here');
+  expect(store.getState().editingMessageId).toBe(1);
+  expect(store.getState().engine.mode).toBe('insert');
+});
+
+test("cc on someone else's message refuses and sets a status message, same as e", async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('c'); renderer.mockInput.pressKey('c'); });
+  await renderer.flush();
+  expect(store.getState().editingMessageId).toBeNull();
+  expect(store.getState().engine.mode).toBe('normal');
+  expect(store.getState().statusMessage).toBeTruthy();
+});
+
+// --- Task 2 (M1b-2): the ambiguous-key timeout, vim's own timeoutlen -------
+//
+// Stale as of Task 3, corrected in Task 4: the real keymap does have an
+// ambiguous sequence now -- a bare `d` against the real `dd` (Task 3 made
+// d/y/c live operator triggers; dd stays a literal binding rather than
+// folding into that doubled-operator recognition, exactly so this ambiguity
+// stays real -- see keymap.ts's own comment on the dd binding). But
+// resolving `d` by itself commits only to operator-pending state
+// (engine.operator), with no action of its own to observe --
+// flushPending's `pending` status, not `resolved`. These tests need the
+// short half to have an observable effect, to tell "the short binding
+// fired" apart from "the long one did" on two independent fields, so they
+// still extend the real keymap with one test-only binding for bare `d`
+// rather than relying on the real, actionless one. Its action (CURSOR_EDGE
+// 'last') is deliberately unlike dd's own OPERATOR_APPLY, so the two
+// effects -- and which one, if either, actually ran -- are distinguishable
+// on messageCursor and pendingConfirmation independently.
+const AMBIGUOUS_SHORT_D_BINDING: IKeyBinding = {
+  context: '*',
+  mode: VimModes.NORMAL,
+  keys: 'd',
+  description: 'test-only: short half of the d/dd ambiguity',
+  action: () => [{ type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'last' }],
+};
+
+// Comfortably past TIMEOUT_MILLISECONDS (400) so the wait is never close
+// enough to flake.
+const PAST_TIMEOUT_MILLISECONDS = 500;
+
+test('an ambiguous key resolves the short binding after the timeout', async () => {
+  const { renderer, store } = await mount({ extraBindings: [AMBIGUOUS_SHORT_D_BINDING] });
+  await act(async () => { renderer.mockInput.pressKey('d'); });
+  await renderer.flush();
+  expect(store.getState().pendingConfirmation).toBeNull();   // dd has not fired
+  expect(store.getState().messageCursor).toBe(0);            // nor has the short binding, yet
+
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, PAST_TIMEOUT_MILLISECONDS)); });
+  await renderer.flush();
+  // The short binding's own effect: CURSOR_EDGE 'last' moves the cursor to
+  // the newest message.
+  expect(store.getState().messageCursor).toBe(store.getState().messages.length - 1);
+  expect(store.getState().pendingConfirmation).toBeNull();
+});
+
+test('a second key beats the timer and resolves the longer binding', async () => {
+  const { renderer, store } = await mount({ extraBindings: [AMBIGUOUS_SHORT_D_BINDING] });
+  await act(async () => { renderer.mockInput.pressKey('d'); renderer.mockInput.pressKey('d'); });
+  await renderer.flush();
+  expect(store.getState().pendingConfirmation).not.toBeNull();  // dd fired
+  expect(store.getState().messageCursor).toBe(0);                // the short binding never ran
+});
+
+// The load-bearing test. Without clearing the timer on every key press, the
+// first `d`'s timer is still armed when the second `d` resolves dd a moment
+// later, and fires the short binding's own CURSOR_EDGE on top of it once the
+// clock runs out -- moving the cursor as a second effect of one dd. Verified
+// by temporarily deleting the clear in app.tsx and re-running this file:
+// this test failed on messageCursor (3, not 0) with that clear removed, and
+// passed again once it was restored.
+test('the timer is cancelled when a key arrives, so the short binding never also fires', async () => {
+  const { renderer, store } = await mount({ extraBindings: [AMBIGUOUS_SHORT_D_BINDING] });
+  await act(async () => { renderer.mockInput.pressKey('d'); renderer.mockInput.pressKey('d'); });
+  await renderer.flush();
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, PAST_TIMEOUT_MILLISECONDS)); });
+  await renderer.flush();
+  // Exactly one confirmation, from dd alone -- and the cursor, which dd's
+  // own binding never touches, is still where it started: not moved by a
+  // late-firing short d.
+  expect(store.getState().pendingConfirmation).not.toBeNull();
+  expect(store.getState().messageCursor).toBe(0);
+});
+
+test('unmounting clears a running timer', async () => {
+  const { renderer } = await mount({ extraBindings: [AMBIGUOUS_SHORT_D_BINDING] });
+  await act(async () => { renderer.mockInput.pressKey('d'); });
+  await renderer.flush();
+  // destroy() unmounts the React root still attached to this renderer, so it
+  // needs act() around it too -- the same rule render.tsx's own helper
+  // follows when it tears down the previous test's renderer -- or React
+  // warns that an update to Root escaped act(), independent of anything this
+  // task changed.
+  act(() => {
+    expect(() => renderer.renderer.destroy()).not.toThrow();
+  });
 });
 
 test('i enters INSERT and jk returns to NORMAL', async () => {
@@ -1115,4 +1683,506 @@ test('escape closes the overlay without also refocusing the pane underneath it',
   await pressEscape(renderer);
   expect(store.getState().overlay).toBeNull();
   expect(store.getState().engine.context).toBe(VimContexts.CHAT_LIST);
+});
+
+// task-discoverability-report.md: M1b-2's operators (d/y/c), their doubled
+// whole-message forms (yy/cc -- dd already had a real binding), the register
+// prefix (") and repeat (.) are all engine-intrinsic (vim-engine.ts): resolved
+// with no entry in the keymap table at all, the same way a digit count needs
+// none. That meant describe() -- and so this popup -- could not see them; only
+// `dd` had a keymap entry, and `\` reflects the keymap, not vim-engine.ts.
+// KeymapService now folds a separate, display-only descriptor list into
+// describe()'s own output (keymap.ts) so the popup can advertise them too.
+//
+// This goes through App and real key presses, not describe() directly,
+// because the reported gap was the popup failing to *render* what describe()
+// already returned -- a test on describe()'s return value alone would not
+// have caught a rendering-side failure to pick the new entries up. mount()
+// needs the wider terminal here (see WIDE_TERMINAL_WIDTH/HEIGHT's own
+// comment): at the default size the popup's own rows overflow the captured
+// frame long before reaching these entries, which describe() appends after
+// every table-driven one.
+test('the which-key popup lists the engine-intrinsic operator, register and repeat keys', async () => {
+  const { renderer, store } = await mount({ width: WIDE_TERMINAL_WIDTH, height: WIDE_TERMINAL_HEIGHT });
+  expect(store.getState().engine.context).toBe(VimContexts.MESSAGES);
+
+  await act(async () => { renderer.mockInput.pressKey('\\'); });
+  await renderer.flush();
+
+  const frame = renderer.captureCharFrame();
+  expect(frame).toContain('Delete with motion');
+  expect(frame).toContain('Yank with motion');
+  expect(frame).toContain('Change with motion');
+  expect(frame).toContain('Yank message');
+  expect(frame).toContain('Change message');
+  expect(frame).toContain('Choose a register');
+  expect(frame).toContain('Repeat last change');
+});
+
+// --- M1b-2 Task 8: <C-p>, fuzzy jump to any chat -----------------------------
+//
+// The owner's own chat list is mostly Vietnamese (task-8-brief.md) -- this
+// fixture mirrors that, rather than an all-ASCII stand-in, so the tests below
+// exercise the actual reason the feature exists, not just wiring in the
+// abstract. 'u1' stays first and stays Alice so activePeerId (set by mount's
+// own store.setState above) still points at a real dialog.
+const pickerDialogs: IDialogRow[] = [
+  { peerId: 'u1', title: 'Alice', pinned: 0, unreadCount: 2, lastMessageAt: 400, topMessageId: 3, readOutboxMaxId: 0 },
+  { peerId: 'u2', title: 'Đức anh hoàng', pinned: 0, unreadCount: 0, lastMessageAt: 300, topMessageId: 1, readOutboxMaxId: 0 },
+  { peerId: 'u3', title: 'Em Việt Tú', pinned: 0, unreadCount: 0, lastMessageAt: 200, topMessageId: 1, readOutboxMaxId: 0 },
+  { peerId: 'u4', title: 'Nga Trần', pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 1, readOutboxMaxId: 0 },
+];
+
+test('<C-p> opens the chat picker', async () => {
+  const { renderer, store } = await mount({ dialogs: pickerDialogs });
+  await act(async () => { renderer.mockInput.pressKey('p', { ctrl: true }); });
+  await renderer.flush();
+  expect(store.getState().overlay).toBe('chatpicker');
+  // "Jump to chat" is the picker's own prompt -- unlike a dialog title, it
+  // can never appear for any other reason (the sidebar, say), so it is safe
+  // to look for in the whole frame rather than one row of it.
+  expect(renderer.captureCharFrame()).toContain('Jump to chat');
+});
+
+test('escape closes the chat picker without opening anything or changing the active chat', async () => {
+  const { renderer, store, opened } = await mount({ dialogs: pickerDialogs });
+  expect(store.getState().activePeerId).toBe('u1');
+
+  await act(async () => { renderer.mockInput.pressKey('p', { ctrl: true }); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('duc'); });
+  await renderer.flush();
+
+  await pressEscape(renderer);
+  expect(store.getState().overlay).toBeNull();
+  expect(store.getState().activePeerId).toBe('u1');
+  expect(opened).toEqual([]);
+});
+
+// The headline case task-8-brief.md names directly: typing narrows the list,
+// and it does so with a plain ASCII query against a diacritic candidate --
+// "duc" is not in "Đức anh hoàng" as a literal substring at all, only as a
+// fold of it -- proving the wiring end to end, not just fuzzy-match.ts alone.
+test('typing "duc" narrows the list to Đức anh hoàng, and Enter opens it', async () => {
+  const { renderer, store, opened } = await mount({ dialogs: pickerDialogs });
+  await act(async () => { renderer.mockInput.pressKey('p', { ctrl: true }); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('duc'); });
+  await renderer.flush();
+  expect(store.getState().chatPickerQuery).toBe('duc');
+
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+  expect(opened).toEqual(['u2']);
+  expect(store.getState().overlay).toBeNull();
+  expect(store.getState().engine.context).toBe(VimContexts.MESSAGES);
+  // Mirrors "return in the chat list opens the chat" -- jumping via the
+  // picker moves the chat list's own cursor to match, exactly as opening the
+  // same chat by navigating to it with j/k and Enter would.
+  expect(store.getState().chatCursor).toBe(1);
+});
+
+test('backspace in the chat picker removes the last typed character', async () => {
+  const { renderer, store } = await mount({ dialogs: pickerDialogs });
+  await act(async () => { renderer.mockInput.pressKey('p', { ctrl: true }); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('ducx'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressBackspace(); });
+  await renderer.flush();
+  expect(store.getState().chatPickerQuery).toBe('duc');
+});
+
+test('j clamps the selection at the last result rather than running past it', async () => {
+  const { renderer, store } = await mount({ dialogs: pickerDialogs });
+  await act(async () => { renderer.mockInput.pressKey('p', { ctrl: true }); });
+  await renderer.flush();
+  await act(async () => {
+    renderer.mockInput.pressKey('j');
+    renderer.mockInput.pressKey('j');
+    renderer.mockInput.pressKey('j');
+    renderer.mockInput.pressKey('j');
+    renderer.mockInput.pressKey('j');
+  });
+  await renderer.flush();
+  expect(store.getState().chatPickerCursor).toBe(pickerDialogs.length - 1);
+});
+
+test('k clamps the selection at zero rather than going negative', async () => {
+  const { renderer, store } = await mount({ dialogs: pickerDialogs });
+  await act(async () => { renderer.mockInput.pressKey('p', { ctrl: true }); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('k'); });
+  await renderer.flush();
+  expect(store.getState().chatPickerCursor).toBe(0);
+});
+
+test('j (or <C-n>) moves the selection down, and Enter opens the newly selected chat', async () => {
+  const { renderer, opened } = await mount({ dialogs: pickerDialogs });
+  await act(async () => { renderer.mockInput.pressKey('p', { ctrl: true }); });
+  await renderer.flush();
+  // No query typed: every dialog is a match, in original order (fuzzyMatch's
+  // own empty-query rule), so pickerDialogs[0] (Alice) starts selected and one
+  // step down lands on pickerDialogs[1].
+  await act(async () => { renderer.mockInput.pressKey('n', { ctrl: true }); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+  expect(opened).toEqual(['u2']);
+});
+
+// <C-p> is overloaded: from outside the picker it opens it, but the brief
+// gives it a second job once the picker owns input -- move the selection up,
+// the same as k -- so it must never also close the overlay it is already
+// inside, or the key would be self-defeating the moment the picker needs it
+// for anything past the first result.
+test('<C-p> moves the selection back up rather than closing the picker it just opened', async () => {
+  const { renderer, opened, store } = await mount({ dialogs: pickerDialogs });
+  await act(async () => { renderer.mockInput.pressKey('p', { ctrl: true }); });
+  await renderer.flush();
+  await act(async () => {
+    renderer.mockInput.pressKey('j');
+    renderer.mockInput.pressKey('j');
+  });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('p', { ctrl: true }); });
+  await renderer.flush();
+  expect(store.getState().overlay).toBe('chatpicker');
+
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+  expect(opened).toEqual(['u2']);
+});
+
+// The load-bearing guard, the same one which-key's own "j does not move the
+// message cursor" test and the delete confirmation's "j does not move the
+// cursor" test both already cover for their own overlays: a stray key must
+// not reach the pane underneath.
+test('while the chat picker is open, j does not move the message cursor', async () => {
+  const { renderer, store } = await mount({ dialogs: pickerDialogs });
+  expect(store.getState().messageCursor).toBe(0);
+
+  await act(async () => { renderer.mockInput.pressKey('p', { ctrl: true }); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('j'); });
+  await renderer.flush();
+
+  expect(store.getState().messageCursor).toBe(0);
+});
+
+// The other half of the same guard: 'i' is ordinarily a mode switch
+// (VimModes.INSERT), so this also proves typed letters become query text
+// while the picker is open rather than falling through to the engine.
+test('while the chat picker is open, i does not enter insert mode -- it types into the query', async () => {
+  const { renderer, store } = await mount({ dialogs: pickerDialogs });
+  await act(async () => { renderer.mockInput.pressKey('p', { ctrl: true }); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await renderer.flush();
+
+  expect(store.getState().engine.mode).toBe('normal');
+  expect(store.getState().chatPickerQuery).toBe('i');
+});
+
+// Mirrors "starting a reply shrinks..." and the which-key overlay's own
+// implicit budget: Composer is not rendered at all while the picker is open,
+// so if chromeHeight had not grown to match ChatPicker's own rows, the status
+// line would be pushed off its row instead of failing loudly.
+test('opening the chat picker shrinks the message pane so the status line stays on its own row, uncorrupted', async () => {
+  const { renderer, store } = await mount({ dialogs: pickerDialogs });
+  await act(async () => { renderer.mockInput.pressKey('p', { ctrl: true }); });
+  await renderer.flush();
+  const rows = renderer.captureCharFrame().split('\n');
+  expect(rows[TERMINAL_HEIGHT - 1]).toContain('NORMAL');
+  expect(rows[TERMINAL_HEIGHT - 1]).toContain(`1/${store.getState().messages.length}`);
+});
+
+// --- M1b-2 Task 9: `/`, n, N -- search the open chat's cached messages ------
+//
+// Unlike the chat picker, SearchOverlay has no results list of its own to
+// render: Enter jumps straight to the first match and n/N (once the overlay
+// has closed) step through the rest, exactly the way vim's own `/` behaves
+// without 'incsearch'. mount()'s own database is seeded with exactly this
+// fixture (both as state.messages and as real cache rows), since
+// MessageSearchService reads the cache, not state.messages directly.
+const searchFixtureMessages: IMessageRow[] = [
+  { peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'morning stand-up at 9', out: 0, entities: [], replyToMessageId: null },
+  { peerId: 'u1', id: 2, fromId: 'u1', date: 200, text: 'lunch plans?', out: 0, entities: [], replyToMessageId: null },
+  { peerId: 'u1', id: 3, fromId: 'u1', date: 300, text: 'another stand-up tomorrow', out: 0, entities: [], replyToMessageId: null },
+  { peerId: 'u1', id: 4, fromId: 'u1', date: 400, text: 'see you then', out: 0, entities: [], replyToMessageId: null },
+];
+
+test('/ opens the search overlay', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  expect(store.getState().overlay).toBe('search');
+  expect(renderer.captureCharFrame()).toContain('Search: ');
+});
+
+test('typing narrows the query, shown live on the overlay', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('stand'); });
+  await renderer.flush();
+  expect(store.getState().searchQuery).toBe('stand');
+  expect(renderer.captureCharFrame()).toContain('Search: stand');
+});
+
+test('backspace in the search overlay removes the last typed character', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('standx'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressBackspace(); });
+  await renderer.flush();
+  expect(store.getState().searchQuery).toBe('stand');
+});
+
+// "stand-up" appears in messages 1 and 3 (state.messages indices 0 and 2,
+// oldest-first) -- the first is index 0, the topmost/earliest one currently
+// loaded, not whichever the DB happens to return first.
+test('Enter jumps the message cursor to the first match and closes the overlay', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('stand'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+  expect(store.getState().overlay).toBeNull();
+  expect(store.getState().messageCursor).toBe(0);
+});
+
+// MessageView only highlights the cursor row while focused
+// (message-view.tsx) -- `/` is context '*', reachable from the chat list the
+// same way `\` and <C-p> are, so without this a jump triggered from there
+// would move messageCursor with nothing on screen to show it moved.
+test('Enter focuses the messages pane, so a jump triggered from the chat list is visible', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => { renderer.mockInput.pressKey('n'); renderer.mockInput.pressKey('f'); });
+  await renderer.flush();
+  expect(store.getState().engine.context).toBe(VimContexts.CHAT_LIST);
+
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('stand'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+
+  expect(store.getState().engine.context).toBe(VimContexts.MESSAGES);
+  expect(store.getState().messageCursor).toBe(0);
+});
+
+// Mirrors the chat picker's own precedent (Enter with nothing selected is a
+// no-op, overlay stays open) -- there is nothing to jump to yet, which reads
+// as "keep refining the query", not as "give up and close".
+test('Enter with no matches does nothing -- the overlay stays open and the cursor does not move', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('nonexistent'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+  expect(store.getState().overlay).toBe('search');
+  expect(store.getState().messageCursor).toBe(0);
+});
+
+// The load-bearing guard, the same one which-key's and the chat picker's own
+// "j does not move the message cursor" tests already cover for their overlays.
+test('while the search overlay is open, j does not move the message cursor', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  expect(store.getState().messageCursor).toBe(0);
+
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('j'); });
+  await renderer.flush();
+
+  expect(store.getState().messageCursor).toBe(0);
+});
+
+// The other half of the same guard: 'i' is ordinarily a mode switch
+// (VimModes.INSERT), so this also proves typed letters become query text
+// while the overlay is open rather than falling through to the engine --
+// mirrors the identical chat-picker test above.
+test('while the search overlay is open, i does not enter insert mode -- it types into the query', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await renderer.flush();
+
+  expect(store.getState().engine.mode).toBe('normal');
+  expect(store.getState().searchQuery).toBe('i');
+});
+
+test('escape closes the search overlay and restores the cursor to where it was', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => { renderer.mockInput.pressKey('j'); renderer.mockInput.pressKey('j'); });
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(2);
+
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('lunch'); });
+  await renderer.flush();
+
+  await pressEscape(renderer);
+  expect(store.getState().overlay).toBeNull();
+  expect(store.getState().messageCursor).toBe(2);
+  expect(store.getState().searchQuery).toBe('');
+});
+
+// The rigorous version of the test just above: nothing the *search overlay's
+// own* key handling does can ever move messageCursor while it is open (every
+// key is swallowed), so a version of app.tsx that simply left messageCursor
+// out of the escape patch entirely -- never reading searchCursorBeforeOpen at
+// all -- would pass that test too, for the wrong reason. This one forces a
+// real difference between "what messageCursor is right now" and "what it was
+// when `/` opened" by writing to the store directly, the way an unrelated
+// event (a live message arriving elsewhere, say) could -- proving escape
+// truly restores the captured snapshot, not merely whatever is current.
+test('escape restores the snapshot taken at open time, not whatever the cursor became afterward', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => { renderer.mockInput.pressKey('j'); });
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(1);
+
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  expect(store.getState().searchCursorBeforeOpen).toBe(1);
+
+  // Simulates something outside the search overlay's own keyboard handling
+  // moving the cursor while it is open -- not reachable through a key press,
+  // since the overlay swallows every one, but a real possibility from, say,
+  // a live update landing mid-search. Wrapped in act() like every state
+  // change here: this still triggers App's own re-render.
+  await act(async () => { store.setState({ patch: { messageCursor: 3 } }); });
+  await renderer.flush();
+
+  await pressEscape(renderer);
+  expect(store.getState().messageCursor).toBe(1);
+});
+
+// The snapshot (searchCursorBeforeOpen) is captured fresh on every open, not
+// carried over from an earlier search session -- proven by actually moving
+// the cursor via a real match first (Enter), then opening a second,
+// uncommitted search and escaping it: the cursor must land back where the
+// FIRST search left it, not at the position from before that search ever ran.
+test('escape after a second search restores to where the cursor was before THAT search opened, not further back', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('lunch'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(1);
+
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('anything'); });
+  await renderer.flush();
+  await pressEscape(renderer);
+
+  expect(store.getState().messageCursor).toBe(1);
+});
+
+// <S-n> shares no prefix with `nf` (keymap.test.ts already pins this at the
+// engine level), so it resolves with no ambiguity and needs no timeout wait,
+// unlike bare `n` below.
+test('N (shift-n) cycles backward through the committed matches, wrapping to the last one', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('stand'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(0);
+
+  await act(async () => { renderer.mockInput.pressKey('n', { shift: true }); });
+  await renderer.flush();
+  // The two "stand-up" matches sit at indices 0 and 2; backward from 0 wraps to 2.
+  expect(store.getState().messageCursor).toBe(2);
+});
+
+// Bare `n` is genuinely ambiguous against `nf` (keymap.test.ts), so it needs
+// App's own timeoutlen to settle before it resolves as SEARCH_CYCLE -- the
+// same wait Task 2's own ambiguous-key tests already rely on.
+test('n alone, once the ambiguity against nf times out, cycles forward through the committed matches', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('stand'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(0);
+
+  await act(async () => { renderer.mockInput.pressKey('n'); });
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(0); // still ambiguous, waiting on the timer
+
+  await act(async () => { await new Promise(resolve => { setTimeout(resolve, AMBIGUOUS_KEY_SETTLE_MILLISECONDS); }); });
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(2);
+});
+
+// The regression this task's own brief called out by name: giving `n` a real
+// binding must not break `nf`, typed at ordinary speed, from resolving
+// exactly as it always did -- both keys land inside one synchronous burst
+// here, well under timeoutMilliseconds, so the ambiguity never gets the
+// chance to settle on its own before the second key completes `nf`.
+test('nf still focuses the chat list when typed quickly, even though n now has its own binding', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => {
+    renderer.mockInput.pressKey('n');
+    renderer.mockInput.pressKey('f');
+  });
+  await renderer.flush();
+  expect(store.getState().engine.context).toBe(VimContexts.CHAT_LIST);
+  // Confirms the ambiguity did not also fire SEARCH_CYCLE on the way --
+  // there was no committed search, so an errant cycle would still have left
+  // messageCursor at 0, but a non-zero count of registered matches would
+  // have caught it; asserting on the pure absence of a search having run is
+  // simpler and just as conclusive.
+  expect(store.getState().searchMatchIds).toEqual([]);
+});
+
+// The owner's own chat list is mostly Vietnamese (task-8-brief.md) -- proven
+// here end to end (cache -> MessageSearchService -> App -> cursor), not only
+// at the database layer (database.test.ts).
+test('/ finds a real Vietnamese message end-to-end', async () => {
+  const vietnameseMessages: IMessageRow[] = [
+    { peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'Chào buổi sáng', out: 0, entities: [], replyToMessageId: null },
+    { peerId: 'u1', id: 2, fromId: 'u1', date: 200, text: 'Hẹn gặp lại nhé', out: 0, entities: [], replyToMessageId: null },
+  ];
+  const { renderer, store } = await mount({ messages: vietnameseMessages });
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('Hẹn'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+  expect(store.getState().overlay).toBeNull();
+  expect(store.getState().messageCursor).toBe(1);
+});
+
+// Mirrors "starting a reply shrinks..." and the chat picker's own chromeHeight
+// regression test: Composer is not rendered at all while the search overlay
+// is open, so if chromeHeight had not grown to match SearchOverlay's own two
+// rows, the status line would be pushed off its row instead of failing loudly.
+test('opening the search overlay shrinks the message pane so the status line stays on its own row, uncorrupted', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  const rows = renderer.captureCharFrame().split('\n');
+  expect(rows[TERMINAL_HEIGHT - 1]).toContain('NORMAL');
+  expect(rows[TERMINAL_HEIGHT - 1]).toContain(`1/${store.getState().messages.length}`);
 });

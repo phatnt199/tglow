@@ -3,7 +3,7 @@ import { test, expect } from 'bun:test';
 import { Container, BindingScopes } from '@venizia/ignis-inversion';
 
 import { BindingKeys } from '../../common/index.ts';
-import { ActionTypes, INITIAL_ENGINE_STATE, VimContexts, VimModes } from '../../keys/common/index.ts';
+import { ActionTypes, INITIAL_ENGINE_STATE, Operators, VimContexts, VimModes } from '../../keys/common/index.ts';
 import type { IEngineState, IKey, TVimContext, TVimMode } from '../../keys/common/index.ts';
 import { KeyNormalizerService } from '../../keys/key-normalizer.ts';
 import { KeymapService } from '../../keys/keymap.ts';
@@ -165,19 +165,203 @@ test('bare K is not bound -- only <S-k>, so it stays reachable', () => {
 test('dd asks to delete the message under the cursor', () => {
   const { keymapService, engine } = build();
   const keymap = keymapService.getBindings();
+  // M1b-2 Task 3: `d` is now a live operator trigger (vim-engine.ts, engine-
+  // intrinsic, no keymap entry), so the first `d` is genuinely ambiguous
+  // against this real `dd` binding -- not merely `pending`, the way an
+  // ordinary unclaimed prefix like `g` still is. See the two tests below for
+  // both halves of that ambiguity settling.
   const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('d'), keymap });
-  expect(pending.status).toBe('pending');
-  expect(engine.resolve({ state: pending.state, key: buildKey('d'), keymap }).actions)
-    .toEqual([{ type: ActionTypes.DELETE_REQUEST }]);
+  expect(pending.status).toBe('ambiguous');
+  // M1b-2 Task 4: dd's own action is OPERATOR_APPLY now, count-aware like
+  // yy/cc and any d+motion delete, rather than DELETE_REQUEST directly --
+  // the reducer's OPERATOR_APPLY case still asks for confirmation before
+  // deleting anything (action-reducer.ts, action-reducer.test.ts).
+  expect(engine.resolve({ state: pending.state, key: buildKey('d'), keymap }).actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0 },
+  ]);
 });
 
-// Task 8's own limit, not a regression: the engine resolves an exact match
-// before it checks for a prefix (pinned generically in vim-engine.test.ts),
-// so a bare `d` binding would make `dd` permanently unreachable. Operator-
-// pending with a timeout, which would let both coexist, is M1b-2 work.
+// M1b-2 Task 4: a count reaches dd exactly as it reaches any other counted
+// binding -- state.count flows into applyStateActions's binding.action(count)
+// call the same way it always has; dd's own action just now does something
+// with it instead of ignoring the parameter.
+test('3dd asks to delete three messages, in one OPERATOR_APPLY', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+  let state = INITIAL_ENGINE_STATE;
+  state = engine.resolve({ state, key: buildKey('3'), keymap }).state;
+  const pending = engine.resolve({ state, key: buildKey('d'), keymap });
+  expect(pending.status).toBe('ambiguous');
+  expect(engine.resolve({ state: pending.state, key: buildKey('d'), keymap }).actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 2 },
+  ]);
+});
+
+// The Minor from M1b-1's final review: dd used to be `context: '*'`, so it
+// deleted a message in the messages pane while the cursor was actually
+// focused on the chat list. Fixed by scoping the dd binding itself to
+// VimContexts.MESSAGES and, since d/y/c commit with no keymap entry of
+// their own to filter by context, gating operator entry the same way in
+// vim-engine.ts's operatorForToken (vim-engine.test.ts covers that half).
+test('dd does nothing while focused on the chat list', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+  const chatList: IEngineState = { ...INITIAL_ENGINE_STATE, context: VimContexts.CHAT_LIST };
+  const first = engine.resolve({ state: chatList, key: buildKey('d'), keymap });
+  expect(first.status).toBe('unmapped');
+  const second = engine.resolve({ state: first.state, key: buildKey('d'), keymap });
+  expect(second.status).toBe('unmapped');
+  expect(second.actions).toEqual([]);
+});
+
+// yy/cc get no keymap entry of their own -- reusing vim-engine.ts's
+// operator-pending state instead (see its own doubled-form branch in
+// resolveUnderOperator), the same way bare d/y/c never have. No competing
+// binding means no ambiguity either: unlike bare `d` against the real `dd`,
+// a bare `y` or `c` commits to operator-pending on the very first press.
+test('yy against the real keymap yanks the message under the cursor', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('y'), keymap });
+  expect(pending.status).toBe('pending');
+  expect(pending.state.operator).toBe(Operators.YANK);
+  expect(engine.resolve({ state: pending.state, key: buildKey('y'), keymap }).actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0 },
+  ]);
+});
+
+test('cc against the real keymap targets the message under the cursor for change', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('c'), keymap });
+  expect(pending.state.operator).toBe(Operators.CHANGE);
+  expect(engine.resolve({ state: pending.state, key: buildKey('c'), keymap }).actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.CHANGE, unit: 'message', from: 0, to: 0 },
+  ]);
+});
+
+test('bare y, bare c, yy and cc are none of them bound -- doubling is engine-intrinsic, not a keymap entry', () => {
+  const keys = build().keymapService.getBindings().map(binding => binding.keys);
+  expect(keys).not.toContain('y');
+  expect(keys).not.toContain('c');
+  expect(keys).not.toContain('yy');
+  expect(keys).not.toContain('cc');
+});
+
+// M1b-2 Task 5: registers. `"` is engine-intrinsic exactly like the bare
+// operator triggers above -- no keymap entry of its own.
+test('bare " is not bound -- register-pending is engine-intrinsic, not a keymap entry', () => {
+  const keys = build().keymapService.getBindings().map(binding => binding.keys);
+  expect(keys).not.toContain('"');
+});
+
+test('"ayy against the real keymap names register a, then yanks the message under the cursor', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+  let state = INITIAL_ENGINE_STATE;
+  state = engine.resolve({ state, key: buildKey('"'), keymap }).state;
+  const named = engine.resolve({ state, key: buildKey('a'), keymap });
+  expect(named.status).toBe('resolved');
+  expect(named.state.register).toBe('a');
+  state = named.state;
+  state = engine.resolve({ state, key: buildKey('y'), keymap }).state;
+  const applied = engine.resolve({ state, key: buildKey('y'), keymap });
+  expect(applied.actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0 },
+  ]);
+});
+
+// Decision 3 (task-5-brief.md), against the real keymap this time: the same
+// M1b-1 rule dd's own context fix and operatorForToken's gate already apply.
+test('" does nothing while focused on the chat list', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+  const chatList: IEngineState = { ...INITIAL_ENGINE_STATE, context: VimContexts.CHAT_LIST };
+  const result = engine.resolve({ state: chatList, key: buildKey('"'), keymap });
+  expect(result.status).toBe('unmapped');
+  expect(result.state.register).toBeNull();
+});
+
+// `d` needs no binding of its own: vim-engine.ts treats it (along with `y`
+// and `c`) as an operator trigger intrinsically, the same way it already
+// treats digits as counts without a keymap entry for each one (see
+// OPERATOR_TRIGGERS in vim-engine.ts). This just pins that keymap.ts really
+// has no literal `d` entry to collide with `dd` -- not that one would be
+// unreachable if it existed; Task 1 already removed that limit
+// (vim-engine.test.ts's own ambiguous-status tests).
 test('bare d is not bound -- only dd, so it stays reachable', () => {
   const { keymapService } = build();
   expect(keymapService.getBindings().some(binding => binding.keys === 'd')).toBe(false);
+});
+
+// The other half of the ambiguity above: a real motion, not a second `d`,
+// settles it immediately in the same key press -- no timeout needed, since
+// resolve() already knows `dd` cannot complete once the second key isn't
+// `d`. This is the first genuinely ambiguous sequence the real keymap has
+// ever produced (Task 1's report verified zero among the original 27
+// bindings), so it is also what makes App's timeoutlen (Task 2) live
+// against production key presses for the first time -- previously only
+// app.test.tsx's own test-only binding could construct one.
+test('d then a real motion resolves immediately as an operator application, not dd', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('d'), keymap });
+  expect(pending.status).toBe('ambiguous');
+  expect(pending.state.operator).toBeNull();
+
+  const applied = engine.resolve({ state: pending.state, key: buildKey('j'), keymap });
+  expect(applied.status).toBe('resolved');
+  expect(applied.actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 1 },
+  ]);
+});
+
+// M1b-2 Task 7: `.` is engine-intrinsic exactly like the bare operator
+// triggers and the register prefix above -- no keymap entry of its own.
+test('bare . is not bound -- repeat is engine-intrinsic, not a keymap entry', () => {
+  const keys = build().keymapService.getBindings().map(binding => binding.keys);
+  expect(keys).not.toContain('.');
+});
+
+// Against the real keymap this time (real dd, with its own d/dd ambiguity
+// dance), the same way "yy against the real keymap" and "\"ayy against the
+// real keymap" already prove their own engine-intrinsic features work
+// outside this file's synthetic fixture.
+test('. against the real keymap repeats dd', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('d'), keymap });
+  expect(pending.status).toBe('ambiguous');
+  const applied = engine.resolve({ state: pending.state, key: buildKey('d'), keymap });
+  expect(applied.actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0 },
+  ]);
+
+  const repeated = engine.resolve({ state: applied.state, key: buildKey('.'), keymap });
+  expect(repeated.status).toBe('resolved');
+  expect(repeated.actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0 },
+  ]);
+});
+
+// "d alone waits": nothing completes the ambiguity within the same
+// synchronous key press, so it is still there for App's timeoutlen to
+// settle via flushPending -- which commits the operator (not DELETE_REQUEST,
+// dd's own action) and keeps waiting for a motion, exactly as real vim's
+// operator-pending has no timeout of its own once the ambiguity itself is
+// resolved.
+test('d alone against the real keymap commits the operator once flushPending fires, not dd', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('d'), keymap });
+  const flushed = engine.flushPending({ state: pending.state, keymap });
+  expect(flushed.status).toBe('pending');
+  expect(flushed.actions).toEqual([]);
+  expect(flushed.state.operator).toBe(Operators.DELETE);
+  expect(flushed.state.pending).toEqual([]);
 });
 
 test('describe returns only bindings for the given mode and context', () => {
@@ -253,6 +437,76 @@ test('\\ toggles the which-key overlay', () => {
   expect(result.actions).toEqual([{ type: ActionTypes.OVERLAY_TOGGLE, overlay: 'whichkey' }]);
 });
 
+// M1b-2 Task 8: <C-p>, fuzzy jump to any chat. Only the opening half lives in
+// the keymap -- once the chat picker overlay is open, app.tsx intercepts
+// every key (including a second <C-p>) directly, ahead of engine resolution,
+// the same way it already does for the which-key overlay's own escape.
+test('<C-p> toggles the chat picker overlay', () => {
+  const { keymapService, engine } = build();
+  const result = engine.resolve({
+    state: INITIAL_ENGINE_STATE,
+    key: buildKey('p', { ctrl: true }),
+    keymap: keymapService.getBindings(),
+  });
+  expect(result.status).toBe('resolved');
+  expect(result.actions).toEqual([{ type: ActionTypes.OVERLAY_TOGGLE, overlay: 'chatpicker' }]);
+});
+
+// M1b-2 Task 9: `/` search overlay -- opens exactly like `\` and `<C-p>`
+// above; app.tsx intercepts every key once it is open, the same pattern.
+test('/ toggles the search overlay', () => {
+  const { keymapService, engine } = build();
+  const result = engine.resolve({
+    state: INITIAL_ENGINE_STATE,
+    key: buildKey('/'),
+    keymap: keymapService.getBindings(),
+  });
+  expect(result.status).toBe('resolved');
+  expect(result.actions).toEqual([{ type: ActionTypes.OVERLAY_TOGGLE, overlay: 'search' }]);
+});
+
+// `n` gains a real binding of its own (cycle forward through search matches),
+// which makes it genuinely ambiguous against the real `nf` binding below --
+// the same shape `d` vs `dd` already established (Task 3). This is the
+// collision the brief asked to be checked for; see app.test.tsx for the
+// end-to-end proof that `nf`, typed quickly, still resolves exactly as it did
+// before this task, via App's own timeoutlen (Tasks 1-2).
+test('n is ambiguous against nf', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('n'), keymap });
+  expect(pending.status).toBe('ambiguous');
+  expect(engine.resolve({ state: pending.state, key: buildKey('f'), keymap }).actions).toEqual([
+    { type: ActionTypes.FOCUS_SET, context: VimContexts.CHAT_LIST },
+  ]);
+});
+
+// The other half: nothing completes `nf` within the same key press, so `n`
+// alone is still there for App's timeoutlen to settle via flushPending --
+// which resolves n's own binding (cycle forward), not nf.
+test('n alone, once flushPending settles it, cycles forward through search matches', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('n'), keymap });
+  const flushed = engine.flushPending({ state: pending.state, keymap });
+  expect(flushed.status).toBe('resolved');
+  expect(flushed.actions).toEqual([{ type: ActionTypes.SEARCH_CYCLE, direction: 'next' }]);
+});
+
+// <S-n> shares no prefix with `nf` (a real Shift-N press canonicalizes to
+// "<S-n>", never bare "N" -- ignis-style.md), so it resolves immediately,
+// with no ambiguity to settle, unlike bare n above.
+test('<S-n> cycles backward through search matches, with no ambiguity', () => {
+  const { keymapService, engine } = build();
+  const result = engine.resolve({
+    state: INITIAL_ENGINE_STATE,
+    key: buildKey('n', { shift: true }),
+    keymap: keymapService.getBindings(),
+  });
+  expect(result.status).toBe('resolved');
+  expect(result.actions).toEqual([{ type: ActionTypes.SEARCH_CYCLE, direction: 'previous' }]);
+});
+
 // Both reported bugs -- `\` bound to nothing, and no way back from the chat
 // list -- existed because every test above only asserts what IS bound, never
 // what SHOULD be: a key promised by the README, the status-bar hint or the
@@ -289,13 +543,21 @@ test('every binding the project promises the user is actually bound', () => {
     // The leader -- advertised in the status-bar hint and rendered, but
     // bound to nothing until this task.
     { context: '*', mode: VimModes.NORMAL, keys: '\\' },
+    // M1b-2 Task 8: fuzzy jump to any chat.
+    { context: '*', mode: VimModes.NORMAL, keys: '<C-p>' },
+    // M1b-2 Task 9: `/` search, and n/N to cycle its matches.
+    { context: '*', mode: VimModes.NORMAL, keys: '/' },
+    { context: '*', mode: VimModes.NORMAL, keys: 'n' },
+    { context: '*', mode: VimModes.NORMAL, keys: '<S-n>' },
     // M1b-1 message actions -- spec §3.1/§3.2, promised in the README's key
     // table. The same class of bug this whole guard exists for: each of
     // these is one binding away from being silently left out of the table.
     { context: '*', mode: VimModes.NORMAL, keys: 'zs' },
     { context: '*', mode: VimModes.NORMAL, keys: 'r' },
     { context: '*', mode: VimModes.NORMAL, keys: 'e' },
-    { context: '*', mode: VimModes.NORMAL, keys: 'dd' },
+    // M1b-2 Task 4: no longer '*' -- the Minor from M1b-1's review (dd
+    // deleted in the messages pane while the chat list had focus).
+    { context: VimContexts.MESSAGES, mode: VimModes.NORMAL, keys: 'dd' },
     // Task 12 (task-11-report.md gap 4b): K shows a link's URL on the status
     // line -- promised by the design spec's own rendering table and, like the
     // row above, one binding away from being silently left out.
@@ -319,19 +581,62 @@ test('every binding the project promises the user is actually bound', () => {
   }
 });
 
-// y and n cannot join the `promised` list above: they only mean anything
-// while IApplicationState.pendingConfirmation is set, so app.tsx intercepts
-// them directly, ahead of engine.resolve, the same way it already has to for
-// the which-key overlay's escape and the reply/edit escapes (see keymap.ts's
-// own comment on the dd binding). keymapService.getBindings() never contains
-// them, and isBound() would always report them missing -- not because the
-// promise is broken, but because it is kept somewhere this helper cannot
-// see. What this guards instead is the contract app.tsx's interception
-// actually depends on: it compares keyNormalizer.toCanonicalString(key)
-// against the literal strings 'y' and 'n', so a change to normalization that
-// altered how a bare letter stringifies (see the ignis-style note on
-// capital letters, for the shape such a change could take) would silently
-// break the delete confirmation with nothing else here to catch it.
+// The same class of bug the guard above exists for, but for M1b-2's
+// engine-intrinsic keys specifically: none of d/y/c, yy/cc, " or . has a
+// keymap entry for that guard's own isBound to find -- the tests earlier in
+// this file pin that directly ("bare d/y/c/./\" is not bound"). describe()'s
+// separate _intrinsicKeys list (keymap.ts) is the only thing that keeps these
+// seven keys from silently vanishing out of the which-key popup, so this
+// checks describe()'s own output the same way the guard above checks
+// getBindings(). app.test.tsx's own which-key test covers the other half --
+// that the popup actually renders whatever this list returns.
+test('every engine-intrinsic key the project promises the user is still described', () => {
+  const shown = build().keymapService.describe({ mode: VimModes.NORMAL, context: VimContexts.MESSAGES });
+  const describedKeys = shown.map(entry => entry.keys);
+  const isDescribed = (keys: string): boolean => describedKeys.includes(keys);
+
+  const promisedIntrinsic = ['d', 'y', 'c', 'yy', 'cc', '"', '.'];
+  for (const keys of promisedIntrinsic) {
+    expect({ keys, described: isDescribed(keys) }).toEqual({ keys, described: true });
+  }
+
+  // dd keeps its own real binding (keymap.ts) rather than an intrinsic
+  // descriptor -- describe() folding the two lists together must not end up
+  // listing it twice.
+  expect(describedKeys.filter(keys => keys === 'dd')).toHaveLength(1);
+});
+
+// Mirrors "dd does nothing while focused on the chat list" and "\" does
+// nothing while focused on the chat list" above, but for describe() rather
+// than resolve(): _intrinsicKeys carries the same context as vim-engine.ts's
+// own isMessagesNormalMode gate, so the popup must not advertise a key that
+// would not actually do anything from the pane the user is currently in.
+test('engine-intrinsic keys are not described while focused on the chat list', () => {
+  const shown = build().keymapService.describe({ mode: VimModes.NORMAL, context: VimContexts.CHAT_LIST });
+  const describedKeys = shown.map(entry => entry.keys);
+  for (const keys of ['d', 'y', 'c', 'yy', 'cc', '"', '.']) {
+    expect(describedKeys.includes(keys)).toBe(false);
+  }
+});
+
+// y cannot join the `promised` list above: outside a pending confirmation it
+// is already engine-intrinsic (vim-engine.ts's OPERATOR_TRIGGERS, the yank
+// trigger, no keymap entry -- the same reason bare `d` has none either), and
+// while IApplicationState.pendingConfirmation is set, both `y` and `n` mean
+// "answer the question" instead, intercepted directly in app.tsx ahead of
+// engine.resolve (the same way it already has to for the which-key overlay's
+// escape and the reply/edit escapes -- see keymap.ts's own comment on the dd
+// binding). `n` itself DID join the list above as of M1b-2 Task 9 (it is now
+// a real binding, cycling search matches) -- the two meanings never collide,
+// since the pendingConfirmation gate in app.tsx returns before engine.resolve
+// is ever reached, so a real `n` keymap entry is simply unreachable for as
+// long as a confirmation is pending. What this test guards is the contract
+// app.tsx's own interception depends on regardless: it compares
+// keyNormalizer.toCanonicalString(key) against the literal strings 'y' and
+// 'n', so a change to normalization that altered how a bare letter
+// stringifies (see the ignis-style note on capital letters, for the shape
+// such a change could take) would silently break the delete confirmation with
+// nothing else here to catch it.
 test('y and n normalize to the literal tokens the delete confirmation compares against', () => {
   const { keyNormalizer } = build();
   expect(keyNormalizer.toCanonicalString({ key: buildKey('y') })).toBe('y');

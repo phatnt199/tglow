@@ -17,6 +17,7 @@ import {
   DatabaseService,
   DialogService,
   DifferenceService,
+  MessageSearchService,
   MessageService,
   SessionStoreService,
   TelegramAuthenticationGateway,
@@ -105,6 +106,7 @@ const main = async (): Promise<void> => {
   const store = container.get<ApplicationStoreService>({ key: BindingKeys.APPLICATION_STORE });
   const dialogService = container.get<DialogService>({ key: BindingKeys.DIALOG_SERVICE });
   const messageService = container.get<MessageService>({ key: BindingKeys.MESSAGE_SERVICE });
+  const messageSearchService = container.get<MessageSearchService>({ key: BindingKeys.MESSAGE_SEARCH_SERVICE });
   const updateService = container.get<UpdateService>({ key: BindingKeys.UPDATE_SERVICE });
   const differenceService = container.get<DifferenceService>({ key: BindingKeys.DIFFERENCE_SERVICE });
 
@@ -162,6 +164,8 @@ const main = async (): Promise<void> => {
         engine: container.get<VimEngineService>({ key: BindingKeys.VIM_ENGINE }),
         keymapService: container.get<KeymapService>({ key: BindingKeys.KEYMAP }),
         keyNormalizer: container.get<KeyNormalizerService>({ key: BindingKeys.KEY_NORMALIZER }),
+        messageSearchService,
+        timeoutMilliseconds: configuration.timeoutMilliseconds,
         tokens: buildTokens({ paletteName: configuration.palette }),
         // Resolved from the store on every call, not from the dialog that
         // happened to be open at startup: closing over firstDialog labelled

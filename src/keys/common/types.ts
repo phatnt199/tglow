@@ -1,4 +1,4 @@
-import type { ActionTypes, TVimContext, TVimMode } from './constants.ts';
+import type { ActionTypes, TOperator, TVimContext, TVimMode } from './constants.ts';
 
 /** A key press, normalised away from any specific terminal library. */
 export interface IKey {
@@ -19,12 +19,14 @@ export interface IRawKeyEvent {
 
 export type TCursorUnit = 'message' | 'chat';
 export type TCursorEdge = 'first' | 'last';
-/** The only overlay that exists yet. A bare literal, like TCursorUnit/TCursorEdge above, not a class: nothing else keys off it. */
-export type TOverlay = 'whichkey';
+/** The three overlays that exist. A union of bare literals, like TCursorUnit/TCursorEdge above, not a class: nothing else keys off it. */
+export type TOverlay = 'whichkey' | 'chatpicker' | 'search';
 
 export type TAction =
   | { type: typeof ActionTypes.CURSOR_MOVE; unit: TCursorUnit; delta: number }
   | { type: typeof ActionTypes.CURSOR_EDGE; unit: TCursorUnit; edge: TCursorEdge }
+  | { type: typeof ActionTypes.OPERATOR_APPLY; operator: TOperator; unit: TCursorUnit; from: number; to: number }
+  | { type: typeof ActionTypes.REGISTER_SET; name: string }
   | { type: typeof ActionTypes.MODE_SET; mode: TVimMode }
   | { type: typeof ActionTypes.FOCUS_SET; context: TVimContext }
   | { type: typeof ActionTypes.CHAT_OPEN }
@@ -42,7 +44,8 @@ export type TAction =
   | { type: typeof ActionTypes.CONFIRM }
   | { type: typeof ActionTypes.CANCEL_CONFIRMATION }
   | { type: typeof ActionTypes.LINK_SHOW }
-  | { type: typeof ActionTypes.WARNING_DISMISS };
+  | { type: typeof ActionTypes.WARNING_DISMISS }
+  | { type: typeof ActionTypes.SEARCH_CYCLE; direction: 'next' | 'previous' };
 
 export interface IEngineState {
   mode: TVimMode;
@@ -57,6 +60,39 @@ export interface IEngineState {
   pending: string[];
   /** The 3 in 3j. Null when no count has been typed. */
   count: number | null;
+  /** The operator waiting for a motion -- `d`, `y`, `c` -- or null when none is pending. */
+  operator: TOperator | null;
+  /**
+   * The count that was pending when the operator committed (the 2 in
+   * 2d3j), kept apart from `count` so a motion's own count (the 3)
+   * multiplies against it -- vim's own rule -- rather than the two
+   * colliding in one field. `count` itself resets to null the moment the
+   * operator commits, so a motion's count still accumulates the ordinary
+   * way. Null whenever operator is, and whenever no count preceded it.
+   */
+  operatorCount: number | null;
+  /**
+   * The named register a `"` press is naming, or has named, for the next
+   * operator to consume -- `a` in `"ayy`, or null for the default register
+   * (an unnamed yy/dd). Consumed (reset to null) the moment an operator
+   * actually applies, exactly like operator/operatorCount reset once their
+   * own operation commits: a name is part of the sequence being assembled,
+   * not a value that should outlive it. IApplicationState.registers (M1b-2
+   * Task 5) is where a consumed name's text actually lands; this field
+   * only ever holds the name itself.
+   */
+  register: string | null;
+  /**
+   * The actions the most recent operator application produced -- what `.`
+   * re-emits (M1b-2 Task 7). Set only when an OPERATOR_APPLY actually
+   * resolves (vim-engine.ts's recordChange), never for a motion alone, which
+   * is what keeps `.` from repeating mere cursor movement. Survives a
+   * cancelled delete confirmation unchanged: it is written the instant the
+   * engine resolves OPERATOR_APPLY, before App ever asks y/n, the same
+   * timing Task 5's register write already relies on ("a cancelled dd still
+   * copies the message").
+   */
+  lastChange: TAction[] | null;
 }
 
 export interface IKeyBinding {
@@ -70,7 +106,7 @@ export interface IKeyBinding {
   description: string;
 }
 
-export type TResolveStatus = 'pending' | 'resolved' | 'unmapped';
+export type TResolveStatus = 'pending' | 'resolved' | 'unmapped' | 'ambiguous';
 
 export interface IResolveResult {
   state: IEngineState;

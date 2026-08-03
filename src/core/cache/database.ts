@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { getError } from '@venizia/ignis-inversion';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, like, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/bun-sqlite';
 
 import type { ITelegramEntity } from '../common/index.ts';
@@ -59,6 +59,60 @@ export interface IMessageRow {
 }
 
 export type TDrizzleDatabase = ReturnType<typeof drizzle>;
+
+/**
+ * SQLite's LIKE treats `%` (any run of characters, including none) and `_`
+ * (any single character) as wildcards -- a user searching cached messages for
+ * a literal "50%" or "a_b" must get exactly that back as literal text, not
+ * "50" followed by anything or "a" then any one character then "b"
+ * (searchMessages below, M1b-2 Task 9). Escaping the escape character itself
+ * first is what keeps a literal backslash already in the query from
+ * corrupting the two substitutions that follow it -- escaping % or _ before
+ * the backslash would re-escape the very backslashes those just introduced.
+ */
+const LIKE_ESCAPE_CHARACTER = '\\';
+
+const escapeLikePattern = (opts: { value: string }): string => {
+  return opts.value
+    .replaceAll(LIKE_ESCAPE_CHARACTER, LIKE_ESCAPE_CHARACTER + LIKE_ESCAPE_CHARACTER)
+    .replaceAll('%', LIKE_ESCAPE_CHARACTER + '%')
+    .replaceAll('_', LIKE_ESCAPE_CHARACTER + '_');
+};
+
+/** The column shape listMessages and searchMessages both select -- one place, so the two can never quietly diverge on what an IMessageRow actually reads off the table. */
+const MESSAGE_COLUMNS = {
+  peerId: messages.peerId,
+  id: messages.id,
+  fromId: messages.fromId,
+  date: messages.date,
+  text: messages.text,
+  out: messages.out,
+  entities: messages.entities,
+  replyToMessageId: messages.replyToMsgId,
+};
+
+/**
+ * The raw row shape a MESSAGE_COLUMNS select produces, before toMessageRows
+ * below applies the same two transforms listMessages always has. Derived
+ * from IMessageRow rather than restating every field: only `text` and
+ * `entities` actually differ (still nullable strings, pre-parse).
+ */
+type TMessageSelection = Omit<IMessageRow, 'text' | 'entities'> & { text: string | null; entities: string | null };
+
+const toMessageRows = (opts: { rows: TMessageSelection[] }): IMessageRow[] => {
+  return opts.rows.map(row => ({
+    ...row,
+    // `text` is nullable at the schema level to leave room for media-only
+    // messages in a later milestone; M1a always writes a string, so the row
+    // shape here still promises non-null text to its caller.
+    text: row.text as string,
+    // Written as JSON since M1a; nothing wrote it before this task, so an
+    // existing row's column reads back SQL NULL rather than '[]' -- callers
+    // downstream iterate this without a null check, so it must never surface
+    // as null here.
+    entities: row.entities ? (JSON.parse(row.entities) as ITelegramEntity[]) : [],
+  }));
+};
 
 export class DatabaseService {
   private _database: TDrizzleDatabase | null = null;
@@ -196,34 +250,46 @@ export class DatabaseService {
 
   listMessages = (opts: { peerId: string; limit: number }): IMessageRow[] => {
     const rows = this.require('listMessages')
-      .select({
-        peerId: messages.peerId,
-        id: messages.id,
-        fromId: messages.fromId,
-        date: messages.date,
-        text: messages.text,
-        out: messages.out,
-        entities: messages.entities,
-        replyToMessageId: messages.replyToMsgId,
-      })
+      .select(MESSAGE_COLUMNS)
       .from(messages)
       .where(and(eq(messages.peerId, opts.peerId), eq(messages.deleted, 0)))
       .orderBy(desc(messages.date), desc(messages.id))
       .limit(opts.limit)
       .all();
 
-    return rows.map(row => ({
-      ...row,
-      // `text` is nullable at the schema level to leave room for media-only
-      // messages in a later milestone; M1a always writes a string, so the row
-      // shape here still promises non-null text to its caller.
-      text: row.text as string,
-      // Written as JSON since M1a; nothing wrote it before this task, so an
-      // existing row's column reads back SQL NULL rather than '[]' -- callers
-      // downstream iterate this without a null check, so it must never surface
-      // as null here.
-      entities: row.entities ? (JSON.parse(row.entities) as ITelegramEntity[]) : [],
-    }));
+    return toMessageRows({ rows });
+  };
+
+  /**
+   * `/`, M1b-2 Task 9: a cached-only substring search over one peer's
+   * messages, case-insensitive (SQLite's own default LIKE behaviour for
+   * ASCII) and excluding deleted rows, same as listMessages. Server-side and
+   * FTS5 search are M3 -- this stays a plain LIKE over the existing `messages`
+   * table, no new index or virtual table.
+   *
+   * The query never reaches the SQL text itself: `like()` binds `pattern` as
+   * an ordinary parameter (verified via `.toSQL()` -- the compiled statement
+   * carries a `?` placeholder, not the query's own characters), the same way
+   * every other method here passes a value through eq()/.values() rather than
+   * string-building. The `ESCAPE '\'` suffix is static SQL text appended via
+   * `sql`, not user input -- only the already-parameterized `pattern` sits
+   * inside it.
+   */
+  searchMessages = (opts: { peerId: string; query: string; limit: number }): IMessageRow[] => {
+    const pattern = `%${escapeLikePattern({ value: opts.query })}%`;
+    const rows = this.require('searchMessages')
+      .select(MESSAGE_COLUMNS)
+      .from(messages)
+      .where(and(
+        eq(messages.peerId, opts.peerId),
+        eq(messages.deleted, 0),
+        sql`${like(messages.text, pattern)} ESCAPE '\\'`,
+      ))
+      .orderBy(desc(messages.date), desc(messages.id))
+      .limit(opts.limit)
+      .all();
+
+    return toMessageRows({ rows });
   };
 
   /**

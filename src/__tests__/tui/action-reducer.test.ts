@@ -2,7 +2,7 @@ import { test, expect } from 'bun:test';
 
 // Concrete module, not the core/ barrel -- see src/tui/action-reducer.ts for why.
 import { ApplicationStoreService, type IApplicationState } from '../../core/application-store.ts';
-import { ActionTypes, VimContexts, VimModes } from '../../keys/common/index.ts';
+import { ActionTypes, INITIAL_ENGINE_STATE, Operators, VimContexts, VimModes } from '../../keys/common/index.ts';
 import { applyAction } from '../../tui/action-reducer.ts';
 
 const buildState = (patch: Partial<IApplicationState> = {}): IApplicationState => {
@@ -54,6 +54,184 @@ test('cursor.edge jumps to first and last', () => {
     state: buildState({ messageCursor: 0 }),
     action: { type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'last' },
   }).messageCursor).toBe(3);
+});
+
+// M1b-2 Task 4: OPERATOR_APPLY now does something per operator. Delete
+// routes through delete.request's own logic -- confirmation, not an
+// outright delete -- so `dd`/`3dd`/`d3j` all still gate on the same y/n
+// prompt M1b-1 built, whatever range named them. Routed through applyAction
+// recursively rather than a duplicated patch, so a later change to the
+// prompt or the refusal can never drift between the two paths.
+test('operator.apply delete asks for confirmation, the same way delete.request does, whatever the range', () => {
+  const state = buildState({ messageCursor: 2 });
+  const patch = applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 2 },
+  });
+  expect(patch.pendingConfirmation).toEqual({ kind: 'delete', messageId: state.messages[2]!.id });
+  expect(patch.statusMessage).toBeTruthy();
+});
+
+// The range's own extent is not consulted for delete: only the message at
+// the cursor is ever named in the confirmation. Acting on the full range
+// would mean confirming and deleting more than one message from a single
+// y/n answer -- a bigger, deliberately deferred feature (a pendingConfirmation
+// shape that names several messages, and a loop in App's CONFIRM handling),
+// not a side effect doubling itself asks for. This is what keeps `3dd`
+// honest: it confirms, but confirming deletes one message, not three.
+test('operator.apply delete over a multi-message range still only confirms the one at the cursor', () => {
+  const state = buildState({ messageCursor: 0 });
+  const patch = applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 2 },
+  });
+  expect(patch.pendingConfirmation).toEqual({ kind: 'delete', messageId: state.messages[0]!.id });
+});
+
+// M1b-2 Task 5, decision 1: unlike Task 4's deliberate no-op, delete now
+// also writes the targeted message into a register -- real vim's own
+// unnamed register captures a delete exactly as it captures a yank, and
+// leaving tglow's dd the one operator that never populated any register
+// would silently break the single most common reason a vim user reaches for
+// dd at all: dd then (Task 6+) p to move a message.
+test('operator.apply delete also writes the targeted message into the default register', () => {
+  const state = buildState({ messageCursor: 2 });
+  const patch = applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 2 },
+  });
+  expect(patch.registers).toEqual({ '"': state.messages[2]!.text });
+});
+
+test('operator.apply delete writes into the named register when one is pending, not just the default', () => {
+  const state = buildState({ messageCursor: 0, engine: { ...INITIAL_ENGINE_STATE, register: 'a' } });
+  const patch = applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0 },
+  });
+  expect(patch.registers).toEqual({ a: state.messages[0]!.text });
+});
+
+test('operator.apply delete with no messages does not touch the register', () => {
+  const state = buildState({ messages: [], messageCursor: 0 });
+  const patch = applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0 },
+  });
+  expect(patch.registers).toBeUndefined();
+});
+
+// yy with no register named (M1b-2 Task 5): writes UNNAMED_REGISTER, vim's
+// own name for the unnamed register -- exactly what an unprefixed yy always
+// did before named registers existed, just under a different key.
+test('operator.apply yank with no register named copies into the default register', () => {
+  const state = buildState({ messageCursor: 1 });
+  const patch = applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0 },
+  });
+  expect(patch.registers).toEqual({ '"': state.messages[1]!.text });
+  expect(patch.statusMessage).toBeTruthy();
+});
+
+test('operator.apply yank writes into the named register when one is pending', () => {
+  const state = buildState({ messageCursor: 1, engine: { ...INITIAL_ENGINE_STATE, register: 'a' } });
+  const patch = applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0 },
+  });
+  expect(patch.registers).toEqual({ a: state.messages[1]!.text });
+});
+
+// The brief's own test list: "ayy then "byy keeps both -- proven here at the
+// store, not just the engine field (vim-engine.test.ts's own version proves
+// the field; this proves what actually lands in the map).
+test('yanking into a then b keeps both registers, not just the last one', () => {
+  const afterA = applyAction({
+    state: buildState({ messageCursor: 0, engine: { ...INITIAL_ENGINE_STATE, register: 'a' } }),
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0 },
+  });
+  const state = buildState({
+    messageCursor: 1,
+    registers: afterA.registers,
+    engine: { ...INITIAL_ENGINE_STATE, register: 'b' },
+  });
+  const afterB = applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0 },
+  });
+  expect(afterB.registers).toEqual({ a: 'm1', b: 'm2' });
+});
+
+// Unlike delete, yank is not destructive, so there is no confirmation to
+// simplify around -- the full range is honoured, joined the way vim joins a
+// multi-line yank into one register value. Proves count multiplies the
+// doubled form correctly one layer below vim-engine.ts's own range tests:
+// two messages come back, not four and not one.
+test('operator.apply yank over a range joins every targeted message, cursor down through the range', () => {
+  const state = buildState({ messageCursor: 0 });
+  const patch = applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 1 },
+  });
+  expect(patch.registers).toEqual({ '"': `${state.messages[0]!.text}\n${state.messages[1]!.text}` });
+});
+
+test('operator.apply yank with no messages is harmless', () => {
+  const state = buildState({ messages: [], messageCursor: 0 });
+  expect(() => applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0 },
+  })).not.toThrow();
+  expect(applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0 },
+  })).toEqual({});
+});
+
+// M1b-2 Task 5: the status line's only sign a register was even named --
+// naming one moves no cursor and changes no mode, so without this it would
+// look exactly like a dead key, the same class of bug yy's own status
+// message and <S-k>'s "no link" message already exist to avoid.
+test('register.set surfaces the register name rather than looking like a no-op', () => {
+  const patch = applyAction({ state: buildState(), action: { type: ActionTypes.REGISTER_SET, name: 'a' } });
+  expect(patch.statusMessage).toBeTruthy();
+  expect(patch.statusMessage).toContain('a');
+});
+
+// cc: vim's change is delete-then-insert; the message equivalent already
+// exists as edit.start, refusal included, so change routes through it the
+// same way delete routes through delete.request -- not a copy of its logic.
+test('operator.apply change starts editing the message under the cursor, the same way edit.start does', () => {
+  const state = buildState({
+    messageCursor: 0,
+    messages: [{ peerId: 'u1', id: 9, fromId: 'me', date: 900, text: 'own message', out: 1, entities: [], replyToMessageId: null }],
+  });
+  const patch = applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.CHANGE, unit: 'message', from: 0, to: 0 },
+  });
+  expect(patch.editingMessageId).toBe(9);
+  expect(patch.engine?.mode).toBe(VimModes.INSERT);
+});
+
+test('operator.apply change refuses a message that is not your own, the same way edit.start does', () => {
+  const state = buildState({ messageCursor: 0 });
+  const patch = applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.CHANGE, unit: 'message', from: 0, to: 0 },
+  });
+  expect(patch.editingMessageId).toBeUndefined();
+  expect(patch.statusMessage).toBeTruthy();
+});
+
+test('operator.apply rejects an operator from outside the type system', () => {
+  expect(() =>
+    applyAction({
+      state: buildState(),
+      action: { type: ActionTypes.OPERATOR_APPLY, operator: 'nonsense', unit: 'message', from: 0, to: 0 } as never,
+    }),
+  ).toThrow(/\[applyAction\]/);
 });
 
 test('moving with no messages stays at zero', () => {
@@ -318,4 +496,75 @@ test('warning.dismiss leaves the ordinary status message alone', () => {
     action: { type: ActionTypes.WARNING_DISMISS },
   });
   expect(patch.statusMessage).toBeUndefined();
+});
+
+// M1b-2 Task 9: overlay.toggle into 'search' captures the cursor position so
+// the search overlay's own <escape> (app.tsx) can restore it later -- the
+// same "snapshot before, restore on cancel" shape composerTextBeforeEdit
+// already uses for edit.start/edit.cancel.
+test("overlay.toggle into 'search' captures the current message cursor", () => {
+  const state = buildState({ messageCursor: 2, overlay: null });
+  const patch = applyAction({ state, action: { type: ActionTypes.OVERLAY_TOGGLE, overlay: 'search' } });
+  expect(patch.overlay).toBe('search');
+  expect(patch.searchCursorBeforeOpen).toBe(2);
+});
+
+// searchQuery resets alongside chatPickerQuery/chatPickerCursor, whichever
+// overlay opens or closes -- harmless for whichkey/chatpicker, which never
+// read it, the same reasoning those two already carry for each other.
+test('overlay.toggle resets a stale search query regardless of which overlay it opens', () => {
+  const state = buildState({ searchQuery: 'stale query', overlay: null });
+  const patch = applyAction({ state, action: { type: ActionTypes.OVERLAY_TOGGLE, overlay: 'whichkey' } });
+  expect(patch.searchQuery).toBe('');
+});
+
+// M1b-2 Task 9: n/N. searchMatchIds are message ids, not array positions --
+// set once by app.tsx's own Enter-commit, then re-resolved to a *current*
+// index here on every cycle, so a message that moved or vanished since the
+// search was committed is dropped rather than pointing the cursor at the
+// wrong row (or crashing). buildState()'s own fixture is ids 1-4 at indices
+// 0-3, oldest first, exactly like the real oldest-first state.messages.
+test('search.cycle next moves the cursor to the next match after it', () => {
+  const state = buildState({ messageCursor: 0, searchMatchIds: [2, 4] });
+  const patch = applyAction({ state, action: { type: ActionTypes.SEARCH_CYCLE, direction: 'next' } });
+  expect(patch.messageCursor).toBe(1);
+});
+
+test('search.cycle next skips past a match the cursor already sits on, rather than re-selecting it', () => {
+  const state = buildState({ messageCursor: 1, searchMatchIds: [2, 4] });
+  const patch = applyAction({ state, action: { type: ActionTypes.SEARCH_CYCLE, direction: 'next' } });
+  expect(patch.messageCursor).toBe(3);
+});
+
+test('search.cycle next wraps around to the first match once past the last one', () => {
+  const state = buildState({ messageCursor: 3, searchMatchIds: [2, 4] });
+  const patch = applyAction({ state, action: { type: ActionTypes.SEARCH_CYCLE, direction: 'next' } });
+  expect(patch.messageCursor).toBe(1);
+});
+
+test('search.cycle previous moves the cursor to the nearest match before it', () => {
+  const state = buildState({ messageCursor: 3, searchMatchIds: [1, 3] });
+  const patch = applyAction({ state, action: { type: ActionTypes.SEARCH_CYCLE, direction: 'previous' } });
+  expect(patch.messageCursor).toBe(2);
+});
+
+test('search.cycle previous wraps around to the last match once before the first one', () => {
+  const state = buildState({ messageCursor: 0, searchMatchIds: [1, 3] });
+  const patch = applyAction({ state, action: { type: ActionTypes.SEARCH_CYCLE, direction: 'previous' } });
+  expect(patch.messageCursor).toBe(2);
+});
+
+test('search.cycle is a no-op when there is no committed search', () => {
+  const state = buildState({ messageCursor: 1, searchMatchIds: [] });
+  const patch = applyAction({ state, action: { type: ActionTypes.SEARCH_CYCLE, direction: 'next' } });
+  expect(patch).toEqual({});
+});
+
+// A matched id can outlive its own position: a message deleted after the
+// search was committed drops out of state.messages entirely (deleteMessage
+// flags it; listMessages, and every republish that follows, excludes it).
+test('search.cycle skips a matched id no longer present in state.messages', () => {
+  const state = buildState({ messageCursor: 0, searchMatchIds: [99, 3] });
+  const patch = applyAction({ state, action: { type: ActionTypes.SEARCH_CYCLE, direction: 'next' } });
+  expect(patch.messageCursor).toBe(2);
 });

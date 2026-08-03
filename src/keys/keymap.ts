@@ -1,7 +1,23 @@
-import { ActionTypes, VimContexts, VimModes } from './common/index.ts';
+import { ActionTypes, Operators, VimContexts, VimModes } from './common/index.ts';
 import type { IKeyBinding, TVimContext, TVimMode } from './common/index.ts';
 
 const HALF_PAGE_MESSAGES = 10;
+
+/**
+ * An engine-intrinsic key (vim-engine.ts): resolved directly there, the same
+ * way a digit count is, so it has no `action(count)` and no `IKeyBinding` of
+ * its own for `describe()` below to find. Deliberately not shaped like
+ * `IKeyBinding` with a stub action -- a fabricated one is something
+ * `resolve()` could actually match, dispatching a binding that corresponds to
+ * no real key handling, which would be worse than the which-key gap this
+ * closes.
+ */
+interface IIntrinsicKeyDescriptor {
+  context: TVimContext | '*';
+  mode: TVimMode | TVimMode[];
+  keys: string;
+  description: string;
+}
 
 /** The M1a binding table. One table drives dispatch and the which-key popup, so they cannot drift. */
 export class KeymapService {
@@ -69,18 +85,34 @@ export class KeymapService {
       context: '*', mode: VimModes.NORMAL, keys: 'e', description: 'Edit message',
       action: () => [{ type: ActionTypes.EDIT_START }],
     },
-    // dd, not bare d: resolve() checks for an exact match before it checks
-    // for a prefix (see vim-engine.ts's own resolve, and the invariant test
-    // pinning this in vim-engine.test.ts), so a bare `d` binding would make
-    // `dd` permanently unreachable. Operator-pending with a timeout, which
-    // would let both coexist the way real vim does, is M1b-2 work. The
-    // confirmation this starts is intercepted directly in App (app.tsx),
-    // the same way the reply/edit escapes above are -- y and n only mean
-    // anything while IApplicationState.pendingConfirmation is set, which a
-    // static keymap entry has no way to see.
+    // dd, a literal binding -- not `d` followed by a `d` motion, and kept as
+    // one on purpose rather than folded into vim-engine.ts's own
+    // doubled-operator recognition (which yy/cc rely on instead, having no
+    // literal binding of their own): keeping it means a bare `d` stays
+    // genuinely ambiguous against it, exactly the way two competing keymap
+    // entries would be -- resolve() reports `ambiguous`, and App's
+    // timeoutlen settles it if nothing else does (vim-engine.test.ts,
+    // keymap.test.ts). `d` followed by a real motion (`dj`) still resolves
+    // immediately as OPERATOR_APPLY instead of waiting.
+    //
+    // context is messages, not '*' -- a Minor from M1b-1's final review
+    // (this binding deleted a message in the messages pane while the chat
+    // list had focus) that M1b-2's operators make more reachable, not less,
+    // so it is fixed here. The action itself is OPERATOR_APPLY now, count-
+    // aware like yy/cc and any d+motion delete, and routed through the same
+    // reducer switch they share -- not DELETE_REQUEST directly -- so a typed
+    // count (3dd) reaches the reducer instead of being silently ignored. The
+    // reducer's own OPERATOR_APPLY case still asks for confirmation before
+    // deleting anything (action-reducer.ts): the confirmation itself is
+    // intercepted directly in App (app.tsx), the same way the reply/edit
+    // escapes above are -- y and n only mean anything while
+    // IApplicationState.pendingConfirmation is set, which a static keymap
+    // entry has no way to see.
     {
-      context: '*', mode: VimModes.NORMAL, keys: 'dd', description: 'Delete message',
-      action: () => [{ type: ActionTypes.DELETE_REQUEST }],
+      context: VimContexts.MESSAGES, mode: VimModes.NORMAL, keys: 'dd', description: 'Delete message',
+      action: count => [
+        { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: count - 1 },
+      ],
     },
 
     // Panes — nf echoes the author's NvimTreeFocus mapping.
@@ -165,6 +197,56 @@ export class KeymapService {
       context: '*', mode: VimModes.NORMAL, keys: '\\', description: 'Show key bindings',
       action: () => [{ type: ActionTypes.OVERLAY_TOGGLE, overlay: 'whichkey' }],
     },
+    // M1b-2 Task 8: fuzzy jump to any chat. This binding is only ever what
+    // opens the picker -- once state.overlay is 'chatpicker', app.tsx (not
+    // this table) intercepts every key directly, ahead of engine resolution,
+    // the same pattern it already uses for the which-key overlay's own
+    // escape, because <C-p> means something different once the picker owns
+    // input: move the selection up, the job k also does, never close it.
+    // That is also why reusing OVERLAY_TOGGLE's ordinary "closes if already
+    // the same overlay" reducer behaviour is safe here: the only way that
+    // branch could fire is a second <C-p> reaching the engine while
+    // chatpicker is already open, which app.tsx's own swallow guard makes
+    // unreachable.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: '<C-p>', description: 'Jump to a chat',
+      action: () => [{ type: ActionTypes.OVERLAY_TOGGLE, overlay: 'chatpicker' }],
+    },
+    // M1b-2 Task 9: `/` searches the open chat's cached messages. Opens the
+    // overlay exactly like `\` and <C-p> above; app.tsx intercepts every key,
+    // including a second `/`, once it is open, the same pattern.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: '/', description: 'Search messages',
+      action: () => [{ type: ActionTypes.OVERLAY_TOGGLE, overlay: 'search' }],
+    },
+    // n/N cycle the matches a search last committed (app.tsx, on the Enter
+    // that closes the overlay) -- vim's own next/previous-match keys, so they
+    // carry direction the way CURSOR_MOVE's own delta does rather than being
+    // two separate action types. Context '*', like gg/<S-g>/<C-d>/<C-u> above:
+    // these move the *message* cursor regardless of which pane currently has
+    // focus, the same reasoning app.tsx's own CURSOR_MOVE/CURSOR_EDGE comment
+    // gives for those.
+    //
+    // Giving `n` a real binding makes it genuinely ambiguous against `nf`
+    // below -- the same shape bare `d` already has against `dd` (Task 3) --
+    // since `nf` is also context '*' and a bare `n` is now both an exact match
+    // in its own right and a prefix of a longer one. App's existing timeoutlen
+    // (Tasks 1-2) is what settles it; a fast `nf` still resolves immediately,
+    // unchanged (keymap.test.ts, app.test.tsx). This was a deliberate choice,
+    // not an oversight: `n`/`N` are vim's own search-cycle keys, so giving
+    // them the ordinary keymap treatment (rather than an app.tsx-level
+    // intercept with no keymap entry, the way y/n mean "confirm/cancel" only
+    // while a delete is pending) is what keeps this feature reachable the way
+    // a user would expect, at the cost of `nf` no longer resolving with zero
+    // delay if the two keys are typed more than timeoutMilliseconds apart.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: 'n', description: 'Next search match',
+      action: () => [{ type: ActionTypes.SEARCH_CYCLE, direction: 'next' }],
+    },
+    {
+      context: '*', mode: VimModes.NORMAL, keys: '<S-n>', description: 'Previous search match',
+      action: () => [{ type: ActionTypes.SEARCH_CYCLE, direction: 'previous' }],
+    },
 
     // Application. <C-l> echoes vim's own redraw-the-screen key, which is what
     // a reader reaches for to clear something stuck on their statusline.
@@ -182,15 +264,62 @@ export class KeymapService {
     },
   ];
 
+  /**
+   * M1b-2's operator triggers (d/y/c), their doubled whole-message forms (yy,
+   * cc -- dd keeps the real, context-scoped binding above instead, per
+   * M1b-1's review), the register prefix (") and repeat (.): every one
+   * resolved directly in vim-engine.ts, gated behind its own
+   * isMessagesNormalMode, with no IKeyBinding of its own for describe() below
+   * to find -- the same way a digit count needs none. n/<S-n> need no entry
+   * here: unlike the rest of M1b-2 they are real bindings in `_bindings`
+   * above (search's own next/previous match), so describe() already finds
+   * them there.
+   *
+   * This list exists only so the which-key popup can see what vim-engine.ts
+   * already resolves. resolve() never reads it -- a wrong entry here could
+   * misinform the popup but can never change what a key press actually does,
+   * which is the whole reason this stays separate from `_bindings` instead of
+   * a real IKeyBinding with a stub action() (see IIntrinsicKeyDescriptor above).
+   */
+  private readonly _intrinsicKeys: IIntrinsicKeyDescriptor[] = [
+    { context: VimContexts.MESSAGES, mode: VimModes.NORMAL, keys: 'd', description: 'Delete with motion' },
+    { context: VimContexts.MESSAGES, mode: VimModes.NORMAL, keys: 'y', description: 'Yank with motion' },
+    { context: VimContexts.MESSAGES, mode: VimModes.NORMAL, keys: 'c', description: 'Change with motion' },
+    { context: VimContexts.MESSAGES, mode: VimModes.NORMAL, keys: 'yy', description: 'Yank message' },
+    { context: VimContexts.MESSAGES, mode: VimModes.NORMAL, keys: 'cc', description: 'Change message' },
+    { context: VimContexts.MESSAGES, mode: VimModes.NORMAL, keys: '"', description: 'Choose a register' },
+    { context: VimContexts.MESSAGES, mode: VimModes.NORMAL, keys: '.', description: 'Repeat last change' },
+  ];
+
   getBindings = (): IKeyBinding[] => {
     return this._bindings;
   };
 
+  private matchesMode = (opts: { entry: { mode: TVimMode | TVimMode[] }; mode: TVimMode }): boolean => {
+    const { entry, mode } = opts;
+    return Array.isArray(entry.mode) ? entry.mode.includes(mode) : entry.mode === mode;
+  };
+
+  private matchesContext = (opts: { entry: { context: TVimContext | '*' }; context: TVimContext }): boolean => {
+    const { entry, context } = opts;
+    return entry.context === '*' || entry.context === context;
+  };
+
   describe = (opts: { mode: TVimMode; context: TVimContext }): Array<{ keys: string; description: string }> => {
     const { mode, context } = opts;
-    return this._bindings
-      .filter(binding => (Array.isArray(binding.mode) ? binding.mode.includes(mode) : binding.mode === mode))
-      .filter(binding => binding.context === '*' || binding.context === context)
+
+    const tableDriven = this._bindings
+      .filter(binding => this.matchesMode({ entry: binding, mode }) && this.matchesContext({ entry: binding, context }))
       .map(binding => ({ keys: binding.keys, description: binding.description }));
+
+    // Concatenated, not merged into one filter over one array: _intrinsicKeys
+    // carries no `action`, so keeping the two lists physically separate here
+    // is what stops a future edit from quietly treating a display-only
+    // descriptor as something resolve() could dispatch.
+    const intrinsic = this._intrinsicKeys
+      .filter(entry => this.matchesMode({ entry, mode }) && this.matchesContext({ entry, context }))
+      .map(entry => ({ keys: entry.keys, description: entry.description }));
+
+    return [...tableDriven, ...intrinsic];
   };
 }

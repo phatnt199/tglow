@@ -34,11 +34,50 @@ export interface IApplicationState {
   /** Which full-pane overlay is showing, if any. Orthogonal to engine.context: opening one leaves mode and pane focus exactly as they were. */
   overlay: TOverlay | null;
   /**
-   * Set by `dd`'s DELETE_REQUEST while the status line waits for y/n; null
-   * once answered either way. The only irreversible action in the app gates
-   * on this being non-null: App checks it before engine resolution, the same
-   * category of App-level gate as `overlay` and the reply/edit escapes above,
-   * and swallows every key except y, n and escape while it is set.
+   * The text typed into the `<C-p>` chat picker while it is open, and the
+   * fuzzy-matched result its cursor is currently on. Meaningless while
+   * `overlay !== 'chatpicker'`, and reset to '' / 0 every time the picker
+   * opens or closes (action-reducer.ts's OVERLAY_TOGGLE case, and the
+   * picker's own escape/Enter in app.tsx) so a query typed in a previous
+   * session of it can never leak into the next.
+   */
+  chatPickerQuery: string;
+  chatPickerCursor: number;
+  /**
+   * The text typed into the `/` search overlay while it is open (M1b-2
+   * Task 9). Meaningless while `overlay !== 'search'`; reset to '' whenever
+   * any overlay opens or closes (mirroring chatPickerQuery's own reset),
+   * since nothing outside the overlay itself ever reads it.
+   */
+  searchQuery: string;
+  /**
+   * The ids of the messages a committed search last matched -- written once,
+   * by app.tsx's own handling of the Enter that closes the search overlay,
+   * never by the reducer directly. Ids, not positions in state.messages: n/N
+   * (SEARCH_CYCLE, action-reducer.ts) re-resolve each id to its *current*
+   * index on every cycle, so a message that moved or was deleted since the
+   * search was committed is dropped rather than pointing the cursor at the
+   * wrong row. Survives the overlay closing -- unlike searchQuery, this is
+   * exactly what n/N need once it has.
+   */
+  searchMatchIds: number[];
+  /**
+   * `messageCursor` at the instant the search overlay opened, so its own
+   * `<escape>` (app.tsx) can put the cursor back exactly where it was --
+   * the same "snapshot before, restore on cancel" shape
+   * composerTextBeforeEdit already uses for edit.start/edit.cancel. Null
+   * whenever no search is open, and cleared (not merely left stale) the
+   * moment escape restores it or Enter commits a jump away from it.
+   */
+  searchCursorBeforeOpen: number | null;
+  /**
+   * Set by DELETE_REQUEST -- which `dd`/`3dd` and any d+motion delete all
+   * route through (M1b-2 Task 4), never bypass -- while the status line
+   * waits for y/n; null once answered either way. The only irreversible
+   * action in the app gates on this being non-null: App checks it before
+   * engine resolution, the same category of App-level gate as `overlay` and
+   * the reply/edit escapes above, and swallows every key except y, n and
+   * escape while it is set.
    */
   pendingConfirmation: { kind: 'delete'; messageId: number } | null;
   /**
@@ -47,6 +86,17 @@ export interface IApplicationState {
    * hidden again today, which is the intended behaviour, not a bug to fix.
    */
   revealedSpoilers: Set<number>;
+  /**
+   * Named registers, vim's own `"`-prefixed scheme (M1b-2 Task 5): `"ayy`
+   * (or `"add`) writes `registers.a`; an unprefixed yy or dd goes to
+   * `registers[UNNAMED_REGISTER]` (`registers['"']`), vim's own name for
+   * the unnamed register. The pending name a `"` press is still choosing
+   * lives on `engine.register` instead -- it is part of the key sequence
+   * being assembled, not a value any operator has actually written yet.
+   * `+` is an ordinary key here too; Task 6 gives it an OSC 52 side effect,
+   * not a different shape.
+   */
+  registers: Record<string, string>;
 }
 
 const INITIAL_STATE: IApplicationState = {
@@ -64,8 +114,14 @@ const INITIAL_STATE: IApplicationState = {
   statusMessage: null,
   integrityWarning: null,
   overlay: null,
+  chatPickerQuery: '',
+  chatPickerCursor: 0,
+  searchQuery: '',
+  searchMatchIds: [],
+  searchCursorBeforeOpen: null,
   pendingConfirmation: null,
   revealedSpoilers: new Set(),
+  registers: {},
 };
 
 export class ApplicationStoreService {

@@ -1,6 +1,6 @@
-import { useCallback, useRef, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
 
-import { useKeyboard, useTerminalDimensions } from '@opentui/react';
+import { useKeyboard, useRenderer, useTerminalDimensions } from '@opentui/react';
 import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
 
 // Type-only import, erased at runtime under verbatimModuleSyntax, so this
@@ -9,10 +9,32 @@ import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
 // points at the concrete module rather than the core/ barrel purely because
 // that is where IApplicationState is actually defined.
 import type { ApplicationStoreService, IApplicationState } from '../core/application-store.ts';
-import { ActionTypes, VimContexts, VimModes, type IEngineState, type TAction } from '../keys/common/index.ts';
+// Type-only too, so -- like the import above -- safe from the core/ barrel's
+// crash path regardless of which module it pointed at; kept on cache/index.ts
+// rather than database.ts to match how src/tui/panes/chat-list.tsx already
+// imports this same type.
+import type { IDialogRow } from '../core/cache/index.ts';
+// Same reasoning as the type-only imports above, but this one is a value
+// import (writeToClipboard is called below, not just typed against) -- the
+// concrete module is what keeps it off the core/ barrel's telegram/
+// global.window crash path, not merely off the hook by being erased.
+import { writeToClipboard } from '../core/clipboard.ts';
+// Same reasoning as writeToClipboard directly above: fuzzyMatch (M1b-2
+// Task 8) is called below, not just typed against, so it too has to come
+// from its concrete module rather than the core/ barrel.
+import { fuzzyMatch } from '../core/fuzzy-match.ts';
+// Type-only: App receives a MessageSearchService instance through props
+// (constructed and DI-wired by main.ts) and only ever calls the instance
+// method .search() on it below -- there is no `new MessageSearchService(...)`
+// here for a value import to serve.
+import type { MessageSearchService } from '../core/message-search.ts';
+import {
+  ActionTypes, CLIPBOARD_REGISTER, Operators, UNNAMED_REGISTER, VimContexts, VimModes,
+  type IEngineState, type IResolveResult, type TAction,
+} from '../keys/common/index.ts';
 import type { KeyNormalizerService, KeymapService, VimEngineService } from '../keys/index.ts';
-import { applyAction } from './action-reducer.ts';
-import { resolveWhichKeyHeight, WhichKey } from './overlays/index.ts';
+import { applyAction, resolveSearchMatchIndices } from './action-reducer.ts';
+import { ChatPicker, resolveChatPickerHeight, resolveWhichKeyHeight, SEARCH_OVERLAY_HEIGHT, SearchOverlay, WhichKey } from './overlays/index.ts';
 import { ChatList, Composer, MessageView, StatusLine } from './panes/index.ts';
 import type { ITokens } from './theme/index.ts';
 
@@ -21,6 +43,23 @@ export interface IAppProps {
   engine: VimEngineService;
   keymapService: KeymapService;
   keyNormalizer: KeyNormalizerService;
+  /**
+   * `/`'s own search, M1b-2 Task 9. Called directly, synchronously, the same
+   * treatment VimEngineService/KeymapService already get -- unlike
+   * onSend/onEdit/onOpenChat below, this never touches the network
+   * (DatabaseService.searchMessages is a local, synchronous bun:sqlite read),
+   * so it needs no callback-prop wrapping or fire-and-forget error handling.
+   */
+  messageSearchService: MessageSearchService;
+  /**
+   * How long an `ambiguous` key sequence (vim-engine.ts's own status: an
+   * exact match that is also the prefix of a longer binding, the way a
+   * hypothetical bare `d` would sit next to `dd`) waits for a completing key
+   * before the engine's flushPending resolves the shorter binding on its
+   * own -- vim's own timeoutlen. Sourced from IApplicationConfiguration so
+   * it can be tuned without a rebuild.
+   */
+  timeoutMilliseconds: number;
   tokens: ITokens;
   resolveSenderName: (opts: { fromId: string | null }) => string;
   onSend: (text: string) => Promise<void>;
@@ -55,17 +94,51 @@ const RULE_WIDTH = 1;
 const VERTICAL_RULE = '│';
 
 /**
- * The two keys the which-key overlay owns outright while it is open, in the
- * same canonical form the keymap itself is authored in (key-normalizer.ts).
+ * The two keys an overlay owns outright while it is open, in the same
+ * canonical form the keymap itself is authored in (key-normalizer.ts).
  * <escape> is checked directly here, ahead of engine resolution, so closing
- * the overlay cannot also run whatever <escape> otherwise means in the pane
+ * an overlay cannot also run whatever <escape> otherwise means in the pane
  * underneath it -- refocusing the messages pane from the chat list, for
- * instance. The leader needs no such override: the engine already resolves
- * it to OVERLAY_TOGGLE below, which the reducer toggles closed the same way
- * it toggled open, so it is left to flow through the ordinary path.
+ * instance. Shared by both overlays below (which-key and, as of M1b-2
+ * Task 8, the chat picker), since closing without side effects is the same
+ * requirement either way. The leader is which-key's alone -- it needs no such
+ * override, since the engine already resolves it to OVERLAY_TOGGLE, which the
+ * reducer toggles closed the same way it toggled open, so it is left to flow
+ * through the ordinary path; the chat picker has no equivalent because its
+ * own opening key, <C-p>, means something else entirely once it owns input
+ * (see CHAT_PICKER_PREVIOUS_TOKENS below).
  */
 const OVERLAY_ESCAPE_TOKEN = '<escape>';
 const OVERLAY_LEADER_TOKEN = '\\';
+
+/**
+ * Enter and Backspace mean the same thing to both the chat picker (M1b-2
+ * Task 8) and the search overlay (Task 9) -- commit the typed query,
+ * edit it -- so both blocks below share these rather than each declaring an
+ * identical pair under its own name.
+ */
+const ENTER_TOKEN = '<return>';
+const BACKSPACE_TOKEN = '<backspace>';
+
+/**
+ * The chat picker's own vocabulary while it owns input (M1b-2 Task 8): each
+ * pair below is one direction -- `<C-n>`/`j` down, `<C-p>`/`k` up -- echoing
+ * vim's own choice of j/k alongside emacs-style C-n/C-p, the same pairing
+ * ctrlp.vim and fzf both use. Search (Task 9) has no result list of its own
+ * to move a selection through, so it has no equivalent of these two.
+ */
+const CHAT_PICKER_NEXT_TOKENS: readonly string[] = ['<C-n>', 'j'];
+const CHAT_PICKER_PREVIOUS_TOKENS: readonly string[] = ['<C-p>', 'k'];
+
+/**
+ * Bounds how many cache rows a single `/` query asks MessageSearchService
+ * for. Mirrors main.ts's own HISTORY_LIMIT: state.messages never holds more
+ * than that many rows at once (no pagination past it exists yet), so a match
+ * outside this many of the newest cached rows could never be present in
+ * state.messages for resolveSearchMatchIndices to find anyway -- searching
+ * further than this would only cost time, not find anything reachable.
+ */
+const SEARCH_RESULT_LIMIT = 200;
 
 const CONTROL_CHARACTER_BOUNDARY = 0x20;
 const DELETE_CODE_POINT = 0x7f;
@@ -98,6 +171,20 @@ const isPrintableCharacter = (opts: { sequence: string; ctrl: boolean; meta: boo
   return codePoint >= CONTROL_CHARACTER_BOUNDARY && codePoint !== DELETE_CODE_POINT;
 };
 
+/**
+ * `state.dialogs`, fuzzy-matched against the chat picker's own query and
+ * resolved back from fuzzyMatch's `{index, score}` pairs to the dialogs
+ * themselves. The one place that mapping happens, shared by the keyboard
+ * handler below (to know what Enter/`<C-n>`/`<C-p>` act on) and the render
+ * body (to know what ChatPicker draws, and how tall resolveChatPickerHeight
+ * says it is) -- so the two can never disagree about what is currently
+ * showing.
+ */
+const resolveChatPickerResults = (opts: { dialogs: IDialogRow[]; query: string }): IDialogRow[] => {
+  const { dialogs, query } = opts;
+  return fuzzyMatch({ candidates: dialogs.map(dialog => dialog.title), query }).map(match => dialogs[match.index]!);
+};
+
 const logger: ILogger = ApplicationLogger.get('App');
 
 /**
@@ -124,9 +211,36 @@ const toFlushedText = (opts: { pending: string[] }): string => {
     .join('');
 };
 
+/**
+ * The text to copy to the system clipboard, if `action` just wrote it into
+ * the clipboard register (Task 6's `+`) -- null for every other operator,
+ * every other register name, and an operator that targeted zero messages
+ * (a no-op yank/delete: `actionPatch` then carries no `registers` key at all
+ * to read one back out of). Pure: only decides whether a copy is warranted,
+ * never performs one -- see the OPERATOR_APPLY case in commitResolution
+ * below for the actual write, which is the side effect this stays free of.
+ */
+const resolveClipboardText = (opts: {
+  action: TAction;
+  registerName: string;
+  actionPatch: Partial<IApplicationState>;
+}): string | null => {
+  const { action, registerName, actionPatch } = opts;
+  if (action.type !== ActionTypes.OPERATOR_APPLY) {
+    return null;
+  }
+  if (action.operator !== Operators.YANK && action.operator !== Operators.DELETE) {
+    return null;
+  }
+  if (registerName !== CLIPBOARD_REGISTER) {
+    return null;
+  }
+  return actionPatch.registers?.[registerName] ?? null;
+};
+
 export const App = (props: IAppProps) => {
   const {
-    store, engine, keymapService, keyNormalizer, tokens, resolveSenderName,
+    store, engine, keymapService, keyNormalizer, messageSearchService, timeoutMilliseconds, tokens, resolveSenderName,
     onSend, onEdit, onDelete, onQuit, onOpenChat, onMarkRead,
   } = props;
 
@@ -143,6 +257,13 @@ export const App = (props: IAppProps) => {
   );
   const state = useSyncExternalStore(subscribe, store.getState, store.getState);
   const { width, height } = useTerminalDimensions();
+  // The real renderer in production, and in tests -- @opentui/core/testing's
+  // TestRenderer is exactly a CliRenderer, backed by fake stdin/stdout rather
+  // than a mock. Read once per render rather than per key press: it is a
+  // stable per-instance object either way (useRenderer throws if AppContext
+  // has none, which both main.ts and renderWithKeys always provide), so there
+  // is nothing to gain from reading it inside useKeyboard's callback instead.
+  const renderer = useRenderer();
 
   // MessageService clears composerText only after its network round-trip
   // resolves, so the composer sits populated with no in-flight indicator for
@@ -151,153 +272,31 @@ export const App = (props: IAppProps) => {
   // already reads store.getState() fresh rather than a render's `state`.
   const sendInFlightRef = useRef(false);
 
-  useKeyboard(event => {
-    // Read the store directly rather than closing over the render's `state`.
-    // mockInput fires keypress events synchronously, and so does a real
-    // terminal on a fast paste or a quick typist: several presses can land
-    // before React commits a re-render, so a handler built on this render's
-    // `state` would have every press after the first recompute from the same
-    // pre-burst snapshot. Verified empirically -- with the closed-over
-    // snapshot, three synchronous key presses collapse to one character
-    // instead of three. The store's own state is updated synchronously on
-    // every setState, so reading it fresh here is always current.
-    const current = store.getState();
-    const key = keyNormalizer.normalize({ event });
+  // The pending ambiguous-key timeout, if any. A ref, not state, for the same
+  // reason the handler below reads store.getState() fresh rather than a
+  // React snapshot: the very next key press -- possibly landing in the same
+  // synchronous burst mockInput and a fast typist both produce -- must see
+  // the current timer id immediately to cancel it, and a state update is not
+  // visible until React commits it.
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-    // The only irreversible action in the app gates on this, so it is
-    // checked before even the which-key overlay below: while
-    // pendingConfirmation is set, only y (confirm) and n (cancel, along with
-    // <escape> -- the same "also cancels" role it plays for the overlay and
-    // the reply/edit escapes) mean anything, and every other key is
-    // swallowed before the engine ever sees it. KeymapService's bindings are
-    // static and have no way to see pendingConfirmation, so y and n cannot be
-    // expressed as ordinary keymap entries the way dd itself is -- the same
-    // reasoning the reply/edit escapes below already rely on. CONFIRM and
-    // CANCEL_CONFIRMATION are still real actions run through applyAction,
-    // not a hand-rolled patch, so the reducer stays the one place that
-    // decides what answering the question does to state.
-    if (current.pendingConfirmation !== null) {
-      const confirmationToken = keyNormalizer.toCanonicalString({ key });
-
-      let confirmationAction: TAction | null = null;
-      if (confirmationToken === 'y') {
-        confirmationAction = { type: ActionTypes.CONFIRM };
-      } else if (confirmationToken === 'n' || confirmationToken === OVERLAY_ESCAPE_TOKEN) {
-        confirmationAction = { type: ActionTypes.CANCEL_CONFIRMATION };
-      }
-      if (confirmationAction === null) {
-        return;
-      }
-
-      const { messageId } = current.pendingConfirmation;
-      store.setState({ patch: applyAction({ state: current, action: confirmationAction }) });
-      if (confirmationAction.type === ActionTypes.CONFIRM) {
-        void onDelete({ messageId }).catch(error => { logRejection({ method: 'onDelete', error }); });
-      }
-      return;
-    }
-
-    // The overlay owns input while it is open. Everything except the two
-    // keys above is swallowed here, before the engine ever sees it, so a
-    // stray keystroke cannot move a cursor or seed a pending prefix the
-    // engine would still be holding once the overlay closes.
-    if (current.overlay !== null) {
-      const overlayToken = keyNormalizer.toCanonicalString({ key });
-      if (overlayToken === OVERLAY_ESCAPE_TOKEN) {
-        store.setState({ patch: { overlay: null } });
-        return;
-      }
-      if (overlayToken !== OVERLAY_LEADER_TOKEN) {
-        return;
-      }
-    }
-
-    // A pending reply is App-level state (IApplicationState), the same
-    // category as overlay above, so escape has to be intercepted here too:
-    // KeymapService's bindings are static and have no way to see whether a
-    // reply is pending, so there is no way to express "bound only sometimes"
-    // as a keymap entry. Checked only in NORMAL mode -- in INSERT, escape
-    // still means "leave insert mode" first, exactly as it does today; a
-    // second escape once back in NORMAL then cancels the reply. Unreachable
-    // while the overlay is open: that block above always returns first.
-    if (current.replyToMessageId !== null && current.engine.mode === VimModes.NORMAL) {
-      const replyToken = keyNormalizer.toCanonicalString({ key });
-      if (replyToken === OVERLAY_ESCAPE_TOKEN) {
-        store.setState({ patch: { replyToMessageId: null } });
-        return;
-      }
-    }
-
-    // An in-progress edit is App-level state too, but EDIT_START (unlike
-    // REPLY_START) moves straight into INSERT as part of starting -- so this
-    // has to be checked in INSERT, not NORMAL, or the very first escape the
-    // user presses would fall through to the ordinary INSERT <escape>
-    // binding below, which only ever knows to leave insert mode. That escape
-    // is the one that must also restore whatever the composer held before
-    // EDIT_START overwrote it, or an accidental `e` followed by Escape would
-    // look exactly like the discarded-draft class of bug MessageService
-    // already exists to prevent on a failed send.
-    if (current.editingMessageId !== null && current.engine.mode === VimModes.INSERT) {
-      const editToken = keyNormalizer.toCanonicalString({ key });
-      if (editToken === OVERLAY_ESCAPE_TOKEN) {
-        store.setState({
-          patch: {
-            editingMessageId: null,
-            composerText: current.composerTextBeforeEdit ?? '',
-            composerTextBeforeEdit: null,
-            engine: { ...current.engine, mode: VimModes.NORMAL },
-          },
-        });
-        return;
-      }
-    }
-
-    const keymap = keymapService.getBindings();
-    let result = engine.resolve({ state: current.engine, key, keymap });
-
-    const isPrintable = isPrintableCharacter({ sequence: event.sequence, ctrl: event.ctrl, meta: event.meta });
-    const isInsert = current.engine.mode === VimModes.INSERT;
-
-    // Vim flushes a prefix that turns out to match nothing as literal text,
-    // and INSERT here has no other fall-through: `jk` leaves insert mode, so
-    // the engine withholds a bare `j` while it waits for the `k`, and
-    // discarding it on the key that proves no binding will complete swallowed
-    // every j anyone typed -- "enjoy" reached the composer as "enoy".
-    //
-    // The key that broke the match is then handled as though it had arrived
-    // with no prefix. A printable one is simply text: tglow has no
-    // `timeoutlen`, so a character withheld a second time would stay
-    // invisible until some later press happened to end the sequence. Anything
-    // else is re-resolved against a cleared prefix, which is what lets a
-    // single Escape leave INSERT after a lone j rather than needing two.
-    let flushed = '';
-    if (result.status === 'unmapped' && isInsert && current.engine.pending.length > 0) {
-      flushed = toFlushedText({ pending: current.engine.pending });
-      if (!isPrintable) {
-        result = engine.resolve({ state: { ...current.engine, pending: [] }, key, keymap });
-      }
-    }
-    const flushPatch: Partial<IApplicationState> =
-      flushed === '' ? {} : { composerText: current.composerText + flushed };
-
-    // In insert mode an unmapped printable key is text, not a missing binding.
-    if (result.status === 'unmapped' && isInsert) {
-      const typed = flushed + (isPrintable ? event.sequence : '');
-      store.setState({
-        patch: {
-          engine: result.state,
-          ...(typed === '' ? {} : { composerText: current.composerText + typed }),
-        },
-      });
-      return;
-    }
-
-    if (result.status !== 'resolved') {
-      store.setState({ patch: { ...flushPatch, engine: result.state } });
-      return;
-    }
-
-    let patch: Partial<IApplicationState> = { ...flushPatch };
+  /**
+   * The last mile shared by an immediately resolved key press and a delayed
+   * flushPending resolution once the timeout scheduled below fires: fold
+   * every action through applyAction, run whichever side effects it
+   * triggers, and commit the result to the store. The timer has no key press
+   * of its own to re-run through the handler, so this is what lets a
+   * delayed resolution -- a short binding that happens to move the cursor
+   * onto the newest message, say -- get exactly the same treatment as a live
+   * one, rather than a second, divergence-prone copy of the switch below.
+   */
+  const commitResolution = (opts: {
+    current: IApplicationState;
+    result: IResolveResult;
+    initialPatch?: Partial<IApplicationState>;
+  }): void => {
+    const { current, result } = opts;
+    let patch: Partial<IApplicationState> = { ...opts.initialPatch };
 
     for (const action of result.actions) {
       // Computed once and read by both the reducer and the side-effect
@@ -305,7 +304,8 @@ export const App = (props: IAppProps) => {
       // opens the item under it (e.g. [CURSOR_MOVE, CHAT_OPEN]) reads the
       // post-move position in both places, not the pre-move snapshot.
       const accumulated = { ...current, ...patch };
-      patch = { ...patch, ...applyAction({ state: accumulated, action }) };
+      const actionPatch = applyAction({ state: accumulated, action });
+      patch = { ...patch, ...actionPatch };
 
       switch (action.type) {
         case ActionTypes.COMPOSER_SEND: {
@@ -408,6 +408,36 @@ export const App = (props: IAppProps) => {
           onQuit();
           break;
         }
+        case ActionTypes.OPERATOR_APPLY: {
+          // M1b-2 Task 6: "+y (and "+d -- delete writes a register exactly
+          // as yank does, Task 5) copies to the system clipboard. registerName
+          // mirrors action-reducer.ts's own OPERATOR_APPLY computation
+          // exactly -- the same accumulated.engine.register read, off the
+          // same pre-resolution snapshot -- rather than re-deriving it from
+          // a source that could drift from what the reducer actually wrote.
+          const registerName = accumulated.engine.register ?? UNNAMED_REGISTER;
+          const clipboardText = resolveClipboardText({ action, registerName, actionPatch });
+          if (clipboardText !== null) {
+            writeToClipboard({
+              text: clipboardText,
+              // OpenTUI's own copyToClipboardOSC52 (@opentui/core) performs
+              // its own UTF-8-safe base64 encoding, from plain text, entirely
+              // inside the native renderer core -- outside the JS frame loop,
+              // which is what makes it safe to call from here (clipboard.ts's
+              // own doc comment says why a raw write from anywhere else is
+              // not). write's own `sequence` parameter goes unused for
+              // exactly that reason: feeding it the already-built OSC 52
+              // sequence would base64-encode an already-encoded payload,
+              // corrupting the clipboard the same way a mis-encoded write
+              // would. buildOsc52Sequence's exact wire format is pinned
+              // directly by clipboard.test.ts; production delivery goes
+              // through OpenTUI's own implementation instead, reached here
+              // with the plain text still in scope through this closure.
+              write: () => { renderer.copyToClipboardOSC52(clipboardText); },
+            });
+          }
+          break;
+        }
         default: {
           break;
         }
@@ -438,7 +468,355 @@ export const App = (props: IAppProps) => {
       ? { ...result.state, mode: patch.engine.mode, context: patch.engine.context }
       : result.state;
     store.setState({ patch: { ...patch, engine: nextEngineState } });
+  };
+
+  useKeyboard(event => {
+    // Cleared before anything else, on every key press without exception --
+    // an ambiguous key's timer must never survive the key that completes the
+    // longer binding it was racing, or it fires the shorter binding's own
+    // effect *after* the longer one already ran: two effects from one user
+    // action, the data-loss shape this task exists to prevent (dd deletes,
+    // then a stale d timer runs whatever d alone does). See the 'ambiguous'
+    // branch below for where a fresh one gets armed.
+    if (timeoutRef.current !== null) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+
+    // Read the store directly rather than closing over the render's `state`.
+    // mockInput fires keypress events synchronously, and so does a real
+    // terminal on a fast paste or a quick typist: several presses can land
+    // before React commits a re-render, so a handler built on this render's
+    // `state` would have every press after the first recompute from the same
+    // pre-burst snapshot. Verified empirically -- with the closed-over
+    // snapshot, three synchronous key presses collapse to one character
+    // instead of three. The store's own state is updated synchronously on
+    // every setState, so reading it fresh here is always current.
+    const current = store.getState();
+    const key = keyNormalizer.normalize({ event });
+
+    // The only irreversible action in the app gates on this, so it is
+    // checked before even the which-key overlay below: while
+    // pendingConfirmation is set, only y (confirm) and n (cancel, along with
+    // <escape> -- the same "also cancels" role it plays for the overlay and
+    // the reply/edit escapes) mean anything, and every other key is
+    // swallowed before the engine ever sees it. KeymapService's bindings are
+    // static and have no way to see pendingConfirmation, so y and n cannot be
+    // expressed as ordinary keymap entries the way dd itself is -- the same
+    // reasoning the reply/edit escapes below already rely on. CONFIRM and
+    // CANCEL_CONFIRMATION are still real actions run through applyAction,
+    // not a hand-rolled patch, so the reducer stays the one place that
+    // decides what answering the question does to state.
+    if (current.pendingConfirmation !== null) {
+      const confirmationToken = keyNormalizer.toCanonicalString({ key });
+
+      let confirmationAction: TAction | null = null;
+      if (confirmationToken === 'y') {
+        confirmationAction = { type: ActionTypes.CONFIRM };
+      } else if (confirmationToken === 'n' || confirmationToken === OVERLAY_ESCAPE_TOKEN) {
+        confirmationAction = { type: ActionTypes.CANCEL_CONFIRMATION };
+      }
+      if (confirmationAction === null) {
+        return;
+      }
+
+      const { messageId } = current.pendingConfirmation;
+      store.setState({ patch: applyAction({ state: current, action: confirmationAction }) });
+      if (confirmationAction.type === ActionTypes.CONFIRM) {
+        void onDelete({ messageId }).catch(error => { logRejection({ method: 'onDelete', error }); });
+      }
+      return;
+    }
+
+    // The chat picker owns every key while it is open, the same guarantee
+    // which-key's own block just below makes -- but unlike which-key it has
+    // real state of its own to update (chatPickerQuery/chatPickerCursor),
+    // not merely a choice between swallowing a key and letting it through,
+    // so it gets its own block, checked first.
+    if (current.overlay === 'chatpicker') {
+      const pickerToken = keyNormalizer.toCanonicalString({ key });
+
+      if (pickerToken === OVERLAY_ESCAPE_TOKEN) {
+        store.setState({ patch: { overlay: null, chatPickerQuery: '', chatPickerCursor: 0 } });
+        return;
+      }
+
+      const results = resolveChatPickerResults({ dialogs: current.dialogs, query: current.chatPickerQuery });
+
+      if (CHAT_PICKER_NEXT_TOKENS.includes(pickerToken)) {
+        store.setState({
+          patch: { chatPickerCursor: Math.min(current.chatPickerCursor + 1, Math.max(0, results.length - 1)) },
+        });
+        return;
+      }
+      if (CHAT_PICKER_PREVIOUS_TOKENS.includes(pickerToken)) {
+        store.setState({ patch: { chatPickerCursor: Math.max(current.chatPickerCursor - 1, 0) } });
+        return;
+      }
+      if (pickerToken === ENTER_TOKEN) {
+        const selected = results[current.chatPickerCursor];
+        if (!selected) {
+          return;
+        }
+        // Reuses CHAT_OPEN's own side effect (commitResolution's switch case
+        // below) rather than duplicating the onOpenChat/onMarkRead chain --
+        // chatCursor moves to match the picked chat as part of the same
+        // patch, so the chat list's own cursor lands exactly where it would
+        // have if the user had instead navigated there with j/k and pressed
+        // Enter directly.
+        const targetIndex = current.dialogs.findIndex(dialog => dialog.peerId === selected.peerId);
+        commitResolution({
+          current,
+          result: {
+            state: current.engine,
+            actions: [{ type: ActionTypes.CHAT_OPEN }, { type: ActionTypes.FOCUS_SET, context: VimContexts.MESSAGES }],
+            status: 'resolved',
+          },
+          initialPatch: { chatCursor: targetIndex, overlay: null, chatPickerQuery: '', chatPickerCursor: 0 },
+        });
+        return;
+      }
+      if (pickerToken === BACKSPACE_TOKEN) {
+        store.setState({ patch: { chatPickerQuery: current.chatPickerQuery.slice(0, -1), chatPickerCursor: 0 } });
+        return;
+      }
+
+      // Any other key is text for the query, narrowing it, never a keymap
+      // binding: a printable 'i' here must not enter insert mode the way it
+      // would in the messages pane underneath.
+      const isPrintable = isPrintableCharacter({ sequence: event.sequence, ctrl: event.ctrl, meta: event.meta });
+      if (isPrintable) {
+        store.setState({ patch: { chatPickerQuery: current.chatPickerQuery + event.sequence, chatPickerCursor: 0 } });
+      }
+      return;
+    }
+
+    // The search overlay owns every key while it is open (M1b-2 Task 9), the
+    // same guarantee which-key's and the chat picker's own blocks make --
+    // checked ahead of which-key's generic block below for the same reason
+    // chatpicker's is: it has real state of its own (searchQuery) to update,
+    // not merely a choice between swallowing a key and letting it through.
+    // This is also what makes n/N (SEARCH_CYCLE, a real keymap binding as of
+    // this task) reachable only *after* the overlay has closed -- while it is
+    // open, a bare `n` lands here and becomes query text, never the engine.
+    if (current.overlay === 'search') {
+      const searchToken = keyNormalizer.toCanonicalString({ key });
+
+      if (searchToken === OVERLAY_ESCAPE_TOKEN) {
+        store.setState({
+          patch: {
+            overlay: null,
+            searchQuery: '',
+            // Clamped defensively: state.messages could have shrunk (a
+            // delete elsewhere) since searchCursorBeforeOpen was captured,
+            // and an out-of-range messageCursor is not a state this app ever
+            // otherwise allows (action-reducer.ts's own clamp helper is what
+            // keeps CURSOR_MOVE/CURSOR_EDGE from producing one).
+            messageCursor: Math.min(
+              current.searchCursorBeforeOpen ?? current.messageCursor,
+              Math.max(0, current.messages.length - 1),
+            ),
+            searchCursorBeforeOpen: null,
+          },
+        });
+        return;
+      }
+
+      if (searchToken === ENTER_TOKEN) {
+        // A blank query is MessageSearchService's own business rule to
+        // refuse (message-search.ts), not App's to re-check -- activePeerId
+        // is the one thing only App can see, so that guard stays here.
+        const rows = current.activePeerId === null
+          ? []
+          : messageSearchService.search({
+            peerId: current.activePeerId,
+            query: current.searchQuery,
+            limit: SEARCH_RESULT_LIMIT,
+          });
+        const matchIds = rows.map(row => row.id);
+        const positions = resolveSearchMatchIndices({ messages: current.messages, matchIds });
+        // Mirrors the chat picker's own "Enter with nothing selected does
+        // nothing" rule: there is no first match to jump to yet, which reads
+        // as "keep refining the query", not as "give up and close".
+        if (positions.length === 0) {
+          return;
+        }
+        store.setState({
+          patch: {
+            overlay: null,
+            searchQuery: '',
+            // What n/N (SEARCH_CYCLE, action-reducer.ts) cycle through once
+            // this overlay has closed -- ids, not positions, so a message
+            // that later moves or is deleted is dropped rather than
+            // corrupting the cursor (resolveSearchMatchIndices's own doc
+            // comment).
+            searchMatchIds: matchIds,
+            // The first (topmost, oldest-loaded) match currently on screen --
+            // positions is already sorted ascending by resolveSearchMatchIndices.
+            messageCursor: positions[0]!,
+            searchCursorBeforeOpen: null,
+            // `/` can be opened from the chat list (it is context '*', like
+            // \ and <C-p>) -- MessageView only highlights the cursor row
+            // while focused (message-view.tsx), so without this a jump
+            // triggered from there would move messageCursor with nothing on
+            // screen to show it moved. Mirrors CHAT_OPEN's own side effect
+            // (commitResolution below), which focuses messages for the same
+            // reason once it moves the cursor there.
+            engine: { ...current.engine, context: VimContexts.MESSAGES },
+          },
+        });
+        return;
+      }
+
+      if (searchToken === BACKSPACE_TOKEN) {
+        store.setState({ patch: { searchQuery: current.searchQuery.slice(0, -1) } });
+        return;
+      }
+
+      // Any other key is text for the query, narrowing it, never a keymap
+      // binding: a printable 'i' here must not enter insert mode the way it
+      // would in the messages pane underneath -- the same rule the chat
+      // picker's own identical block above already applies.
+      const isSearchPrintable = isPrintableCharacter({ sequence: event.sequence, ctrl: event.ctrl, meta: event.meta });
+      if (isSearchPrintable) {
+        store.setState({ patch: { searchQuery: current.searchQuery + event.sequence } });
+      }
+      return;
+    }
+
+    // The which-key overlay owns input while it is open. Everything except
+    // the two keys above is swallowed here, before the engine ever sees it,
+    // so a stray keystroke cannot move a cursor or seed a pending prefix the
+    // engine would still be holding once the overlay closes. In practice this
+    // is reached only for 'whichkey' -- 'chatpicker' and 'search' both have
+    // their own dedicated blocks above, checked first, which always return
+    // before this one is ever reached for either of them.
+    if (current.overlay !== null) {
+      const overlayToken = keyNormalizer.toCanonicalString({ key });
+      if (overlayToken === OVERLAY_ESCAPE_TOKEN) {
+        store.setState({ patch: { overlay: null } });
+        return;
+      }
+      if (overlayToken !== OVERLAY_LEADER_TOKEN) {
+        return;
+      }
+    }
+
+    // A pending reply is App-level state (IApplicationState), the same
+    // category as overlay above, so escape has to be intercepted here too:
+    // KeymapService's bindings are static and have no way to see whether a
+    // reply is pending, so there is no way to express "bound only sometimes"
+    // as a keymap entry. Checked only in NORMAL mode -- in INSERT, escape
+    // still means "leave insert mode" first, exactly as it does today; a
+    // second escape once back in NORMAL then cancels the reply. Unreachable
+    // while the overlay is open: that block above always returns first.
+    if (current.replyToMessageId !== null && current.engine.mode === VimModes.NORMAL) {
+      const replyToken = keyNormalizer.toCanonicalString({ key });
+      if (replyToken === OVERLAY_ESCAPE_TOKEN) {
+        store.setState({ patch: { replyToMessageId: null } });
+        return;
+      }
+    }
+
+    // An in-progress edit is App-level state too, but EDIT_START (unlike
+    // REPLY_START) moves straight into INSERT as part of starting -- so this
+    // has to be checked in INSERT, not NORMAL, or the very first escape the
+    // user presses would fall through to the ordinary INSERT <escape>
+    // binding below, which only ever knows to leave insert mode. That escape
+    // is the one that must also restore whatever the composer held before
+    // EDIT_START overwrote it, or an accidental `e` followed by Escape would
+    // look exactly like the discarded-draft class of bug MessageService
+    // already exists to prevent on a failed send.
+    if (current.editingMessageId !== null && current.engine.mode === VimModes.INSERT) {
+      const editToken = keyNormalizer.toCanonicalString({ key });
+      if (editToken === OVERLAY_ESCAPE_TOKEN) {
+        store.setState({
+          patch: {
+            editingMessageId: null,
+            composerText: current.composerTextBeforeEdit ?? '',
+            composerTextBeforeEdit: null,
+            engine: { ...current.engine, mode: VimModes.NORMAL },
+          },
+        });
+        return;
+      }
+    }
+
+    const keymap = keymapService.getBindings();
+    let result = engine.resolve({ state: current.engine, key, keymap });
+
+    const isPrintable = isPrintableCharacter({ sequence: event.sequence, ctrl: event.ctrl, meta: event.meta });
+    const isInsert = current.engine.mode === VimModes.INSERT;
+
+    // Vim flushes a prefix that turns out to match nothing as literal text,
+    // and INSERT here has no other fall-through: `jk` leaves insert mode, so
+    // the engine withholds a bare `j` while it waits for the `k`, and
+    // discarding it on the key that proves no binding will complete swallowed
+    // every j anyone typed -- "enjoy" reached the composer as "enoy".
+    //
+    // The key that broke the match is then handled as though it had arrived
+    // with no prefix. A printable one is simply text: tglow has no
+    // `timeoutlen`, so a character withheld a second time would stay
+    // invisible until some later press happened to end the sequence. Anything
+    // else is re-resolved against a cleared prefix, which is what lets a
+    // single Escape leave INSERT after a lone j rather than needing two.
+    let flushed = '';
+    if (result.status === 'unmapped' && isInsert && current.engine.pending.length > 0) {
+      flushed = toFlushedText({ pending: current.engine.pending });
+      if (!isPrintable) {
+        result = engine.resolve({ state: { ...current.engine, pending: [] }, key, keymap });
+      }
+    }
+    const flushPatch: Partial<IApplicationState> =
+      flushed === '' ? {} : { composerText: current.composerText + flushed };
+
+    // In insert mode an unmapped printable key is text, not a missing binding.
+    if (result.status === 'unmapped' && isInsert) {
+      const typed = flushed + (isPrintable ? event.sequence : '');
+      store.setState({
+        patch: {
+          engine: result.state,
+          ...(typed === '' ? {} : { composerText: current.composerText + typed }),
+        },
+      });
+      return;
+    }
+
+    if (result.status !== 'resolved') {
+      store.setState({ patch: { ...flushPatch, engine: result.state } });
+
+      // vim's timeoutlen: an ambiguous sequence is both a complete binding
+      // and the start of a longer one, so App waits to see whether a
+      // completing key beats the clock before giving up and letting
+      // flushPending resolve the shorter binding on its own. `result.state`
+      // is captured here, in the timer's closure, rather than re-read from
+      // the store when it fires -- the clear at the very top of this handler
+      // guarantees no other key press can land before that happens, so it is
+      // never stale by the time it does.
+      if (result.status === 'ambiguous') {
+        const ambiguousEngineState = result.state;
+        timeoutRef.current = setTimeout(() => {
+          timeoutRef.current = null;
+          const flushedResult = engine.flushPending({ state: ambiguousEngineState, keymap });
+          commitResolution({ current, result: flushedResult });
+        }, timeoutMilliseconds);
+      }
+      return;
+    }
+
+    commitResolution({ current, result, initialPatch: flushPatch });
   });
+
+  // A timer that outlives the component would fire into a torn-down tree --
+  // App unmounts when main.ts's quit() tears down the renderer, or a test's
+  // renderer.destroy() does -- and nothing else on that path clears this one.
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current !== null) {
+        clearTimeout(timeoutRef.current);
+      }
+    };
+  }, []);
 
   const activeDialog = state.dialogs.find(dialog => dialog.peerId === state.activePeerId);
   const isConfirming = state.pendingConfirmation !== null;
@@ -472,6 +850,16 @@ export const App = (props: IAppProps) => {
   // than branching on whether the overlay is actually open.
   const whichKeyBindings = keymapService.describe({ mode: state.engine.mode, context: state.engine.context });
   const isWhichKeyOpen = state.overlay === 'whichkey';
+  const isChatPickerOpen = state.overlay === 'chatpicker';
+  const isSearchOpen = state.overlay === 'search';
+  // Unlike whichKeyBindings above, computed only while actually open:
+  // state.dialogs can run into the hundreds, and fuzzy-matching all of them
+  // on every render -- most of which have nothing to do with the picker --
+  // would be wasted work the which-key case, filtering barely thirty
+  // bindings, does not have to worry about.
+  const chatPickerResults = isChatPickerOpen
+    ? resolveChatPickerResults({ dialogs: state.dialogs, query: state.chatPickerQuery })
+    : [];
   const isEditing = state.editingMessageId !== null;
   // The overlay replaces the composer and grows upward, so the panes above
   // it must shrink by however many rows it actually renders -- Math.max(1, …)
@@ -483,9 +871,19 @@ export const App = (props: IAppProps) => {
   // Composer about which of its rows are on screen. Skipping both while the
   // overlay is open is correct, not an oversight: Composer is not rendered at
   // all then.
-  const chromeHeight = isWhichKeyOpen
-    ? resolveWhichKeyHeight({ bindingCount: whichKeyBindings.length, width }) + STATUS_LINE_HEIGHT
-    : CHROME_HEIGHT + (replyingTo !== null ? REPLY_PREVIEW_HEIGHT : 0) + (isEditing ? EDIT_INDICATOR_HEIGHT : 0);
+  //
+  // SearchOverlay (M1b-2 Task 9) gets its own branch ahead of the plain
+  // Composer fallback, the same way ChatPicker/WhichKey do -- but unlike
+  // either of those two, its own row count (SEARCH_OVERLAY_HEIGHT) is a
+  // constant, not something to compute from state first, since it never
+  // grows a results list of its own.
+  const chromeHeight = isChatPickerOpen
+    ? resolveChatPickerHeight({ resultCount: chatPickerResults.length }) + STATUS_LINE_HEIGHT
+    : isWhichKeyOpen
+      ? resolveWhichKeyHeight({ bindingCount: whichKeyBindings.length, width }) + STATUS_LINE_HEIGHT
+      : isSearchOpen
+        ? SEARCH_OVERLAY_HEIGHT + STATUS_LINE_HEIGHT
+        : CHROME_HEIGHT + (replyingTo !== null ? REPLY_PREVIEW_HEIGHT : 0) + (isEditing ? EDIT_INDICATOR_HEIGHT : 0);
   const paneHeight = Math.max(1, height - chromeHeight);
   const messageWidth = Math.max(1, width - SIDEBAR_WIDTH - RULE_WIDTH);
 
@@ -524,11 +922,25 @@ export const App = (props: IAppProps) => {
         />
       </box>
 
-      {isWhichKeyOpen ? (
+      {isChatPickerOpen ? (
+        <ChatPicker
+          results={chatPickerResults}
+          query={state.chatPickerQuery}
+          cursor={state.chatPickerCursor}
+          tokens={tokens}
+          width={width}
+        />
+      ) : isWhichKeyOpen ? (
         <WhichKey
           bindings={whichKeyBindings}
           mode={state.engine.mode}
           context={state.engine.context}
+          tokens={tokens}
+          width={width}
+        />
+      ) : isSearchOpen ? (
+        <SearchOverlay
+          query={state.searchQuery}
           tokens={tokens}
           width={width}
         />

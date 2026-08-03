@@ -6,7 +6,10 @@ import { getError } from '@venizia/ignis-inversion';
 // -- points at the concrete module rather than the core/ barrel purely
 // because that is where IApplicationState is actually defined.
 import type { IApplicationState } from '../core/application-store.ts';
-import { ActionTypes, VimContexts, VimModes, type TAction } from '../keys/common/index.ts';
+// Same reasoning as the type-only import above -- IMessageRow is defined in
+// cache/database.ts, and this stays off the core/ barrel's crash path too.
+import type { IMessageRow } from '../core/cache/database.ts';
+import { ActionTypes, Operators, UNNAMED_REGISTER, VimContexts, VimModes, type TAction } from '../keys/common/index.ts';
 import { extractLinkUrls } from './entities.ts';
 
 const clamp = (opts: { value: number; maximum: number }): number => {
@@ -14,6 +17,25 @@ const clamp = (opts: { value: number; maximum: number }): number => {
     return 0;
   }
   return Math.min(Math.max(opts.value, 0), opts.maximum);
+};
+
+/**
+ * Maps a committed search's message ids back to their *current* position in
+ * `messages`, sorted ascending -- `messages`' own oldest-first order, the
+ * same order the message pane renders top to bottom. Not memoized at commit
+ * time: a message deleted (or otherwise dropped from the loaded window)
+ * since the search ran is silently excluded here rather than pointing the
+ * cursor at the wrong row or crashing. Exported so app.tsx's own Enter-commit
+ * (the one place that first populates IApplicationState.searchMatchIds) can
+ * share this exact resolution rather than keeping a second copy that could
+ * drift from what SEARCH_CYCLE below considers "the same match, right now".
+ */
+export const resolveSearchMatchIndices = (opts: { messages: IMessageRow[]; matchIds: number[] }): number[] => {
+  const { messages, matchIds } = opts;
+  const positions = matchIds
+    .map(id => messages.findIndex(message => message.id === id))
+    .filter(index => index !== -1);
+  return positions.sort((left, right) => left - right);
 };
 
 /**
@@ -41,6 +63,97 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
       return action.unit === 'message' ? { messageCursor: target } : { chatCursor: target };
     }
 
+    // M1b-2 Task 4: dd/yy/cc, and any d/y/c + motion (they produce the exact
+    // same action shape, per vim-engine.ts's resolveUnderOperator), all land
+    // here now. Delete and change are routed through applyAction
+    // recursively rather than a copy of their patch, so a later change to
+    // delete's confirmation or edit's refusal can never drift between the
+    // two paths that reach them.
+    case ActionTypes.OPERATOR_APPLY: {
+      switch (action.operator) {
+        // dd, 3dd and d+motion all still gate on delete.request's own
+        // confirmation -- operators must not become a way around it
+        // (M1b-1's guarantee). The range's own extent (action.from/to) is
+        // deliberately not consulted: only the message at the cursor is
+        // ever named in the prompt. Acting on the full range would mean
+        // confirming and deleting more than one message from a single y/n
+        // answer -- a new pendingConfirmation shape, and a loop in App's
+        // CONFIRM handling -- a bigger feature than doubling itself asks
+        // for, not a side effect of it.
+        case Operators.DELETE: {
+          const message = state.messages[state.messageCursor];
+          const requested = applyAction({ state, action: { type: ActionTypes.DELETE_REQUEST } });
+          if (!message) {
+            return requested;
+          }
+          // M1b-2 Task 5, decision 1: unlike Task 4's deliberate no-op,
+          // delete now also writes the targeted message into a register --
+          // real vim's own unnamed register captures a delete exactly as it
+          // captures a yank, and leaving dd the one operator that never
+          // populated any register would silently break the single most
+          // common reason a vim user reaches for dd at all: dd then (Task
+          // 6+ paste) p to move a message. Written here, at resolution
+          // time, rather than gated on the y/n confirmation that follows:
+          // the register is a harmless, local, freely-overwritable value,
+          // unlike the confirmation, which guards the one irreversible,
+          // networked effect. A cancelled dd still "copies" the message --
+          // real vim has no confirmation step to cancel in the first place,
+          // so this is a new question tglow's own confirmation raises, not
+          // one vim already answers, and a local copy costs nothing to keep.
+          const name = state.engine.register ?? UNNAMED_REGISTER;
+          return { ...requested, registers: { ...state.registers, [name]: message.text } };
+        }
+
+        // cc: vim's change is delete-then-insert; the message equivalent
+        // already exists as edit.start, refusal included. Like delete,
+        // only the message at the cursor is targeted regardless of the
+        // range's extent -- there is no such thing as changing several
+        // messages into one edit.
+        case Operators.CHANGE: {
+          return applyAction({ state, action: { type: ActionTypes.EDIT_START } });
+        }
+
+        // Yanking is not destructive, so unlike delete and change there is
+        // nothing to confirm and no reason to limit it to the cursor's own
+        // message: the full range is honoured, its messages joined the way
+        // vim joins a multi-line yank into one register value -- named
+        // (state.engine.register) when a "-prefix set one, UNNAMED_REGISTER
+        // otherwise (M1b-2 Task 5).
+        case Operators.YANK: {
+          const start = clamp({ value: state.messageCursor + action.from, maximum: state.messages.length - 1 });
+          const end = clamp({ value: state.messageCursor + action.to, maximum: state.messages.length - 1 });
+          const targeted = state.messages.slice(start, end + 1);
+          if (targeted.length === 0) {
+            return {};
+          }
+          const label = targeted.length === 1 ? '1 message' : `${targeted.length} messages`;
+          const name = state.engine.register ?? UNNAMED_REGISTER;
+          return {
+            registers: { ...state.registers, [name]: targeted.map(message => message.text).join('\n') },
+            statusMessage: `Yanked ${label}`,
+          };
+        }
+
+        default: {
+          throw getError({
+            message: `[action-reducer][applyAction] Unknown operator | Operator: ${(action as { operator: string }).operator}`,
+          });
+        }
+      }
+    }
+
+    // M1b-2 Task 5: the status line's only sign a register was even named --
+    // naming one moves no cursor and changes no mode, so without this it
+    // would look exactly like a dead key, the same class of bug yy's own
+    // status message above and <S-k>'s "no link" message below already
+    // exist to avoid. engine.register itself is already set by the time
+    // this runs (vim-engine.ts's resolve() sets it directly, read here off
+    // state.engine which app.tsx's commitResolution keeps in sync), so this
+    // case only has a status message to add, nothing to patch onto engine.
+    case ActionTypes.REGISTER_SET: {
+      return { statusMessage: `Register: ${action.name}` };
+    }
+
     case ActionTypes.MODE_SET: {
       return { engine: { ...state.engine, mode: action.mode } };
     }
@@ -61,7 +174,29 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
       // The same key that opens an overlay closes it again: pressing \\ a
       // second time must return to null rather than re-opening the same
       // overlay it already is.
-      return { overlay: state.overlay === action.overlay ? null : action.overlay };
+      //
+      // chatPickerQuery/chatPickerCursor/searchQuery reset unconditionally
+      // alongside it -- harmless for whichkey, which never reads any of them,
+      // and what lets a fresh <C-p> or `/` always open onto an empty query
+      // rather than whatever was typed the last time. The picker's and
+      // search's own escape and Enter (app.tsx) close their overlay by
+      // setting `overlay` directly rather than through this action, so each
+      // resets its own fields itself on the way out.
+      return {
+        overlay: state.overlay === action.overlay ? null : action.overlay,
+        chatPickerQuery: '',
+        chatPickerCursor: 0,
+        searchQuery: '',
+        // Only the transition INTO 'search' needs this snapshot -- and this
+        // case can only ever be reached with action.overlay === 'search' from
+        // outside it (state.overlay !== 'search' already), since app.tsx's
+        // own overlay-swallow block intercepts every key, including a second
+        // `/`, once the search overlay actually owns input (mirrors
+        // chatpicker's own equivalent guarantee). searchCursorBeforeOpen is
+        // what the search overlay's own <escape> (app.tsx) restores
+        // messageCursor from.
+        searchCursorBeforeOpen: action.overlay === 'search' ? state.messageCursor : null,
+      };
     }
 
     case ActionTypes.SPOILER_REVEAL: {
@@ -94,6 +229,28 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
         return { statusMessage: urls[0] };
       }
       return { statusMessage: `${urls[0]} (+${urls.length - 1} more)` };
+    }
+
+    // M1b-2 Task 9: n/N. Always relative to the *current* messageCursor, not
+    // to whichever match a previous cycle landed on -- the same fidelity real
+    // vim's own n/N have (a manual j/k in between still counts). Enter itself
+    // (app.tsx) does not route through this case -- it always jumps to
+    // positions[0], the topmost loaded match, regardless of where the cursor
+    // already was -- but shares resolveSearchMatchIndices with it above, so
+    // the two can never disagree about what a committed search's ids
+    // currently resolve to. Wraps around in both directions here, vim's own
+    // 'wrapscan' default; Enter has no "wrap" case of its own to need one.
+    case ActionTypes.SEARCH_CYCLE: {
+      const positions = resolveSearchMatchIndices({ messages: state.messages, matchIds: state.searchMatchIds });
+      if (positions.length === 0) {
+        return {};
+      }
+      if (action.direction === 'next') {
+        const next = positions.find(position => position > state.messageCursor);
+        return { messageCursor: next ?? positions[0] };
+      }
+      const previous = [...positions].reverse().find(position => position < state.messageCursor);
+      return { messageCursor: previous ?? positions[positions.length - 1] };
     }
 
     // The only thing that clears integrityWarning. Nothing else may: the field

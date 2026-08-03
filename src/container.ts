@@ -7,6 +7,7 @@ import {
   DatabaseService,
   DialogService,
   DifferenceService,
+  MessageSearchService,
   MessageService,
   SessionStoreService,
   UpdateService,
@@ -33,6 +34,7 @@ export const buildContainer = (opts: {
   container.bind({ key: BindingKeys.APPLICATION_STORE }).toClass(ApplicationStoreService).setScope(BindingScopes.SINGLETON);
   container.bind({ key: BindingKeys.DIALOG_SERVICE }).toClass(DialogService).setScope(BindingScopes.SINGLETON);
   container.bind({ key: BindingKeys.MESSAGE_SERVICE }).toClass(MessageService).setScope(BindingScopes.SINGLETON);
+  container.bind({ key: BindingKeys.MESSAGE_SEARCH_SERVICE }).toClass(MessageSearchService).setScope(BindingScopes.SINGLETON);
   container.bind({ key: BindingKeys.UPDATE_SERVICE }).toClass(UpdateService).setScope(BindingScopes.SINGLETON);
   container.bind({ key: BindingKeys.DIFFERENCE_SERVICE }).toClass(DifferenceService).setScope(BindingScopes.SINGLETON);
 
