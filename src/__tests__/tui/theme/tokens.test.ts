@@ -1,4 +1,5 @@
 import { test, expect } from 'bun:test';
+import { readFileSync } from 'node:fs';
 
 import { PALETTES, type IPalette } from '../../../tui/theme/palettes.ts';
 import { buildTokens } from '../../../tui/theme/tokens.ts';
@@ -17,33 +18,50 @@ test('every palette has all seventeen devglow keys', () => {
   }
 });
 
-// These values come from devglow/lua/devglow/palettes/sage.lua and must match.
-test('sage matches the upstream devglow palette exactly', () => {
-  const sage = PALETTES.sage!;
-  expect(sage.FOREGROUND).toBe('#E6E6E6');
-  expect(sage.BACKGROUND).toBe('#080808');
-  expect(sage.GOLD).toBe('#EBC17A');
-  expect(sage.TEAL).toBe('#7DB9B6');
-  expect(sage.PINK).toBe('#D68C8C');
-  expect(sage.DARK_03).toBe('#383838');
+// ---------------------------------------------------------------------------
+// Every palette against its own devglow .lua source, key for key.
+//
+// In M1a, ember's five DARK_* shades were transcribed from memory instead of
+// read from the file, and the whole ramp landed one position off (DARK_00
+// held what is actually DARK_01). Nothing caught it: only sage had
+// assertions, and they covered six keys, not seventeen.
+//
+// These tests parse each .lua file fresh, at run time, with a small regex --
+// they do not compare against hex values typed by hand into this file, which
+// is exactly the step that produced the ember mistake. So even if a value
+// were mistyped while transcribing palettes.ts, that same mistake cannot also
+// land on the expected side here: the implementation was written by reading
+// the .lua files once by eye; this parser reads the same files again, on
+// every run, mechanically -- the two never share a transcription step.
+// ---------------------------------------------------------------------------
+const DEVGLOW_PALETTES_DIRECTORY = '/home/tanphat199/Workspace/save/tanphat199/devglow/lua/devglow/palettes';
+
+const PALETTE_NAMES = [
+  'sage', 'ember', 'amber', 'ash', 'blush', 'dusk', 'mocha', 'moss',
+  'nocturne', 'plum', 'tide', 'vesper',
+];
+
+const extractHexValue = (opts: { source: string; key: keyof IPalette; paletteName: string }): string => {
+  const match = new RegExp(`^\\s*${opts.key}\\s*=\\s*"(#[0-9A-Fa-f]{6})"`, 'm').exec(opts.source);
+  if (match === null) {
+    throw new Error(`[tokens.test][extractHexValue] ${opts.paletteName}.lua has no ${opts.key} entry`);
+  }
+  return match[1]!;
+};
+
+test('PALETTES ships exactly the twelve devglow palettes', () => {
+  expect(new Set(Object.keys(PALETTES))).toEqual(new Set(PALETTE_NAMES));
 });
 
-// From devglow/lua/devglow/palettes/ember.lua. The shades were once
-// transcribed wrongly -- the whole DARK_* ramp was off by one position --
-// and nothing caught it, because no test asserted ember's values.
-test('ember matches the upstream devglow palette exactly', () => {
-  const ember = PALETTES.ember!;
-  expect(ember.FOREGROUND).toBe('#F5F0EB');
-  expect(ember.BACKGROUND).toBe('#141311');
-  expect(ember.GOLD).toBe('#EACA80');
-  expect(ember.TEAL).toBe('#7BBDBD');
-  expect(ember.WINE).toBe('#B45A42');
-  expect(ember.DARK_00).toBe('#0D0D0B');
-  expect(ember.DARK_01).toBe('#1A1917');
-  expect(ember.DARK_02).toBe('#2E2C28');
-  expect(ember.DARK_03).toBe('#3A3835');
-  expect(ember.DARK_04).toBe('#78716C');
-});
+for (const name of PALETTE_NAMES) {
+  test(`${name} matches devglow/lua/devglow/palettes/${name}.lua, key for key`, () => {
+    const source = readFileSync(`${DEVGLOW_PALETTES_DIRECTORY}/${name}.lua`, 'utf-8');
+    const palette = PALETTES[name]!;
+    for (const key of PALETTE_KEYS) {
+      expect(palette[key], `${name}.${key}`).toBe(extractHexValue({ source, key, paletteName: name }));
+    }
+  });
+}
 
 test('an unknown palette falls back to sage', () => {
   expect(buildTokens({ paletteName: 'nonexistent' })).toEqual(buildTokens({ paletteName: 'sage' }));
@@ -55,6 +73,23 @@ test('mode colours differ so the status bar reads at a glance', () => {
   expect(tokens.modeInsert).toBe('#EBC17A');
   expect(tokens.modeVisual).toBe('#D68C8C');
   expect(new Set([tokens.modeNormal, tokens.modeInsert, tokens.modeVisual]).size).toBe(3);
+});
+
+// A palette that is correctly transcribed can still be unusable: if dim
+// collides with the background or foreground it disappears entirely, and if
+// the three mode colours collide the status line stops telling normal from
+// insert from visual apart. Every palette must clear that bar, not only the
+// two shipped so far.
+test('every palette yields a legible token set', () => {
+  for (const name of PALETTE_NAMES) {
+    const tokens = buildTokens({ paletteName: name });
+    expect(tokens.dim, `${name}: dim vs background`).not.toBe(tokens.background);
+    expect(tokens.dim, `${name}: dim vs foreground`).not.toBe(tokens.foreground);
+    expect(
+      new Set([tokens.modeNormal, tokens.modeInsert, tokens.modeVisual]).size,
+      `${name}: modeNormal/modeInsert/modeVisual all distinct`,
+    ).toBe(3);
+  }
 });
 
 test('tokens resolve against whichever palette is chosen', () => {
