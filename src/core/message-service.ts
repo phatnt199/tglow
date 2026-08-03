@@ -40,6 +40,20 @@ export interface ILiveMessage {
   pts: number | null;
 }
 
+/**
+ * The other side read this chat up to and including `maxId`. Every own message
+ * at or below it has been seen, which is exactly what MessageView's second tick
+ * means -- see resolveTick in tui/panes/message-view.tsx.
+ *
+ * Only the outbox direction is modelled: the inbox equivalent says what *this*
+ * account has read elsewhere, which tglow already tracks through its own
+ * markRead and unread count.
+ */
+export interface IReadReceipt {
+  peerId: string;
+  maxId: number;
+}
+
 export interface IMessageAdapter {
   fetchHistory(opts: { peerId: string; limit: number }): Promise<IRawMessage[]>;
   send(opts: { peerId: string; text: string; replyToMessageId?: number }): Promise<IRawMessage>;
@@ -47,6 +61,7 @@ export interface IMessageAdapter {
   delete(opts: { peerId: string; messageId: number; forEveryone: boolean }): Promise<void>;
   markRead(opts: { peerId: string; maxId: number }): Promise<void>;
   subscribeToNewMessages(opts: { onMessage: (live: ILiveMessage) => void }): () => void;
+  subscribeToReadReceipts(opts: { onReadReceipt: (receipt: IReadReceipt) => void }): () => void;
 }
 
 export class MessageService {

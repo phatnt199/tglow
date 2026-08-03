@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { getError } from '@venizia/ignis-inversion';
-import { and, desc, eq, like, sql } from 'drizzle-orm';
+import { and, desc, eq, like, lt, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/bun-sqlite';
 
 import type { ITelegramEntity } from '../common/index.ts';
@@ -197,6 +197,27 @@ export class DatabaseService {
       .update(dialogs)
       .set({ unreadCount: 0 })
       .where(eq(dialogs.peerId, opts.peerId))
+      .run();
+  };
+
+  /**
+   * A direct UPDATE for the same reason clearUnreadCount is one, and for a
+   * second reason of its own: the `<` in the WHERE makes the advance monotonic
+   * in SQL. Read receipts carry no ordering guarantee -- an update that arrives
+   * later can carry a lower maxId than one already applied -- and a
+   * read-modify-write would need its own comparison to keep the ticks from
+   * walking backwards.
+   *
+   * A peer with no dialog row yet matches zero rows and is a no-op, which is
+   * the wanted behaviour rather than a gap: upsertDialog would have to invent
+   * pinned/lastMessageAt/topMessageId for a chat the dialog list has never
+   * seen, putting a phantom row with a zero timestamp into the sidebar.
+   */
+  advanceReadOutboxMaxId = (opts: { peerId: string; maxId: number }): void => {
+    this.require('advanceReadOutboxMaxId')
+      .update(dialogs)
+      .set({ readOutboxMaxId: opts.maxId })
+      .where(and(eq(dialogs.peerId, opts.peerId), lt(dialogs.readOutboxMaxId, opts.maxId)))
       .run();
   };
 

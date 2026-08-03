@@ -57,7 +57,20 @@ const build = (
       onMessage = subscribeOpts.onMessage;
       return (): void => { onMessage = null; };
     },
-  } as IMessageAdapter;
+    // Never fired here -- this file is about catch-up, not receipts -- but
+    // UpdateService.start() calls it, so a stub is the difference between this
+    // suite running and throwing on the first build().
+    subscribeToReadReceipts: (): (() => void) => (): void => {},
+    // Stubs for the rest of IMessageAdapter. They exist so this fake can be
+    // typed rather than cast: the previous `as IMessageAdapter` hid the fact
+    // that UpdateService.start() had begun calling a member this object did
+    // not have, which tsc could not see and every test in the file hit as a
+    // TypeError. Typed, the compiler names the gap instead.
+    send: async (): Promise<IRawMessage> => { throw new Error('send is not exercised by difference-service tests'); },
+    edit: async (): Promise<IRawMessage> => { throw new Error('edit is not exercised by difference-service tests'); },
+    delete: async (): Promise<void> => {},
+    markRead: async (): Promise<void> => {},
+  } satisfies IMessageAdapter;
 
   // A real UpdateService, not a stand-in: "a backfilled message and a live one
   // are indistinguishable" is the property under test, and a fake apply() would

@@ -1,13 +1,13 @@
 import { getError } from '@venizia/ignis-inversion';
 import { Api, utils } from 'teleproto';
 import type { TelegramClient } from 'teleproto';
-import { NewMessage } from 'teleproto/events';
+import { NewMessage, Raw } from 'teleproto/events';
 import type { NewMessageEvent } from 'teleproto/events';
 
 import { EntityKinds, type ITelegramEntity, type TEntityKind } from './common/index.ts';
 import type { IDialogAdapter, IRawDialog } from './dialog-service.ts';
 import type { IDifferenceAdapter, IDifferenceResult } from './difference-service.ts';
-import type { ILiveMessage, IMessageAdapter, IRawMessage } from './message-service.ts';
+import type { ILiveMessage, IMessageAdapter, IRawMessage, IReadReceipt } from './message-service.ts';
 import type { IUpdateState } from './update-state.ts';
 
 const DIALOG_FETCH_LIMIT = 100;
@@ -268,6 +268,48 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
     opts.client.addEventHandler(handleEvent, eventBuilder);
     return (): void => {
       opts.client.removeEventHandler(handleEvent, eventBuilder);
+    };
+  },
+
+  // Raw rather than a typed builder: teleproto ships no event class for a read
+  // receipt, so these arrive only on the raw update stream. Registered with a
+  // Raw instance for the same reason subscribeToNewMessages reuses its builder
+  // -- removeEventHandler matches on `===`.
+  //
+  // The two classes are NOT interchangeable, which is the whole reason this
+  // reads both rather than one (property names read back off constructed
+  // instances, not guessed):
+  //
+  // - UpdateReadHistoryOutbox { peer, maxId, pts, ptsCount } -- users and basic
+  //   groups. `peer` is a Peer union, so the unmarked id comes from
+  //   utils.getPeerId(peer, false), the same derivation toRawMessage uses.
+  // - UpdateReadChannelOutbox { channelId, maxId } -- channels and supergroups.
+  //   It carries a bare channelId and NO peer and NO pts. That id is already
+  //   unmarked, matching `String(entity.id)` in buildDialogAdapter, so passing
+  //   it through getPeerId would be wrong twice over.
+  subscribeToReadReceipts: (subscribeOpts: { onReadReceipt: (receipt: IReadReceipt) => void }): (() => void) => {
+    const eventBuilder = new Raw({});
+
+    const handleUpdate = (update: Api.TypeUpdate): void => {
+      if (update instanceof Api.UpdateReadHistoryOutbox) {
+        subscribeOpts.onReadReceipt({
+          peerId: utils.getPeerId(update.peer, false),
+          maxId: update.maxId,
+        });
+        return;
+      }
+
+      if (update instanceof Api.UpdateReadChannelOutbox) {
+        subscribeOpts.onReadReceipt({
+          peerId: String(update.channelId),
+          maxId: update.maxId,
+        });
+      }
+    };
+
+    opts.client.addEventHandler(handleUpdate, eventBuilder);
+    return (): void => {
+      opts.client.removeEventHandler(handleUpdate, eventBuilder);
     };
   },
 });

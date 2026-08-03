@@ -4,7 +4,7 @@ import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
 import { BindingKeys } from '../common/index.ts';
 import type { ApplicationStoreService, IApplicationState } from './application-store.ts';
 import type { DatabaseService, IMessageRow } from './cache/index.ts';
-import type { ILiveMessage, IMessageAdapter, IRawMessage } from './message-service.ts';
+import type { ILiveMessage, IMessageAdapter, IRawMessage, IReadReceipt } from './message-service.ts';
 import { advanceUpdateState } from './update-state.ts';
 
 // Mirrors MessageService's SEND_REFRESH_LIMIT and main.ts's HISTORY_LIMIT: the
@@ -174,7 +174,42 @@ export class UpdateService {
     }
   };
 
+  /**
+   * The other side read the chat: every own message at or below `maxId` now
+   * shows the read tick instead of the sent tick.
+   *
+   * Before this existed, readOutboxMaxId was written only by
+   * DialogService.sync() at startup, so a tick was frozen at whatever it had
+   * been the moment tglow launched -- a message sent and read while you watched
+   * kept its single tick until the next launch.
+   *
+   * No pts is advanced here. UpdateReadChannelOutbox carries none at all, and
+   * for the private-chat case the account-wide pts belongs to the update
+   * stream, which teleproto is already tracking; writing it from this path
+   * would move the stored position for a receipt whose loss costs a stale tick,
+   * not a lost message.
+   */
+  private readReceipt = (receipt: IReadReceipt): void => {
+    try {
+      this._database.advanceReadOutboxMaxId({ peerId: receipt.peerId, maxId: receipt.maxId });
+      // The ticks read from the dialog row (app.tsx passes activeDialog's
+      // readOutboxMaxId into MessageView), so republishing the dialog list is
+      // what actually redraws them. state.messages is untouched -- no message
+      // changed, only what is known about who has seen it.
+      this._store.setState({ patch: { dialogs: this._database.listDialogs() } });
+    } catch (error) {
+      // Same reasoning as apply()'s catch: this runs on teleproto's event loop,
+      // where an escaping error becomes an unhandled rejection.
+      this._logger.for(this.readReceipt.name).error('Could not apply the read receipt | Reason: %s', error);
+    }
+  };
+
   start = (): (() => void) => {
-    return this._adapter.subscribeToNewMessages({ onMessage: this.receive });
+    const stopMessages = this._adapter.subscribeToNewMessages({ onMessage: this.receive });
+    const stopReceipts = this._adapter.subscribeToReadReceipts({ onReadReceipt: this.readReceipt });
+    return (): void => {
+      stopMessages();
+      stopReceipts();
+    };
   };
 }

@@ -4,7 +4,7 @@ import { Api } from 'teleproto';
 
 import { ApplicationStoreService } from '../../core/application-store.ts';
 import { DatabaseService, type IMessageRow } from '../../core/cache/index.ts';
-import type { ILiveMessage, IMessageAdapter, IRawMessage } from '../../core/message-service.ts';
+import type { ILiveMessage, IMessageAdapter, IRawMessage, IReadReceipt } from '../../core/message-service.ts';
 import { buildMessageAdapter } from '../../core/telegram-adapter.ts';
 import { MessageOrigins, UpdateService } from '../../core/update-service.ts';
 
@@ -21,8 +21,11 @@ const buildAdapter = (): {
   adapter: IMessageAdapter;
   emit: (message: IRawMessage) => void;
   emitLive: (live: ILiveMessage) => void;
+  emitReadReceipt: (receipt: IReadReceipt) => void;
+  isSubscribed: () => boolean;
 } => {
   let onMessage: ((live: ILiveMessage) => void) | null = null;
+  let onReadReceipt: ((receipt: IReadReceipt) => void) | null = null;
   const adapter: IMessageAdapter = {
     fetchHistory: async () => [],
     send: async opts => buildRawMessage({ peerId: opts.peerId, text: opts.text }),
@@ -40,12 +43,22 @@ const buildAdapter = (): {
         onMessage = null;
       };
     },
+    subscribeToReadReceipts: subscribeOpts => {
+      onReadReceipt = subscribeOpts.onReadReceipt;
+      return (): void => {
+        onReadReceipt = null;
+      };
+    },
   };
   return {
     // The common case: a message with no pts worth recording, which is what
     // every test written before the live path persisted state was asserting.
     emit: (message: IRawMessage): void => onMessage?.({ message, pts: null }),
     emitLive: (live: ILiveMessage): void => onMessage?.(live),
+    emitReadReceipt: (receipt: IReadReceipt): void => onReadReceipt?.(receipt),
+    // Both subscriptions, so a test can tell that stop() released each of them
+    // rather than only the one start() happened to return last.
+    isSubscribed: (): boolean => onMessage !== null || onReadReceipt !== null,
     adapter,
   };
 };
@@ -310,4 +323,116 @@ test('updateShortMessage, the other private-chat delivery shape, carries its pts
   });
 
   expect(received.map(live => live.pts)).toEqual([88]);
+});
+
+// ── read receipts ─────────────────────────────────────────────────────────
+//
+// The second tick. Before UpdateService subscribed to these, readOutboxMaxId
+// was written only by DialogService.sync() at startup, so a message sent and
+// read while you watched kept its single tick until the next launch.
+
+test('a read receipt advances the chat readOutboxMaxId, so the ticks turn read', () => {
+  const { adapter, emitReadReceipt } = buildAdapter();
+  const { service, database } = buildService(adapter);
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 9, readOutboxMaxId: 3 });
+  service.start();
+
+  emitReadReceipt({ peerId: 'u1', maxId: 9 });
+
+  expect(database.listDialogs().find(dialog => dialog.peerId === 'u1')?.readOutboxMaxId).toBe(9);
+  database.close();
+});
+
+// app.tsx feeds MessageView from state.dialogs, so a database write nothing
+// republished would leave the ticks on screen exactly as they were.
+test('a read receipt republishes the dialogs, which is what redraws the ticks', () => {
+  const { adapter, emitReadReceipt } = buildAdapter();
+  const { service, database, store } = buildService(adapter);
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 9, readOutboxMaxId: 0 });
+  store.setState({ patch: { dialogs: database.listDialogs() } });
+  service.start();
+
+  emitReadReceipt({ peerId: 'u1', maxId: 9 });
+
+  expect(store.getState().dialogs.find(dialog => dialog.peerId === 'u1')?.readOutboxMaxId).toBe(9);
+  database.close();
+});
+
+// Receipts carry no ordering guarantee, and a tick that has turned read must
+// never turn back into a single tick.
+test('a receipt with a lower maxId than one already applied does not walk the ticks backwards', () => {
+  const { adapter, emitReadReceipt } = buildAdapter();
+  const { service, database } = buildService(adapter);
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 9, readOutboxMaxId: 9 });
+  service.start();
+
+  emitReadReceipt({ peerId: 'u1', maxId: 4 });
+
+  expect(database.listDialogs().find(dialog => dialog.peerId === 'u1')?.readOutboxMaxId).toBe(9);
+  database.close();
+});
+
+// Advancing a chat the dialog list has never seen would have to invent its
+// pinned/lastMessageAt/topMessageId, putting a phantom row with a zero
+// timestamp in the sidebar.
+test('a receipt for a chat with no dialog row is a no-op, not a phantom chat', () => {
+  const { adapter, emitReadReceipt } = buildAdapter();
+  const { service, database } = buildService(adapter);
+  service.start();
+
+  emitReadReceipt({ peerId: 'u2', maxId: 5 });
+
+  expect(database.listDialogs()).toEqual([]);
+  database.close();
+});
+
+test('stopping the service releases the read-receipt subscription too', () => {
+  const { adapter, isSubscribed } = buildAdapter();
+  const { service, database } = buildService(adapter);
+
+  const stop = service.start();
+  expect(isSubscribed()).toBe(true);
+  stop();
+
+  expect(isSubscribed()).toBe(false);
+  database.close();
+});
+
+// The two update classes are not interchangeable: UpdateReadHistoryOutbox
+// carries a Peer union, UpdateReadChannelOutbox a bare unmarked channelId and
+// no peer at all. Deriving one the other's way yields an id no dialog matches.
+test('a private-chat read receipt derives the unmarked peer id from its Peer', () => {
+  const { client, fire } = buildSubscribedClient();
+  const received: IReadReceipt[] = [];
+  buildMessageAdapter({ client }).subscribeToReadReceipts({ onReadReceipt: receipt => { received.push(receipt); } });
+
+  fire(new Api.UpdateReadHistoryOutbox({
+    peer: new Api.PeerUser({ userId: BigInt(4242) as any }), maxId: 17, pts: 5, ptsCount: 1,
+  }));
+
+  expect(received).toEqual([{ peerId: '4242', maxId: 17 }]);
+});
+
+test('a channel read receipt reads its bare channelId, which is already unmarked', () => {
+  const { client, fire } = buildSubscribedClient();
+  const received: IReadReceipt[] = [];
+  buildMessageAdapter({ client }).subscribeToReadReceipts({ onReadReceipt: receipt => { received.push(receipt); } });
+
+  fire(new Api.UpdateReadChannelOutbox({ channelId: BigInt(777) as any, maxId: 30 }));
+
+  expect(received).toEqual([{ peerId: '777', maxId: 30 }]);
+});
+
+// The inbox pair says what THIS account has read elsewhere. Treating one as an
+// outbox receipt would mark your own messages seen because you read theirs.
+test('an inbox read update is ignored -- it is not a receipt for your own messages', () => {
+  const { client, fire } = buildSubscribedClient();
+  const received: IReadReceipt[] = [];
+  buildMessageAdapter({ client }).subscribeToReadReceipts({ onReadReceipt: receipt => { received.push(receipt); } });
+
+  fire(new Api.UpdateReadHistoryInbox({
+    peer: new Api.PeerUser({ userId: BigInt(4242) as any }), maxId: 17, stillUnreadCount: 2, pts: 5, ptsCount: 1,
+  }));
+
+  expect(received).toEqual([]);
 });
