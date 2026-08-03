@@ -38,8 +38,15 @@ const CONTEXT_INDENT = 2;
 /** Between the position and the hint, and the least air before the position. */
 const SECTION_GAP = 3;
 
-const resolveModeColour = (opts: { mode: TVimMode; tokens: ITokens }): string => {
-  const { mode, tokens } = opts;
+const resolveModeColour = (opts: { mode: TVimMode; tokens: ITokens; confirming: boolean }): string => {
+  const { mode, tokens, confirming } = opts;
+
+  // Waiting on y/n is its own mode: every other key is dropped until the
+  // question is answered. lualine gives its blocking mode a block of its own
+  // colour rather than leaving it reading NORMAL, so this does too.
+  if (confirming) {
+    return tokens.error;
+  }
 
   switch (mode) {
     case VimModes.INSERT: {
@@ -73,7 +80,7 @@ export const StatusLine = (props: IStatusLineProps) => {
 
   return (
     <box flexDirection="row" width={width} height={1}>
-      <text height={1} flexShrink={0} fg={tokens.background} bg={resolveModeColour({ mode, tokens })}>
+      <text height={1} flexShrink={0} fg={tokens.background} bg={resolveModeColour({ mode, tokens, confirming })}>
         {block}
       </text>
       <text height={1} flexShrink={0}>

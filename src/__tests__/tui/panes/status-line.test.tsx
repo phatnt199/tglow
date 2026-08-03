@@ -164,3 +164,20 @@ test('the title keeps the ordinary colour when nothing is pending confirmation',
   expect(span).toBeDefined();
   expect(toHex(span!.fg)).toBe(tokens.foreground.toLowerCase());
 });
+
+// Waiting on y/n is a mode: every other key is dropped. The owner's lualine
+// gives its one blocking mode -- replace -- a block of its own colour rather
+// than leaving it reading NORMAL, and this is tglow's equivalent.
+test('the mode block turns the danger colour while confirmation is blocking every other key', async () => {
+  const renderer = await render({ mode: VimModes.NORMAL, confirming: true, title: 'Delete this message? (y/n)' });
+  const block = renderer.captureSpans().lines[0]!.spans[0]!;
+  expect(block.text).toContain('NORMAL');
+  expect(toHex(block.bg)).toBe(tokens.error.toLowerCase());
+});
+
+// A warning is not a mode: it reports something that already happened and
+// every key still works, so the block must keep saying which mode you are in.
+test('a warning colours the message but leaves the mode block alone', async () => {
+  const renderer = await render({ mode: VimModes.NORMAL, warning: true, title: 'Some updates may be missing' });
+  expect(toHex(renderer.captureSpans().lines[0]!.spans[0]!.bg)).toBe(tokens.modeNormal.toLowerCase());
+});
