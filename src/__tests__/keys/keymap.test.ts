@@ -581,6 +581,44 @@ test('every binding the project promises the user is actually bound', () => {
   }
 });
 
+// The same class of bug the guard above exists for, but for M1b-2's
+// engine-intrinsic keys specifically: none of d/y/c, yy/cc, " or . has a
+// keymap entry for that guard's own isBound to find -- the tests earlier in
+// this file pin that directly ("bare d/y/c/./\" is not bound"). describe()'s
+// separate _intrinsicKeys list (keymap.ts) is the only thing that keeps these
+// seven keys from silently vanishing out of the which-key popup, so this
+// checks describe()'s own output the same way the guard above checks
+// getBindings(). app.test.tsx's own which-key test covers the other half --
+// that the popup actually renders whatever this list returns.
+test('every engine-intrinsic key the project promises the user is still described', () => {
+  const shown = build().keymapService.describe({ mode: VimModes.NORMAL, context: VimContexts.MESSAGES });
+  const describedKeys = shown.map(entry => entry.keys);
+  const isDescribed = (keys: string): boolean => describedKeys.includes(keys);
+
+  const promisedIntrinsic = ['d', 'y', 'c', 'yy', 'cc', '"', '.'];
+  for (const keys of promisedIntrinsic) {
+    expect({ keys, described: isDescribed(keys) }).toEqual({ keys, described: true });
+  }
+
+  // dd keeps its own real binding (keymap.ts) rather than an intrinsic
+  // descriptor -- describe() folding the two lists together must not end up
+  // listing it twice.
+  expect(describedKeys.filter(keys => keys === 'dd')).toHaveLength(1);
+});
+
+// Mirrors "dd does nothing while focused on the chat list" and "\" does
+// nothing while focused on the chat list" above, but for describe() rather
+// than resolve(): _intrinsicKeys carries the same context as vim-engine.ts's
+// own isMessagesNormalMode gate, so the popup must not advertise a key that
+// would not actually do anything from the pane the user is currently in.
+test('engine-intrinsic keys are not described while focused on the chat list', () => {
+  const shown = build().keymapService.describe({ mode: VimModes.NORMAL, context: VimContexts.CHAT_LIST });
+  const describedKeys = shown.map(entry => entry.keys);
+  for (const keys of ['d', 'y', 'c', 'yy', 'cc', '"', '.']) {
+    expect(describedKeys.includes(keys)).toBe(false);
+  }
+});
+
 // y cannot join the `promised` list above: outside a pending confirmation it
 // is already engine-intrinsic (vim-engine.ts's OPERATOR_TRIGGERS, the yank
 // trigger, no keymap entry -- the same reason bare `d` has none either), and

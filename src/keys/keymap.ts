@@ -3,6 +3,22 @@ import type { IKeyBinding, TVimContext, TVimMode } from './common/index.ts';
 
 const HALF_PAGE_MESSAGES = 10;
 
+/**
+ * An engine-intrinsic key (vim-engine.ts): resolved directly there, the same
+ * way a digit count is, so it has no `action(count)` and no `IKeyBinding` of
+ * its own for `describe()` below to find. Deliberately not shaped like
+ * `IKeyBinding` with a stub action -- a fabricated one is something
+ * `resolve()` could actually match, dispatching a binding that corresponds to
+ * no real key handling, which would be worse than the which-key gap this
+ * closes.
+ */
+interface IIntrinsicKeyDescriptor {
+  context: TVimContext | '*';
+  mode: TVimMode | TVimMode[];
+  keys: string;
+  description: string;
+}
+
 /** The M1a binding table. One table drives dispatch and the which-key popup, so they cannot drift. */
 export class KeymapService {
   private readonly _bindings: IKeyBinding[] = [
@@ -248,15 +264,62 @@ export class KeymapService {
     },
   ];
 
+  /**
+   * M1b-2's operator triggers (d/y/c), their doubled whole-message forms (yy,
+   * cc -- dd keeps the real, context-scoped binding above instead, per
+   * M1b-1's review), the register prefix (") and repeat (.): every one
+   * resolved directly in vim-engine.ts, gated behind its own
+   * isMessagesNormalMode, with no IKeyBinding of its own for describe() below
+   * to find -- the same way a digit count needs none. n/<S-n> need no entry
+   * here: unlike the rest of M1b-2 they are real bindings in `_bindings`
+   * above (search's own next/previous match), so describe() already finds
+   * them there.
+   *
+   * This list exists only so the which-key popup can see what vim-engine.ts
+   * already resolves. resolve() never reads it -- a wrong entry here could
+   * misinform the popup but can never change what a key press actually does,
+   * which is the whole reason this stays separate from `_bindings` instead of
+   * a real IKeyBinding with a stub action() (see IIntrinsicKeyDescriptor above).
+   */
+  private readonly _intrinsicKeys: IIntrinsicKeyDescriptor[] = [
+    { context: VimContexts.MESSAGES, mode: VimModes.NORMAL, keys: 'd', description: 'Delete with motion' },
+    { context: VimContexts.MESSAGES, mode: VimModes.NORMAL, keys: 'y', description: 'Yank with motion' },
+    { context: VimContexts.MESSAGES, mode: VimModes.NORMAL, keys: 'c', description: 'Change with motion' },
+    { context: VimContexts.MESSAGES, mode: VimModes.NORMAL, keys: 'yy', description: 'Yank message' },
+    { context: VimContexts.MESSAGES, mode: VimModes.NORMAL, keys: 'cc', description: 'Change message' },
+    { context: VimContexts.MESSAGES, mode: VimModes.NORMAL, keys: '"', description: 'Choose a register' },
+    { context: VimContexts.MESSAGES, mode: VimModes.NORMAL, keys: '.', description: 'Repeat last change' },
+  ];
+
   getBindings = (): IKeyBinding[] => {
     return this._bindings;
   };
 
+  private matchesMode = (opts: { entry: { mode: TVimMode | TVimMode[] }; mode: TVimMode }): boolean => {
+    const { entry, mode } = opts;
+    return Array.isArray(entry.mode) ? entry.mode.includes(mode) : entry.mode === mode;
+  };
+
+  private matchesContext = (opts: { entry: { context: TVimContext | '*' }; context: TVimContext }): boolean => {
+    const { entry, context } = opts;
+    return entry.context === '*' || entry.context === context;
+  };
+
   describe = (opts: { mode: TVimMode; context: TVimContext }): Array<{ keys: string; description: string }> => {
     const { mode, context } = opts;
-    return this._bindings
-      .filter(binding => (Array.isArray(binding.mode) ? binding.mode.includes(mode) : binding.mode === mode))
-      .filter(binding => binding.context === '*' || binding.context === context)
+
+    const tableDriven = this._bindings
+      .filter(binding => this.matchesMode({ entry: binding, mode }) && this.matchesContext({ entry: binding, context }))
       .map(binding => ({ keys: binding.keys, description: binding.description }));
+
+    // Concatenated, not merged into one filter over one array: _intrinsicKeys
+    // carries no `action`, so keeping the two lists physically separate here
+    // is what stops a future edit from quietly treating a display-only
+    // descriptor as something resolve() could dispatch.
+    const intrinsic = this._intrinsicKeys
+      .filter(entry => this.matchesMode({ entry, mode }) && this.matchesContext({ entry, context }))
+      .map(entry => ({ keys: entry.keys, description: entry.description }));
+
+    return [...tableDriven, ...intrinsic];
   };
 }

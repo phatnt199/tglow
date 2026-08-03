@@ -31,6 +31,17 @@ const TERMINAL_HEIGHT = 14;
 const SIDEBAR_WIDTH = 22;
 const CHROME_HEIGHT = 3;
 
+// Wide enough that the which-key popup's own column-major layout
+// (resolveWhichKeyHeight, which-key.tsx) never has to clip a row off the
+// bottom of the frame -- at TERMINAL_WIDTH/TERMINAL_HEIGHT above, a popup
+// listing every NORMAL/messages binding overflows long before reaching the
+// engine-intrinsic entries appended last (keymap.ts's own describe()), which
+// is exactly the gap a captureCharFrame assertion on those entries would
+// otherwise miss for reasons that have nothing to do with what it is testing.
+// 100x24 is also exactly what task-discoverability-report.md captures.
+const WIDE_TERMINAL_WIDTH = 100;
+const WIDE_TERMINAL_HEIGHT = 24;
+
 const dialogs: IDialogRow[] = [
   { peerId: 'u1', title: 'Alice', pinned: 0, unreadCount: 2, lastMessageAt: 300, topMessageId: 3, readOutboxMaxId: 0 },
 ];
@@ -105,6 +116,13 @@ const mount = async (opts: {
    * assertion can see.
    */
   extraBindings?: IKeyBinding[];
+  /**
+   * Defaults to TERMINAL_WIDTH/TERMINAL_HEIGHT, like every existing caller
+   * expects. The which-key discoverability test below is the only caller
+   * that needs more room -- see WIDE_TERMINAL_WIDTH/HEIGHT's own comment.
+   */
+  width?: number;
+  height?: number;
 } = {}) => {
   const container = new Container({ scope: 'AppTest' });
   container.bind({ key: BindingKeys.KEY_NORMALIZER }).toClass(KeyNormalizerService).setScope(BindingScopes.SINGLETON);
@@ -231,7 +249,7 @@ const mount = async (opts: {
       onOpenChat={onOpenChat}
       onMarkRead={onMarkRead}
     />,
-    { width: TERMINAL_WIDTH, height: TERMINAL_HEIGHT },
+    { width: opts.width ?? TERMINAL_WIDTH, height: opts.height ?? TERMINAL_HEIGHT },
   );
   await renderer.flush();
   return { renderer, store, sent, composerAtSend, edited, deleted, opened, marked, quit, database };
@@ -1665,6 +1683,40 @@ test('escape closes the overlay without also refocusing the pane underneath it',
   await pressEscape(renderer);
   expect(store.getState().overlay).toBeNull();
   expect(store.getState().engine.context).toBe(VimContexts.CHAT_LIST);
+});
+
+// task-discoverability-report.md: M1b-2's operators (d/y/c), their doubled
+// whole-message forms (yy/cc -- dd already had a real binding), the register
+// prefix (") and repeat (.) are all engine-intrinsic (vim-engine.ts): resolved
+// with no entry in the keymap table at all, the same way a digit count needs
+// none. That meant describe() -- and so this popup -- could not see them; only
+// `dd` had a keymap entry, and `\` reflects the keymap, not vim-engine.ts.
+// KeymapService now folds a separate, display-only descriptor list into
+// describe()'s own output (keymap.ts) so the popup can advertise them too.
+//
+// This goes through App and real key presses, not describe() directly,
+// because the reported gap was the popup failing to *render* what describe()
+// already returned -- a test on describe()'s return value alone would not
+// have caught a rendering-side failure to pick the new entries up. mount()
+// needs the wider terminal here (see WIDE_TERMINAL_WIDTH/HEIGHT's own
+// comment): at the default size the popup's own rows overflow the captured
+// frame long before reaching these entries, which describe() appends after
+// every table-driven one.
+test('the which-key popup lists the engine-intrinsic operator, register and repeat keys', async () => {
+  const { renderer, store } = await mount({ width: WIDE_TERMINAL_WIDTH, height: WIDE_TERMINAL_HEIGHT });
+  expect(store.getState().engine.context).toBe(VimContexts.MESSAGES);
+
+  await act(async () => { renderer.mockInput.pressKey('\\'); });
+  await renderer.flush();
+
+  const frame = renderer.captureCharFrame();
+  expect(frame).toContain('Delete with motion');
+  expect(frame).toContain('Yank with motion');
+  expect(frame).toContain('Change with motion');
+  expect(frame).toContain('Yank message');
+  expect(frame).toContain('Change message');
+  expect(frame).toContain('Choose a register');
+  expect(frame).toContain('Repeat last change');
 });
 
 // --- M1b-2 Task 8: <C-p>, fuzzy jump to any chat -----------------------------

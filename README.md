@@ -76,28 +76,54 @@ in, and a test fails if the committed copy ever drifts from `drizzle/`.
 Leader is `\`. The application starts in NORMAL mode — nothing you type is sent
 by accident.
 
+### Overlays
+
 | Key | Action |
 | --- | --- |
 | `\` | show key bindings |
 | `<C-p>` | fuzzy jump to any chat (type to filter, `<C-n>`/`<C-p>` or `j`/`k` to move, `Enter` to open, `Esc` to cancel) |
 | `/` | search the open chat's cached messages (type to filter, `Enter` jumps to the first match, `Esc` cancels and restores the cursor) |
 | `n` / `N` | jump to the next / previous search match |
+
+### Movement
+
+| Key | Action |
+| --- | --- |
 | `j` / `k` | next / previous message |
 | `3j` | down three messages |
 | `gg` / `G` | oldest loaded / newest |
 | `<C-d>` / `<C-u>` | half page down / up |
-| `zs` | reveal a spoiler under the cursor |
-| `K` | show the URL of a link under the cursor |
-| `r` | reply to the message under the cursor |
-| `e` | edit your own message under the cursor |
-| `dd` | delete the message under the cursor (asks `y`/`n` to confirm) |
 | `nf` | focus the chat list |
 | `<C-w>h` / `<C-w>l` | move focus between chat list and messages |
 | `Enter` (chat list) | open the chat |
 | `Esc` (chat list) | back to messages, without opening anything |
+
+### Messages
+
+| Key | Action |
+| --- | --- |
+| `zs` | reveal a spoiler under the cursor |
+| `K` | show the URL of a link under the cursor |
+| `r` | reply to the message under the cursor |
+| `e` | edit your own message under the cursor |
+| `d{motion}` / `dd` | delete the message under the cursor (asks `y`/`n` to confirm) |
+| `y{motion}` / `yy` | yank the message(s) under the cursor into a register |
+| `c{motion}` / `cc` | edit (change) the message under the cursor, same as `e` |
+| `"a` / `"+` then `y`/`d` | name a register first — any letter, or `+` for the system clipboard |
+| `.` | repeat the last change |
+
+### Insert mode
+
+| Key | Action |
+| --- | --- |
 | `i` / `a` | write a message |
 | `jk` or `Esc` | leave insert mode |
 | `Enter` (insert) | send |
+
+### Application
+
+| Key | Action |
+| --- | --- |
 | `<C-l>` (normal) | dismiss a data-integrity warning on the status line |
 | `<C-c>` (normal) | quit |
 
