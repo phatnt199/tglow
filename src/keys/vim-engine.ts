@@ -7,6 +7,7 @@ import type {
   IKey,
   IKeyBinding,
   IResolveResult,
+  TAction,
   TCursorUnit,
   TOperator,
   TVimContext,
@@ -17,6 +18,8 @@ import { parseKeySequence, type KeyNormalizerService } from './key-normalizer.ts
 const DIGIT_PATTERN = /^[0-9]$/;
 /** A register name (M1b-2 Task 5): a single lowercase letter, or `+` for the system clipboard (Task 6's write). */
 const REGISTER_NAME_PATTERN = /^[a-z+]$/;
+/** `.`, vim's own repeat key (M1b-2 Task 7) -- re-emits `state.lastChange`. */
+const REPEAT_TRIGGER = '.';
 
 /**
  * `d`/`y`/`c` are operator triggers in their own right, exactly like
@@ -82,6 +85,23 @@ export class VimEngineService {
     return { ...state, count: (state.count ?? 0) * 10 + Number(token) };
   };
 
+  /**
+   * `state.lastChange`, updated whenever `actions` contains an OPERATOR_APPLY
+   * -- an operator actually applying, whatever produced it: a literal keymap
+   * binding (dd, via applyStateActions below), the doubled-trigger branch, or
+   * a motion (both in resolveUnderOperator, further down). A motion alone
+   * never reaches here carrying such an action -- CURSOR_MOVE/CURSOR_EDGE are
+   * never bundled with an OPERATOR_APPLY -- which is what keeps `.` (M1b-2
+   * Task 7) from repeating mere cursor movement. Shared by all three commit
+   * points so they cannot drift on what "an operator applied" means, the same
+   * reason isMessagesNormalMode is shared rather than copied per Task 5.
+   */
+  private recordChange = (opts: { state: IEngineState; actions: TAction[] }): IEngineState => {
+    const { state, actions } = opts;
+    const applied = actions.some(action => action.type === ActionTypes.OPERATOR_APPLY);
+    return applied ? { ...state, lastChange: actions } : state;
+  };
+
   private applyStateActions = (opts: { state: IEngineState; binding: IKeyBinding; count: number }): {
     state: IEngineState;
     actions: IResolveResult['actions'];
@@ -115,6 +135,13 @@ export class VimEngineService {
         }
       }
     }
+
+    // M1b-2 Task 7: dd is the one binding in the real keymap whose action()
+    // includes an OPERATOR_APPLY, so this is where its own lastChange gets
+    // recorded; recordChange itself is shared with resolveUnderOperator's two
+    // OPERATOR_APPLY branches below, so a future binding that also resolves
+    // through here picks up dot-repeat for free rather than needing its own copy.
+    state = this.recordChange({ state, actions });
 
     return { state, actions };
   };
@@ -243,9 +270,13 @@ export class VimEngineService {
     // reset lands (app.tsx's commitResolution), so clearing it here does not
     // race the read.
     if (OPERATOR_TRIGGERS[token] === operator) {
+      const actions: TAction[] = [{ type: ActionTypes.OPERATOR_APPLY, operator, unit: 'message', from: 0, to: count - 1 }];
       return {
-        state: { ...state, operator: null, operatorCount: null, pending: [], count: null, register: null },
-        actions: [{ type: ActionTypes.OPERATOR_APPLY, operator, unit: 'message', from: 0, to: count - 1 }],
+        state: this.recordChange({
+          state: { ...state, operator: null, operatorCount: null, pending: [], count: null, register: null },
+          actions,
+        }),
+        actions,
         status: 'resolved',
       };
     }
@@ -267,11 +298,68 @@ export class VimEngineService {
     // through the cursor rather than the cursor down to nothing.
     const from = Math.min(0, motion.delta);
     const to = Math.max(0, motion.delta);
+    const actions: TAction[] = [{ type: ActionTypes.OPERATOR_APPLY, operator, unit: motion.unit, from, to }];
     return {
-      state: { ...state, operator: null, operatorCount: null, pending: [], count: null, register: null },
-      actions: [{ type: ActionTypes.OPERATOR_APPLY, operator, unit: motion.unit, from, to }],
+      state: this.recordChange({
+        state: { ...state, operator: null, operatorCount: null, pending: [], count: null, register: null },
+        actions,
+      }),
+      actions,
       status: 'resolved',
     };
+  };
+
+  /**
+   * A freshly typed count replaces whatever count produced the recorded
+   * OPERATOR_APPLY, rather than multiplying against it (M1b-2 Task 7's own
+   * headline: 2dd then 3. repeats as 3dd, not 6dd). Expressed the same way
+   * the doubled trigger itself computes an unqualified count's extent
+   * (resolveUnderOperator's own OPERATOR_TRIGGERS[token] === operator branch
+   * above: from 0, to count - 1) -- "count whole messages from the cursor" --
+   * since that is the only shape a bare count-and-repeat can unambiguously
+   * mean once whatever motion (if any) produced the original range is gone.
+   * Only from/to change: a motion's own direction (dk's upward range, say)
+   * is not reconstructed, deliberately -- see task-7-report.md.
+   */
+  private substituteCount = (opts: { actions: TAction[]; count: number }): TAction[] => {
+    const { actions, count } = opts;
+    return actions.map(action => {
+      if (action.type !== ActionTypes.OPERATOR_APPLY) {
+        return action;
+      }
+      return { ...action, from: 0, to: count - 1 };
+    });
+  };
+
+  /**
+   * `.`, vim's own repeat (M1b-2 Task 7): re-emits `state.lastChange`
+   * verbatim, or with a freshly typed count substituted in. `state.lastChange`
+   * is only ever the actions from a resolved OPERATOR_APPLY (recordChange's
+   * own gate above), and OPERATOR_APPLY's own from/to are already
+   * cursor-relative deltas -- the same reason a motion's own delta is (see
+   * resolveMotion's doc comment) -- so replaying them unchanged is what makes
+   * `.` act on the message now under the cursor rather than the one the
+   * original operator targeted, with no special handling needed here for
+   * that alone.
+   *
+   * Always 'resolved', never 'pending': there is no further key to wait for,
+   * and app.tsx's commitResolution only ever runs a result's actions when
+   * status is 'resolved' -- M1b-2 Task 5 found this the hard way for
+   * REGISTER_SET, and the same trap applies here.
+   */
+  private resolveRepeat = (opts: { state: IEngineState }): IResolveResult => {
+    const { state } = opts;
+    const resetState: IEngineState = { ...state, pending: [], count: null, register: null };
+
+    if (state.lastChange === null) {
+      return { state: resetState, actions: [], status: 'resolved' };
+    }
+
+    const actions = state.count === null
+      ? state.lastChange
+      : this.substituteCount({ actions: state.lastChange, count: state.count });
+
+    return { state: { ...resetState, lastChange: actions }, actions, status: 'resolved' };
   };
 
   resolve = (opts: { state: IEngineState; key: IKey; keymap: IKeyBinding[] }): IResolveResult => {
@@ -395,6 +483,19 @@ export class VimEngineService {
       // with nothing to defer to and no timeout race to report.
       if (token === UNNAMED_REGISTER && this.isMessagesNormalMode({ state })) {
         return { state: { ...state, pending: sequence }, actions: [], status: 'pending' };
+      }
+
+      // `.`, repeat's own trigger (M1b-2 Task 7): engine-intrinsic and gated
+      // the same way, for the same two reasons -- messages-pane-only so `.`
+      // cannot act on a cursor it does not share (M1b-1's own rule, which
+      // operators and registers already preserve), and NORMAL-mode-only so a
+      // literal "." typed at the end of a composed message still reaches
+      // app.tsx's ordinary printable-character flushing instead of being
+      // swallowed here. Unlike `"`, this resolves immediately rather than
+      // entering pending -- there is no name to wait for, only lastChange to
+      // (maybe) re-emit -- so it delegates straight to resolveRepeat.
+      if (token === REPEAT_TRIGGER && this.isMessagesNormalMode({ state })) {
+        return this.resolveRepeat({ state });
       }
     }
 

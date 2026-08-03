@@ -794,6 +794,179 @@ test('"+dd copies the deleted message to the system clipboard immediately, not g
   expect(deleted).toEqual([]);
 });
 
+// --- M1b-2 Task 7: `.` repeats the last change -------------------------------
+//
+// Task 5's own report found a bug an engine-only test could not have caught:
+// REGISTER_SET briefly resolved with status 'pending', which app.tsx's
+// commitResolution silently drops (it only ever runs a result's actions when
+// status is 'resolved'). `.` carries the identical risk, so every test below
+// drives it through real key presses against the real store rather than
+// calling engine.resolve() directly -- if `.` ever regressed to 'pending',
+// every assertion here that checks an actual mutation would fail.
+
+test('. with no prior change does nothing, silently', async () => {
+  const { renderer, store, deleted } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('.'); });
+  await renderer.flush();
+  expect(store.getState().pendingConfirmation).toBeNull();
+  expect(store.getState().messageCursor).toBe(0);
+  expect(store.getState().registers).toEqual({});
+  expect(deleted).toEqual([]);
+});
+
+// Requirement 1: a motion is not a change. If `j` were mistakenly recorded as
+// one, `.` here would move the cursor a second time.
+test('a motion (j) is not a change -- . after it does nothing', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('j'); });
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(1);
+
+  await act(async () => { renderer.mockInput.pressKey('.'); });
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(1);
+  expect(store.getState().pendingConfirmation).toBeNull();
+});
+
+// M1b-1's guarantee, tested explicitly a third time (Tasks 4 and 5 both
+// already had to preserve it): a repeated delete must still confirm, not
+// delete outright.
+test('. repeating a delete still asks for confirmation -- it does not delete outright', async () => {
+  const { renderer, store, deleted } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('d'); renderer.mockInput.pressKey('d'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('y'); });
+  await renderer.flush();
+  expect(deleted).toEqual([{ messageId: 1 }]);
+
+  await act(async () => { renderer.mockInput.pressKey('.'); });
+  await renderer.flush();
+  expect(deleted).toEqual([{ messageId: 1 }]); // not yet a second delete
+  expect(store.getState().pendingConfirmation).not.toBeNull();
+  expect(renderer.captureCharFrame()).toContain('Delete');
+
+  await act(async () => { renderer.mockInput.pressKey('y'); });
+  await renderer.flush();
+  expect(deleted).toHaveLength(2);
+});
+
+// Requirement 3, the brief's own example: dd, j, . must delete the message
+// now under the cursor, not the one dd originally targeted. onDelete never
+// removes anything from state.messages in this stub (matching every other
+// dd test in this file), so messageCursor 1 after `j` is msg2 -- a repeat
+// that still targeted msg1 would prove the engine replayed an absolute
+// target instead of a cursor-relative delta.
+test('. after dd repeats on the message now under the cursor, not the original one', async () => {
+  const { renderer, store, deleted } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('d'); renderer.mockInput.pressKey('d'); });
+  await renderer.flush();
+  expect(store.getState().pendingConfirmation).toEqual({ kind: 'delete', messageId: 1 });
+  await act(async () => { renderer.mockInput.pressKey('y'); });
+  await renderer.flush();
+
+  await act(async () => { renderer.mockInput.pressKey('j'); });
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(1);
+
+  await act(async () => { renderer.mockInput.pressKey('.'); });
+  await renderer.flush();
+  expect(store.getState().pendingConfirmation).toEqual({ kind: 'delete', messageId: 2 });
+
+  await act(async () => { renderer.mockInput.pressKey('y'); });
+  await renderer.flush();
+  expect(deleted).toEqual([{ messageId: 1 }, { messageId: 2 }]);
+});
+
+// Requirement 5 (task-7-brief.md's own open question) -- decision: a
+// cancelled delete still counts as the last change. lastChange is recorded
+// the instant OPERATOR_APPLY resolves (vim-engine.ts's recordChange), before
+// App ever asks for confirmation -- the identical timing Task 5 already
+// relies on for a register write surviving a cancelled dd ("a cancelled dd
+// still 'copies' the message", action-reducer.ts). Real vim's own `.` has no
+// concept of a cancelled change to begin with, since nothing in stock vim
+// gates a change behind a y/n prompt; tglow's confirmation is a layer on top
+// of that, and it reapplies independently on the repeat too (the second
+// assertion below), so nothing unsafe follows from treating the cancelled
+// attempt as real.
+test('. after a cancelled (n) delete still repeats it -- and still asks again', async () => {
+  const { renderer, store, deleted } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('d'); renderer.mockInput.pressKey('d'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('n'); });
+  await renderer.flush();
+  expect(deleted).toEqual([]);
+  expect(store.getState().pendingConfirmation).toBeNull();
+
+  await act(async () => { renderer.mockInput.pressKey('.'); });
+  await renderer.flush();
+  expect(store.getState().pendingConfirmation).toEqual({ kind: 'delete', messageId: 1 });
+  expect(deleted).toEqual([]);
+});
+
+// A bare `.` repeats the exact recorded range verbatim -- 2yy's own count
+// stays 2, not reset to 1.
+test('2yy then a bare . repeats the same two-message range', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => {
+    renderer.mockInput.pressKey('2');
+    renderer.mockInput.pressKey('y');
+    renderer.mockInput.pressKey('y');
+  });
+  await renderer.flush();
+  expect(store.getState().registers['"']).toBe('msg1\nmsg2');
+
+  await act(async () => { renderer.mockInput.pressKey('.'); });
+  await renderer.flush();
+  expect(store.getState().registers['"']).toBe('msg1\nmsg2');
+});
+
+// The brief's own headline, end to end: a freshly typed count replaces the
+// recorded one -- 3. after a plain (count-1) yy yanks three messages, not
+// one and not the original range multiplied.
+test('3. after a plain yy replaces the count with three', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('y'); renderer.mockInput.pressKey('y'); });
+  await renderer.flush();
+  expect(store.getState().registers['"']).toBe('msg1');
+
+  await act(async () => {
+    renderer.mockInput.pressKey('3');
+    renderer.mockInput.pressKey('.');
+  });
+  await renderer.flush();
+  expect(store.getState().registers['"']).toBe('msg1\nmsg2\nmsg3');
+});
+
+// Operators do nothing from the chat list (M1b-1's guarantee, preserved by
+// Tasks 3-5); `.` re-emits an operator application, so it follows the same
+// rule.
+test('. does nothing while focused on the chat list', async () => {
+  const { renderer, store, deleted } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('d'); renderer.mockInput.pressKey('d'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('y'); });
+  await renderer.flush();
+
+  await act(async () => { renderer.mockInput.pressKey('n'); renderer.mockInput.pressKey('f'); });
+  await renderer.flush();
+  expect(store.getState().engine.context).toBe(VimContexts.CHAT_LIST);
+
+  await act(async () => { renderer.mockInput.pressKey('.'); });
+  await renderer.flush();
+  expect(store.getState().pendingConfirmation).toBeNull();
+  expect(deleted).toEqual([{ messageId: 1 }]);
+});
+
+// `.` must still reach the composer as a literal character in INSERT mode --
+// otherwise "end of sentence." would silently lose its period.
+test('. in insert mode reaches the composer as literal text', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await act(async () => { await renderer.mockInput.typeText('hi.'); });
+  await renderer.flush();
+  expect(store.getState().composerText).toBe('hi.');
+});
+
 test('cc on an own message loads it into the composer for editing, same as e', async () => {
   const { renderer, store } = await mount({ messages: [ownMessage] });
   await act(async () => { renderer.mockInput.pressKey('c'); renderer.mockInput.pressKey('c'); });

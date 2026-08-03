@@ -214,6 +214,11 @@ test('resolve and flushPending never mutate the state they are given', () => {
   expect(() => engine.resolve({ state: buildFrozenState(), key: buildKey('"'), keymap })).not.toThrow();
   const frozenRegisterPending = Object.freeze({ ...INITIAL_ENGINE_STATE, pending: ['"'] });
   expect(() => engine.resolve({ state: frozenRegisterPending, key: buildKey('a'), keymap })).not.toThrow();
+
+  // resolve -- `.` with lastChange still null, the only branch reachable
+  // from a frozen INITIAL_ENGINE_STATE (a non-null lastChange is only ever
+  // produced by resolve() itself, never handed in from outside).
+  expect(() => engine.resolve({ state: buildFrozenState(), key: buildKey('.'), keymap })).not.toThrow();
 });
 
 // Otherwise `j` in the chat list would move the message cursor, and which one
@@ -715,4 +720,137 @@ test('a count typed before the register still reaches the operator once named', 
   expect(applied.actions).toEqual([
     { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 2 },
   ]);
+});
+
+// M1b-2 Task 7: `.` repeats the last change. `state.lastChange` is set only
+// when an operator actually applies -- never for an ordinary motion, which
+// is the property that makes `.` useful rather than a landmine. This file's
+// own `keymap` fixture still has no dd/yy/cc/`.` of any kind, exactly as it
+// never has for the doubled operators above, so every test below reaches
+// OPERATOR_APPLY through the engine-intrinsic doubled-trigger or motion
+// paths, the same way Task 4's own tests in this file do.
+
+test('a motion alone does not set lastChange -- only an operator applying does', () => {
+  const engine = buildEngine();
+  const result = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('j'), keymap });
+  expect(result.state.lastChange).toBeNull();
+});
+
+test('an operator applying via the doubled form (dd) records lastChange', () => {
+  const engine = buildEngine();
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('d'), keymap });
+  const applied = engine.resolve({ state: pending.state, key: buildKey('d'), keymap });
+  expect(applied.state.lastChange).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0 },
+  ]);
+});
+
+test('an operator applying via a motion (dj) also records lastChange', () => {
+  const engine = buildEngine();
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('d'), keymap });
+  const applied = engine.resolve({ state: pending.state, key: buildKey('j'), keymap });
+  expect(applied.state.lastChange).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 1 },
+  ]);
+});
+
+test('. with no prior change resolves with no actions, silently', () => {
+  const result = buildEngine().resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('.'), keymap });
+  expect(result.status).toBe('resolved');
+  expect(result.actions).toEqual([]);
+});
+
+test('. after dd (doubled) re-emits the same delete', () => {
+  const engine = buildEngine();
+  let state = INITIAL_ENGINE_STATE;
+  state = engine.resolve({ state, key: buildKey('d'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('d'), keymap }).state;
+  const repeated = engine.resolve({ state, key: buildKey('.'), keymap });
+  expect(repeated.status).toBe('resolved');
+  expect(repeated.actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0 },
+  ]);
+});
+
+// The brief's own headline: a freshly typed count replaces the recorded one
+// rather than multiplying against it -- 3. after a plain (count-1) dd acts
+// like 3dd, not like 3dd-squared.
+test('3. replaces the recorded count rather than multiplying it', () => {
+  const engine = buildEngine();
+  let state = INITIAL_ENGINE_STATE;
+  state = engine.resolve({ state, key: buildKey('d'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('d'), keymap }).state; // dd, count 1
+  state = engine.resolve({ state, key: buildKey('3'), keymap }).state;
+  const repeated = engine.resolve({ state, key: buildKey('.'), keymap });
+  expect(repeated.actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 2 },
+  ]);
+});
+
+// The substituted count itself becomes the new baseline: a further bare `.`
+// repeats *that* extent, not the original count-1 shape it displaced.
+test('a bare . after 3. keeps repeating with three, not the original count', () => {
+  const engine = buildEngine();
+  let state = INITIAL_ENGINE_STATE;
+  state = engine.resolve({ state, key: buildKey('d'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('d'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('3'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('.'), keymap }).state;
+  const again = engine.resolve({ state, key: buildKey('.'), keymap });
+  expect(again.actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 2 },
+  ]);
+});
+
+// A failed operation is not recorded: an operator that gets cancelled (an
+// unbound key, or escape) instead of applying must not clobber whatever
+// lastChange already held, or `.` would start retrying the failed attempt
+// instead of the last real one.
+test('a cancelled operator attempt does not overwrite an existing lastChange', () => {
+  const engine = buildEngine();
+  let state = INITIAL_ENGINE_STATE;
+  state = engine.resolve({ state, key: buildKey('d'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('d'), keymap }).state; // records lastChange
+  expect(state.lastChange).not.toBeNull();
+  const recorded = state.lastChange!;
+
+  state = engine.resolve({ state, key: buildKey('y'), keymap }).state; // enters operator-pending
+  state = engine.resolve({ state, key: buildKey('escape'), keymap }).state; // cancels, nothing applied
+  expect(state.lastChange).toEqual(recorded);
+
+  const repeated = engine.resolve({ state, key: buildKey('.'), keymap });
+  expect(repeated.actions).toEqual(recorded);
+});
+
+test('a failed operator attempt with no prior change leaves lastChange null', () => {
+  const engine = buildEngine();
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('d'), keymap });
+  const cancelled = engine.resolve({ state: pending.state, key: buildKey('escape'), keymap });
+  expect(cancelled.state.lastChange).toBeNull();
+});
+
+// Operators are scoped to the messages pane (M1b-1's guarantee, preserved by
+// Tasks 3-5); `.` re-emits an operator application, so it follows the same
+// rule -- the same gate isMessagesNormalMode already applies to d/y/c/".
+test('. does nothing outside the messages context, the same as an operator trigger', () => {
+  const engine = buildEngine();
+  let state = INITIAL_ENGINE_STATE;
+  state = engine.resolve({ state, key: buildKey('d'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('d'), keymap }).state;
+  const chatList: IEngineState = { ...state, context: VimContexts.CHAT_LIST };
+  const result = engine.resolve({ state: chatList, key: buildKey('.'), keymap });
+  expect(result.status).toBe('unmapped');
+});
+
+// Gated on NORMAL mode too, the same as accumulateCount's own digit gate and
+// operator entry -- otherwise a literal "." typed at the end of a composed
+// message would be swallowed here instead of reaching the composer.
+test('. in insert mode is not consumed as repeat', () => {
+  const engine = buildEngine();
+  let state = INITIAL_ENGINE_STATE;
+  state = engine.resolve({ state, key: buildKey('d'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('d'), keymap }).state;
+  const insert: IEngineState = { ...state, mode: VimModes.INSERT };
+  const result = engine.resolve({ state: insert, key: buildKey('.'), keymap });
+  expect(result.status).toBe('unmapped');
 });

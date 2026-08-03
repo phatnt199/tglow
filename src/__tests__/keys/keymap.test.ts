@@ -317,6 +317,35 @@ test('d then a real motion resolves immediately as an operator application, not 
   ]);
 });
 
+// M1b-2 Task 7: `.` is engine-intrinsic exactly like the bare operator
+// triggers and the register prefix above -- no keymap entry of its own.
+test('bare . is not bound -- repeat is engine-intrinsic, not a keymap entry', () => {
+  const keys = build().keymapService.getBindings().map(binding => binding.keys);
+  expect(keys).not.toContain('.');
+});
+
+// Against the real keymap this time (real dd, with its own d/dd ambiguity
+// dance), the same way "yy against the real keymap" and "\"ayy against the
+// real keymap" already prove their own engine-intrinsic features work
+// outside this file's synthetic fixture.
+test('. against the real keymap repeats dd', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('d'), keymap });
+  expect(pending.status).toBe('ambiguous');
+  const applied = engine.resolve({ state: pending.state, key: buildKey('d'), keymap });
+  expect(applied.actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0 },
+  ]);
+
+  const repeated = engine.resolve({ state: applied.state, key: buildKey('.'), keymap });
+  expect(repeated.status).toBe('resolved');
+  expect(repeated.actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0 },
+  ]);
+});
+
 // "d alone waits": nothing completes the ambiguity within the same
 // synchronous key press, so it is still there for App's timeoutlen to
 // settle via flushPending -- which commits the operator (not DELETE_REQUEST,

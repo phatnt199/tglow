@@ -98,4 +98,5 @@ export const INITIAL_ENGINE_STATE: IEngineState = {
   operator: null,
   operatorCount: null,
   register: null,
+  lastChange: null,
 };

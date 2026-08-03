@@ -81,6 +81,17 @@ export interface IEngineState {
    * only ever holds the name itself.
    */
   register: string | null;
+  /**
+   * The actions the most recent operator application produced -- what `.`
+   * re-emits (M1b-2 Task 7). Set only when an OPERATOR_APPLY actually
+   * resolves (vim-engine.ts's recordChange), never for a motion alone, which
+   * is what keeps `.` from repeating mere cursor movement. Survives a
+   * cancelled delete confirmation unchanged: it is written the instant the
+   * engine resolves OPERATOR_APPLY, before App ever asks y/n, the same
+   * timing Task 5's register write already relies on ("a cancelled dd still
+   * copies the message").
+   */
+  lastChange: TAction[] | null;
 }
 
 export interface IKeyBinding {
