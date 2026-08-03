@@ -9,7 +9,7 @@ import { BindingKeys } from '../../common/index.ts';
 // Concrete module, not the core/ barrel -- see src/tui/action-reducer.ts for why.
 import { ApplicationStoreService } from '../../core/application-store.ts';
 import type { IDialogRow, IMessageRow } from '../../core/cache/index.ts';
-import { VimContexts } from '../../keys/common/index.ts';
+import { ActionTypes, VimContexts, VimModes, type IKeyBinding } from '../../keys/common/index.ts';
 import { KeyNormalizerService, KeymapService, VimEngineService } from '../../keys/index.ts';
 import { renderWithKeys } from '../helpers/render.tsx';
 import { buildTokens } from '../../tui/theme/index.ts';
@@ -63,6 +63,9 @@ const SEND_SETTLE_MILLISECONDS = SEND_ROUND_TRIP_MILLISECONDS + 10;
 // lets that chain actually settle before an assertion reads `marked`.
 const MARK_READ_SETTLE_MILLISECONDS = 20;
 
+// Mirrors IApplicationConfiguration's own default (src/core/configuration.ts) -- vim's timeoutlen.
+const TIMEOUT_MILLISECONDS = 400;
+
 const pressEscape = async (renderer: TestRendererSetup): Promise<void> => {
   await act(async () => {
     renderer.mockInput.pressEscape();
@@ -77,11 +80,27 @@ const mount = async (opts: {
   onEdit?: (edit: { messageId: number; text: string }) => Promise<void>;
   onDelete?: (deletion: { messageId: number }) => Promise<void>;
   onOpenChat?: (chat: { peerId: string }) => Promise<void>;
+  /**
+   * Appended to the real 27-binding keymap rather than replacing it, so
+   * everything else these tests rely on (dd's own confirmation included)
+   * keeps working unchanged. Task 2's timeout tests are the only callers:
+   * the real keymap has no ambiguous sequence of its own to observe.
+   */
+  extraBindings?: IKeyBinding[];
 } = {}) => {
   const container = new Container({ scope: 'AppTest' });
   container.bind({ key: BindingKeys.KEY_NORMALIZER }).toClass(KeyNormalizerService).setScope(BindingScopes.SINGLETON);
   container.bind({ key: BindingKeys.VIM_ENGINE }).toClass(VimEngineService).setScope(BindingScopes.SINGLETON);
   container.bind({ key: BindingKeys.KEYMAP }).toClass(KeymapService).setScope(BindingScopes.SINGLETON);
+
+  const keymapService = container.get<KeymapService>({ key: BindingKeys.KEYMAP });
+  if (opts.extraBindings) {
+    // getBindings is a plain, mutable instance property (not readonly), so
+    // reassigning it is type-safe with no cast and no subclass -- and scoped
+    // to this one container/test, since every mount() builds its own.
+    const extendedBindings = [...keymapService.getBindings(), ...opts.extraBindings];
+    keymapService.getBindings = () => extendedBindings;
+  }
 
   const store = new ApplicationStoreService();
   store.setState({
@@ -152,8 +171,9 @@ const mount = async (opts: {
     <App
       store={store}
       engine={container.get<VimEngineService>({ key: BindingKeys.VIM_ENGINE })}
-      keymapService={container.get<KeymapService>({ key: BindingKeys.KEYMAP })}
+      keymapService={keymapService}
       keyNormalizer={container.get<KeyNormalizerService>({ key: BindingKeys.KEY_NORMALIZER })}
+      timeoutMilliseconds={TIMEOUT_MILLISECONDS}
       tokens={tokens}
       resolveSenderName={() => 'Alice'}
       onSend={onSend}
@@ -563,6 +583,87 @@ test('the status line turns the danger colour while a delete is pending confirma
   const span = statusRow.spans.find(candidate => candidate.text.includes('Delete'));
   expect(span).toBeDefined();
   expect(rgbToHex(span!.fg).toLowerCase()).toBe(tokens.error.toLowerCase());
+});
+
+// --- Task 2 (M1b-2): the ambiguous-key timeout, vim's own timeoutlen -------
+//
+// The real keymap has no ambiguous sequence of its own -- Task 1's report
+// verified all 27 bindings still resolve immediately -- so these tests
+// extend it with one test-only binding for bare `d`, alongside the real
+// `dd`. That makes `d` both an exact match and a prefix of `dd`, which is
+// exactly what makes vim-engine.ts's resolve() report `ambiguous` rather
+// than merely `pending`; without a genuine `ambiguous` status, waiting past
+// the timeout below would prove nothing. Its action (CURSOR_EDGE 'last') is
+// deliberately unlike dd's own DELETE_REQUEST, so the two effects -- and
+// which one, if either, actually ran -- are distinguishable on
+// messageCursor and pendingConfirmation independently.
+const AMBIGUOUS_SHORT_D_BINDING: IKeyBinding = {
+  context: '*',
+  mode: VimModes.NORMAL,
+  keys: 'd',
+  description: 'test-only: short half of the d/dd ambiguity',
+  action: () => [{ type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'last' }],
+};
+
+// Comfortably past TIMEOUT_MILLISECONDS (400) so the wait is never close
+// enough to flake.
+const PAST_TIMEOUT_MILLISECONDS = 500;
+
+test('an ambiguous key resolves the short binding after the timeout', async () => {
+  const { renderer, store } = await mount({ extraBindings: [AMBIGUOUS_SHORT_D_BINDING] });
+  await act(async () => { renderer.mockInput.pressKey('d'); });
+  await renderer.flush();
+  expect(store.getState().pendingConfirmation).toBeNull();   // dd has not fired
+  expect(store.getState().messageCursor).toBe(0);            // nor has the short binding, yet
+
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, PAST_TIMEOUT_MILLISECONDS)); });
+  await renderer.flush();
+  // The short binding's own effect: CURSOR_EDGE 'last' moves the cursor to
+  // the newest message.
+  expect(store.getState().messageCursor).toBe(store.getState().messages.length - 1);
+  expect(store.getState().pendingConfirmation).toBeNull();
+});
+
+test('a second key beats the timer and resolves the longer binding', async () => {
+  const { renderer, store } = await mount({ extraBindings: [AMBIGUOUS_SHORT_D_BINDING] });
+  await act(async () => { renderer.mockInput.pressKey('d'); renderer.mockInput.pressKey('d'); });
+  await renderer.flush();
+  expect(store.getState().pendingConfirmation).not.toBeNull();  // dd fired
+  expect(store.getState().messageCursor).toBe(0);                // the short binding never ran
+});
+
+// The load-bearing test. Without clearing the timer on every key press, the
+// first `d`'s timer is still armed when the second `d` resolves dd a moment
+// later, and fires the short binding's own CURSOR_EDGE on top of it once the
+// clock runs out -- moving the cursor as a second effect of one dd. Verified
+// by temporarily deleting the clear in app.tsx and re-running this file:
+// this test failed on messageCursor (3, not 0) with that clear removed, and
+// passed again once it was restored.
+test('the timer is cancelled when a key arrives, so the short binding never also fires', async () => {
+  const { renderer, store } = await mount({ extraBindings: [AMBIGUOUS_SHORT_D_BINDING] });
+  await act(async () => { renderer.mockInput.pressKey('d'); renderer.mockInput.pressKey('d'); });
+  await renderer.flush();
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, PAST_TIMEOUT_MILLISECONDS)); });
+  await renderer.flush();
+  // Exactly one confirmation, from dd alone -- and the cursor, which dd's
+  // own binding never touches, is still where it started: not moved by a
+  // late-firing short d.
+  expect(store.getState().pendingConfirmation).not.toBeNull();
+  expect(store.getState().messageCursor).toBe(0);
+});
+
+test('unmounting clears a running timer', async () => {
+  const { renderer } = await mount({ extraBindings: [AMBIGUOUS_SHORT_D_BINDING] });
+  await act(async () => { renderer.mockInput.pressKey('d'); });
+  await renderer.flush();
+  // destroy() unmounts the React root still attached to this renderer, so it
+  // needs act() around it too -- the same rule render.tsx's own helper
+  // follows when it tears down the previous test's renderer -- or React
+  // warns that an update to Root escaped act(), independent of anything this
+  // task changed.
+  act(() => {
+    expect(() => renderer.renderer.destroy()).not.toThrow();
+  });
 });
 
 test('i enters INSERT and jk returns to NORMAL', async () => {

@@ -30,6 +30,18 @@ test('palette can be overridden', () => {
   expect(service.load({ filePath }).palette).toBe('ember');
 });
 
+// vim's own timeoutlen default -- see src/tui/app.tsx, which owns the timer
+// this value governs.
+test('timeoutMilliseconds defaults to 400', () => {
+  const filePath = writeConfiguration('api_id = 1\napi_hash = "x"\n');
+  expect(service.load({ filePath }).timeoutMilliseconds).toBe(400);
+});
+
+test('timeoutMilliseconds can be overridden', () => {
+  const filePath = writeConfiguration('api_id = 1\napi_hash = "x"\ntimeout_milliseconds = 250\n');
+  expect(service.load({ filePath }).timeoutMilliseconds).toBe(250);
+});
+
 test('comments and blank lines are ignored', () => {
   const filePath = writeConfiguration('# a comment\n\napi_id = 7\napi_hash = "y"\n');
   expect(service.load({ filePath }).apiId).toBe(7);

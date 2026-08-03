@@ -13,6 +13,7 @@ const buildConfiguration = (): IApplicationConfiguration => {
     apiId: 1234,
     apiHash: 'hash',
     palette: 'sage',
+    timeoutMilliseconds: 400,
     sessionPath: join(directory, 'session'),
     cachePath: join(directory, 'cache.sqlite'),
     logPath: join(directory, 'tglow.log'),

@@ -162,6 +162,7 @@ const main = async (): Promise<void> => {
         engine: container.get<VimEngineService>({ key: BindingKeys.VIM_ENGINE }),
         keymapService: container.get<KeymapService>({ key: BindingKeys.KEYMAP }),
         keyNormalizer: container.get<KeyNormalizerService>({ key: BindingKeys.KEY_NORMALIZER }),
+        timeoutMilliseconds: configuration.timeoutMilliseconds,
         tokens: buildTokens({ paletteName: configuration.palette }),
         // Resolved from the store on every call, not from the dialog that
         // happened to be open at startup: closing over firstDialog labelled

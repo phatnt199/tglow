@@ -7,6 +7,8 @@ import { getError } from '@venizia/ignis-inversion';
 import type { IApplicationConfiguration } from './common/index.ts';
 
 const DEFAULT_PALETTE = 'sage';
+/** vim's own `timeoutlen` default. */
+const DEFAULT_TIMEOUT_MILLISECONDS = 400;
 
 const SETUP_HINT = [
   'Create it with:',
@@ -82,6 +84,9 @@ export class ConfigurationService {
       apiId: raw.api_id,
       apiHash: raw.api_hash,
       palette: typeof raw.palette === 'string' ? raw.palette : DEFAULT_PALETTE,
+      timeoutMilliseconds: typeof raw.timeout_milliseconds === 'number'
+        ? raw.timeout_milliseconds
+        : DEFAULT_TIMEOUT_MILLISECONDS,
       sessionPath: join(dataHome, 'tglow', 'session'),
       cachePath: join(dataHome, 'tglow', 'cache.sqlite'),
       logPath: join(dataHome, 'tglow', 'tglow.log'),

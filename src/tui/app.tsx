@@ -1,4 +1,4 @@
-import { useCallback, useRef, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
 
 import { useKeyboard, useTerminalDimensions } from '@opentui/react';
 import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
@@ -9,7 +9,9 @@ import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
 // points at the concrete module rather than the core/ barrel purely because
 // that is where IApplicationState is actually defined.
 import type { ApplicationStoreService, IApplicationState } from '../core/application-store.ts';
-import { ActionTypes, VimContexts, VimModes, type IEngineState, type TAction } from '../keys/common/index.ts';
+import {
+  ActionTypes, VimContexts, VimModes, type IEngineState, type IResolveResult, type TAction,
+} from '../keys/common/index.ts';
 import type { KeyNormalizerService, KeymapService, VimEngineService } from '../keys/index.ts';
 import { applyAction } from './action-reducer.ts';
 import { resolveWhichKeyHeight, WhichKey } from './overlays/index.ts';
@@ -21,6 +23,15 @@ export interface IAppProps {
   engine: VimEngineService;
   keymapService: KeymapService;
   keyNormalizer: KeyNormalizerService;
+  /**
+   * How long an `ambiguous` key sequence (vim-engine.ts's own status: an
+   * exact match that is also the prefix of a longer binding, the way a
+   * hypothetical bare `d` would sit next to `dd`) waits for a completing key
+   * before the engine's flushPending resolves the shorter binding on its
+   * own -- vim's own timeoutlen. Sourced from IApplicationConfiguration so
+   * it can be tuned without a rebuild.
+   */
+  timeoutMilliseconds: number;
   tokens: ITokens;
   resolveSenderName: (opts: { fromId: string | null }) => string;
   onSend: (text: string) => Promise<void>;
@@ -126,7 +137,7 @@ const toFlushedText = (opts: { pending: string[] }): string => {
 
 export const App = (props: IAppProps) => {
   const {
-    store, engine, keymapService, keyNormalizer, tokens, resolveSenderName,
+    store, engine, keymapService, keyNormalizer, timeoutMilliseconds, tokens, resolveSenderName,
     onSend, onEdit, onDelete, onQuit, onOpenChat, onMarkRead,
   } = props;
 
@@ -151,7 +162,186 @@ export const App = (props: IAppProps) => {
   // already reads store.getState() fresh rather than a render's `state`.
   const sendInFlightRef = useRef(false);
 
+  // The pending ambiguous-key timeout, if any. A ref, not state, for the same
+  // reason the handler below reads store.getState() fresh rather than a
+  // React snapshot: the very next key press -- possibly landing in the same
+  // synchronous burst mockInput and a fast typist both produce -- must see
+  // the current timer id immediately to cancel it, and a state update is not
+  // visible until React commits it.
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /**
+   * The last mile shared by an immediately resolved key press and a delayed
+   * flushPending resolution once the timeout scheduled below fires: fold
+   * every action through applyAction, run whichever side effects it
+   * triggers, and commit the result to the store. The timer has no key press
+   * of its own to re-run through the handler, so this is what lets a
+   * delayed resolution -- a short binding that happens to move the cursor
+   * onto the newest message, say -- get exactly the same treatment as a live
+   * one, rather than a second, divergence-prone copy of the switch below.
+   */
+  const commitResolution = (opts: {
+    current: IApplicationState;
+    result: IResolveResult;
+    initialPatch?: Partial<IApplicationState>;
+  }): void => {
+    const { current, result } = opts;
+    let patch: Partial<IApplicationState> = { ...opts.initialPatch };
+
+    for (const action of result.actions) {
+      // Computed once and read by both the reducer and the side-effect
+      // switch below, so a hypothetical binding that both moves a cursor and
+      // opens the item under it (e.g. [CURSOR_MOVE, CHAT_OPEN]) reads the
+      // post-move position in both places, not the pre-move snapshot.
+      const accumulated = { ...current, ...patch };
+      patch = { ...patch, ...applyAction({ state: accumulated, action }) };
+
+      switch (action.type) {
+        case ActionTypes.COMPOSER_SEND: {
+          // The composer is MessageService's to clear -- send()'s or, while
+          // editingMessageId is set, edit()'s -- and it clears only once the
+          // round trip has actually resolved. Emptying it here was
+          // optimistic in the worst sense: a rejected send left the user with
+          // nothing to retry and no copy of what they had written, and it
+          // also made the service's "still what I sent?" check permanently
+          // false, so its own clear never ran in production.
+          //
+          // That leaves a window, between dispatch and the round-trip
+          // resolving, where the composer still shows the sent text with
+          // nothing on screen to say a send is in flight. Without a guard, a
+          // second Enter in that window re-dispatches this case with the same
+          // non-empty string -- a duplicate send (or duplicate edit), which
+          // MessageService's own comment calls unrecoverable. Set before the
+          // call and cleared in `finally` so a rejection releases it too;
+          // leaving it set on failure would make the composer permanently
+          // unable to send. One guard, not one each: send and edit can never
+          // both be in flight, since editingMessageId and the composer are
+          // the same shared state either path reads before dispatching.
+          if (sendInFlightRef.current) {
+            break;
+          }
+          sendInFlightRef.current = true;
+          const { editingMessageId, composerText } = accumulated;
+          const inFlight = editingMessageId !== null
+            ? onEdit({ messageId: editingMessageId, text: composerText })
+            : onSend(composerText);
+          void inFlight
+            .catch(error => {
+              logRejection({ method: editingMessageId !== null ? 'onEdit' : 'onSend', error });
+            })
+            .finally(() => {
+              sendInFlightRef.current = false;
+            });
+          break;
+        }
+        case ActionTypes.CHAT_OPEN: {
+          const target = accumulated.dialogs[accumulated.chatCursor];
+          if (target) {
+            const { peerId } = target;
+            // onMarkRead is chained onto onOpenChat's own resolution, not
+            // fired alongside it: onOpenChat is what actually loads the
+            // chat's messages (MessageService.loadHistory), so only once it
+            // resolves does the store hold the newest message to mark --
+            // reading store.getState() here, before that lands, would still
+            // see whatever chat was open previously.
+            void onOpenChat({ peerId })
+              .then(() => {
+                const { messages } = store.getState();
+                const newest = messages[messages.length - 1];
+                if (!newest) {
+                  return;
+                }
+                void onMarkRead({ peerId, maxId: newest.id }).catch(error => {
+                  logRejection({ method: 'onMarkRead', error });
+                });
+              })
+              .catch(error => {
+                logRejection({ method: 'onOpenChat', error });
+              });
+          }
+          break;
+        }
+        case ActionTypes.CURSOR_MOVE:
+        case ActionTypes.CURSOR_EDGE: {
+          // The other of the two moments Task 9's brief names markRead for.
+          // Gated on unit === 'message' so chat-list movement (unit: 'chat')
+          // can never reach this at all -- not suppressed by a debounce or a
+          // flag, structurally excluded.
+          //
+          // The unit alone was not enough. gg, <S-g>, <C-d> and <C-u> are
+          // `context: '*'` bindings carrying unit: 'message' (keymap.ts), so
+          // they move the *message* cursor while the user is browsing the chat
+          // list -- and <S-g> from there acked the open chat on one keystroke,
+          // which is precisely the never-auto-read guarantee this pair of
+          // conditions exists to keep. Excluding the chat list rather than
+          // requiring the messages pane: the message pane is on screen and its
+          // cursor is visibly moving in COMPOSER context too (i, then escape,
+          // then G), and that is still the user reading their own chat.
+          const { activePeerId, messages } = accumulated;
+          if (action.unit !== 'message' || !activePeerId) {
+            break;
+          }
+          if (accumulated.engine.context === VimContexts.CHAT_LIST) {
+            break;
+          }
+          const newCursor = patch.messageCursor ?? accumulated.messageCursor;
+          const newest = messages[messages.length - 1];
+          if (newest && newCursor === messages.length - 1) {
+            void onMarkRead({ peerId: activePeerId, maxId: newest.id }).catch(error => {
+              logRejection({ method: 'onMarkRead', error });
+            });
+          }
+          break;
+        }
+        case ActionTypes.APPLICATION_QUIT: {
+          onQuit();
+          break;
+        }
+        default: {
+          break;
+        }
+      }
+    }
+
+    // pending/count are the engine's alone, always -- result.state is the
+    // only place either is ever correctly reset once a binding resolves
+    // (vim-engine.ts's applyStateActions), and no reducer case may touch
+    // them (MODE_SET/FOCUS_SET's own patches spread state.engine verbatim,
+    // carrying over whatever pending/count happened to predate this key,
+    // precisely because resetting them is not their job). Trusting a
+    // reducer's full patch.engine here previously let a stale pending
+    // survive a resolved FOCUS_SET, corrupting the very next key press's
+    // token sequence -- caught by "return in the chat list opens the chat"
+    // regressing the moment this line first tried `{ ...result.state,
+    // ...patch.engine }` wholesale.
+    //
+    // mode/context are different: usually result.state already agrees with
+    // the reducer, since applyStateActions mirrors MODE_SET/FOCUS_SET
+    // independently -- but EDIT_START can genuinely disagree, because
+    // whether it enters INSERT depends on `out` on the message under the
+    // cursor, state engine.resolve() never receives and structurally cannot
+    // see (a pure fold over IEngineState alone -- vim-engine.ts's own doc
+    // comment). EDIT_START's refusal branch sets no engine key at all, so
+    // result.state (unchanged mode/context) still wins then.
+    const nextEngineState: IEngineState = patch.engine
+      ? { ...result.state, mode: patch.engine.mode, context: patch.engine.context }
+      : result.state;
+    store.setState({ patch: { ...patch, engine: nextEngineState } });
+  };
+
   useKeyboard(event => {
+    // Cleared before anything else, on every key press without exception --
+    // an ambiguous key's timer must never survive the key that completes the
+    // longer binding it was racing, or it fires the shorter binding's own
+    // effect *after* the longer one already ran: two effects from one user
+    // action, the data-loss shape this task exists to prevent (dd deletes,
+    // then a stale d timer runs whatever d alone does). See the 'ambiguous'
+    // branch below for where a fresh one gets armed.
+    if (timeoutRef.current !== null) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+
     // Read the store directly rather than closing over the render's `state`.
     // mockInput fires keypress events synchronously, and so does a real
     // terminal on a fast paste or a quick typist: several presses can land
@@ -294,151 +484,39 @@ export const App = (props: IAppProps) => {
 
     if (result.status !== 'resolved') {
       store.setState({ patch: { ...flushPatch, engine: result.state } });
+
+      // vim's timeoutlen: an ambiguous sequence is both a complete binding
+      // and the start of a longer one, so App waits to see whether a
+      // completing key beats the clock before giving up and letting
+      // flushPending resolve the shorter binding on its own. `result.state`
+      // is captured here, in the timer's closure, rather than re-read from
+      // the store when it fires -- the clear at the very top of this handler
+      // guarantees no other key press can land before that happens, so it is
+      // never stale by the time it does.
+      if (result.status === 'ambiguous') {
+        const ambiguousEngineState = result.state;
+        timeoutRef.current = setTimeout(() => {
+          timeoutRef.current = null;
+          const flushedResult = engine.flushPending({ state: ambiguousEngineState, keymap });
+          commitResolution({ current, result: flushedResult });
+        }, timeoutMilliseconds);
+      }
       return;
     }
 
-    let patch: Partial<IApplicationState> = { ...flushPatch };
-
-    for (const action of result.actions) {
-      // Computed once and read by both the reducer and the side-effect
-      // switch below, so a hypothetical binding that both moves a cursor and
-      // opens the item under it (e.g. [CURSOR_MOVE, CHAT_OPEN]) reads the
-      // post-move position in both places, not the pre-move snapshot.
-      const accumulated = { ...current, ...patch };
-      patch = { ...patch, ...applyAction({ state: accumulated, action }) };
-
-      switch (action.type) {
-        case ActionTypes.COMPOSER_SEND: {
-          // The composer is MessageService's to clear -- send()'s or, while
-          // editingMessageId is set, edit()'s -- and it clears only once the
-          // round trip has actually resolved. Emptying it here was
-          // optimistic in the worst sense: a rejected send left the user with
-          // nothing to retry and no copy of what they had written, and it
-          // also made the service's "still what I sent?" check permanently
-          // false, so its own clear never ran in production.
-          //
-          // That leaves a window, between dispatch and the round-trip
-          // resolving, where the composer still shows the sent text with
-          // nothing on screen to say a send is in flight. Without a guard, a
-          // second Enter in that window re-dispatches this case with the same
-          // non-empty string -- a duplicate send (or duplicate edit), which
-          // MessageService's own comment calls unrecoverable. Set before the
-          // call and cleared in `finally` so a rejection releases it too;
-          // leaving it set on failure would make the composer permanently
-          // unable to send. One guard, not one each: send and edit can never
-          // both be in flight, since editingMessageId and the composer are
-          // the same shared state either path reads before dispatching.
-          if (sendInFlightRef.current) {
-            break;
-          }
-          sendInFlightRef.current = true;
-          const { editingMessageId, composerText } = accumulated;
-          const inFlight = editingMessageId !== null
-            ? onEdit({ messageId: editingMessageId, text: composerText })
-            : onSend(composerText);
-          void inFlight
-            .catch(error => {
-              logRejection({ method: editingMessageId !== null ? 'onEdit' : 'onSend', error });
-            })
-            .finally(() => {
-              sendInFlightRef.current = false;
-            });
-          break;
-        }
-        case ActionTypes.CHAT_OPEN: {
-          const target = accumulated.dialogs[accumulated.chatCursor];
-          if (target) {
-            const { peerId } = target;
-            // onMarkRead is chained onto onOpenChat's own resolution, not
-            // fired alongside it: onOpenChat is what actually loads the
-            // chat's messages (MessageService.loadHistory), so only once it
-            // resolves does the store hold the newest message to mark --
-            // reading store.getState() here, before that lands, would still
-            // see whatever chat was open previously.
-            void onOpenChat({ peerId })
-              .then(() => {
-                const { messages } = store.getState();
-                const newest = messages[messages.length - 1];
-                if (!newest) {
-                  return;
-                }
-                void onMarkRead({ peerId, maxId: newest.id }).catch(error => {
-                  logRejection({ method: 'onMarkRead', error });
-                });
-              })
-              .catch(error => {
-                logRejection({ method: 'onOpenChat', error });
-              });
-          }
-          break;
-        }
-        case ActionTypes.CURSOR_MOVE:
-        case ActionTypes.CURSOR_EDGE: {
-          // The other of the two moments Task 9's brief names markRead for.
-          // Gated on unit === 'message' so chat-list movement (unit: 'chat')
-          // can never reach this at all -- not suppressed by a debounce or a
-          // flag, structurally excluded.
-          //
-          // The unit alone was not enough. gg, <S-g>, <C-d> and <C-u> are
-          // `context: '*'` bindings carrying unit: 'message' (keymap.ts), so
-          // they move the *message* cursor while the user is browsing the chat
-          // list -- and <S-g> from there acked the open chat on one keystroke,
-          // which is precisely the never-auto-read guarantee this pair of
-          // conditions exists to keep. Excluding the chat list rather than
-          // requiring the messages pane: the message pane is on screen and its
-          // cursor is visibly moving in COMPOSER context too (i, then escape,
-          // then G), and that is still the user reading their own chat.
-          const { activePeerId, messages } = accumulated;
-          if (action.unit !== 'message' || !activePeerId) {
-            break;
-          }
-          if (accumulated.engine.context === VimContexts.CHAT_LIST) {
-            break;
-          }
-          const newCursor = patch.messageCursor ?? accumulated.messageCursor;
-          const newest = messages[messages.length - 1];
-          if (newest && newCursor === messages.length - 1) {
-            void onMarkRead({ peerId: activePeerId, maxId: newest.id }).catch(error => {
-              logRejection({ method: 'onMarkRead', error });
-            });
-          }
-          break;
-        }
-        case ActionTypes.APPLICATION_QUIT: {
-          onQuit();
-          break;
-        }
-        default: {
-          break;
-        }
-      }
-    }
-
-    // pending/count are the engine's alone, always -- result.state is the
-    // only place either is ever correctly reset once a binding resolves
-    // (vim-engine.ts's applyStateActions), and no reducer case may touch
-    // them (MODE_SET/FOCUS_SET's own patches spread state.engine verbatim,
-    // carrying over whatever pending/count happened to predate this key,
-    // precisely because resetting them is not their job). Trusting a
-    // reducer's full patch.engine here previously let a stale pending
-    // survive a resolved FOCUS_SET, corrupting the very next key press's
-    // token sequence -- caught by "return in the chat list opens the chat"
-    // regressing the moment this line first tried `{ ...result.state,
-    // ...patch.engine }` wholesale.
-    //
-    // mode/context are different: usually result.state already agrees with
-    // the reducer, since applyStateActions mirrors MODE_SET/FOCUS_SET
-    // independently -- but EDIT_START can genuinely disagree, because
-    // whether it enters INSERT depends on `out` on the message under the
-    // cursor, state engine.resolve() never receives and structurally cannot
-    // see (a pure fold over IEngineState alone -- vim-engine.ts's own doc
-    // comment). EDIT_START's refusal branch sets no engine key at all, so
-    // result.state (unchanged mode/context) still wins then.
-    const nextEngineState: IEngineState = patch.engine
-      ? { ...result.state, mode: patch.engine.mode, context: patch.engine.context }
-      : result.state;
-    store.setState({ patch: { ...patch, engine: nextEngineState } });
+    commitResolution({ current, result, initialPatch: flushPatch });
   });
+
+  // A timer that outlives the component would fire into a torn-down tree --
+  // App unmounts when main.ts's quit() tears down the renderer, or a test's
+  // renderer.destroy() does -- and nothing else on that path clears this one.
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current !== null) {
+        clearTimeout(timeoutRef.current);
+      }
+    };
+  }, []);
 
   const activeDialog = state.dialogs.find(dialog => dialog.peerId === state.activePeerId);
   const isConfirming = state.pendingConfirmation !== null;
