@@ -486,3 +486,86 @@ test('d in insert mode does not enter operator-pending', () => {
   const result = engine.resolve({ state: insert, key: buildKey('d'), keymap });
   expect(result.state.operator).toBeNull();
 });
+
+// M1b-2 Task 4: doubled operators. dd/yy/cc target `count` whole messages
+// from the cursor -- the operator's own trigger, typed again, names no
+// motion at all. Reuses the operator-pending state Task 3 built
+// (operator/operatorCount), not a keymap entry: this file's `keymap`
+// fixture still has no dd/yy/cc of any kind, exactly as it has never had a
+// bare d/y/c.
+test('dd (doubled) targets one whole message from the cursor', () => {
+  const engine = buildEngine();
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('d'), keymap });
+  const applied = engine.resolve({ state: pending.state, key: buildKey('d'), keymap });
+  expect(applied.status).toBe('resolved');
+  expect(applied.actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0 },
+  ]);
+  expect(applied.state.operator).toBeNull();
+});
+
+test('yy (doubled) targets one whole message from the cursor', () => {
+  const engine = buildEngine();
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('y'), keymap });
+  const applied = engine.resolve({ state: pending.state, key: buildKey('y'), keymap });
+  expect(applied.actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0 },
+  ]);
+});
+
+test('cc (doubled) targets one whole message from the cursor', () => {
+  const engine = buildEngine();
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('c'), keymap });
+  const applied = engine.resolve({ state: pending.state, key: buildKey('c'), keymap });
+  expect(applied.actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.CHANGE, unit: 'message', from: 0, to: 0 },
+  ]);
+});
+
+test('3dd targets three whole messages -- a count applies to the doubled form the same way it applies to a motion', () => {
+  const engine = buildEngine();
+  let state = INITIAL_ENGINE_STATE;
+  state = engine.resolve({ state, key: buildKey('3'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('d'), keymap }).state;
+  const applied = engine.resolve({ state, key: buildKey('d'), keymap });
+  expect(applied.actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 2 },
+  ]);
+});
+
+// The multiplication trap this guards against: re-multiplying the count
+// against itself -- once for the operator, again for the doubled key
+// standing in as its own "motion" -- would make 2dd delete four messages,
+// not two. The doubled branch spends the same `count` an ordinary motion
+// would receive directly as `to`, once.
+test('2dd means two messages, not four', () => {
+  const engine = buildEngine();
+  let state = INITIAL_ENGINE_STATE;
+  state = engine.resolve({ state, key: buildKey('2'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('d'), keymap }).state;
+  const applied = engine.resolve({ state, key: buildKey('d'), keymap });
+  expect(applied.actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 1 },
+  ]);
+});
+
+// Operators are scoped to the messages pane -- a Minor from M1b-1's review
+// (dd while focused on the chat list deleted a message in the *other*
+// pane), which doubling makes more reachable, not less, since d/y/c commit
+// with no keymap entry of their own for a context to filter by.
+test('an operator trigger does not enter operator-pending outside the messages context', () => {
+  const engine = buildEngine();
+  const chatList: IEngineState = { ...INITIAL_ENGINE_STATE, context: VimContexts.CHAT_LIST };
+  const result = engine.resolve({ state: chatList, key: buildKey('d'), keymap });
+  expect(result.state.operator).toBeNull();
+  expect(result.status).toBe('unmapped');
+});
+
+test('the doubled form also does nothing outside the messages context', () => {
+  const engine = buildEngine();
+  const chatList: IEngineState = { ...INITIAL_ENGINE_STATE, context: VimContexts.CHAT_LIST };
+  const first = engine.resolve({ state: chatList, key: buildKey('y'), keymap });
+  const second = engine.resolve({ state: first.state, key: buildKey('y'), keymap });
+  expect(second.status).toBe('unmapped');
+  expect(second.actions).toEqual([]);
+});

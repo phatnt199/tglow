@@ -1,7 +1,7 @@
 import { getError, inject } from '@venizia/ignis-inversion';
 
 import { BindingKeys } from '../common/index.ts';
-import { ActionTypes, Operators, VimModes } from './common/index.ts';
+import { ActionTypes, Operators, VimContexts, VimModes } from './common/index.ts';
 import type {
   IEngineState,
   IKey,
@@ -144,15 +144,23 @@ export class VimEngineService {
   };
 
   /**
-   * Whether `token` may start an operator right now -- NORMAL mode only.
-   * Visual-mode operators act on the selection directly in real vim rather
-   * than waiting for a motion, and this engine has no selection state to
-   * act on, so operator entry does not extend accumulateCount's own
-   * NORMAL-or-VISUAL gate above.
+   * Whether `token` may start an operator right now -- NORMAL mode, and the
+   * messages pane, only. Visual-mode operators act on the selection
+   * directly in real vim rather than waiting for a motion, and this engine
+   * has no selection state to act on, so operator entry does not extend
+   * accumulateCount's own NORMAL-or-VISUAL gate above.
+   *
+   * The context half is M1b-1's Minor finding, closed here: `d`/`y`/`c`
+   * commit with no keymap entry of their own (OPERATOR_TRIGGERS below), so
+   * unlike an ordinary binding there is no `context` field anywhere else
+   * that could filter them by pane. Without this gate, `dd` while focused on
+   * the chat list asked to delete a message in the messages pane the cursor
+   * was not even in -- exactly the bug the doubled forms this task adds make
+   * more reachable, not less.
    */
   private operatorForToken = (opts: { state: IEngineState; token: string }): TOperator | null => {
     const { state, token } = opts;
-    if (state.mode !== VimModes.NORMAL) {
+    if (state.mode !== VimModes.NORMAL || state.context !== VimContexts.MESSAGES) {
       return null;
     }
     return OPERATOR_TRIGGERS[token] ?? null;
@@ -202,6 +210,23 @@ export class VimEngineService {
   }): IResolveResult => {
     const { state, operator, token, keymap } = opts;
     const count = (state.operatorCount ?? 1) * (state.count ?? 1);
+
+    // The doubled form (dd/yy/cc): the operator's own trigger, typed again,
+    // names no motion at all -- vim's own idiom for "count whole messages
+    // starting at the cursor". Checked ahead of resolveMotion, which could
+    // never find it anyway: d/y/c are engine-intrinsic (OPERATOR_TRIGGERS),
+    // not a keymap entry resolveMotion's single-token lookup could match.
+    // `count` is spent once, directly, exactly as an ordinary motion spends
+    // it -- multiplying it again here is the trap that would make 2dd
+    // delete four messages instead of two.
+    if (OPERATOR_TRIGGERS[token] === operator) {
+      return {
+        state: { ...state, operator: null, operatorCount: null, pending: [], count: null },
+        actions: [{ type: ActionTypes.OPERATOR_APPLY, operator, unit: 'message', from: 0, to: count - 1 }],
+        status: 'resolved',
+      };
+    }
+
     const motion = this.resolveMotion({ state, token, keymap, count });
 
     if (!motion) {

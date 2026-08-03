@@ -84,7 +84,11 @@ const mount = async (opts: {
    * Appended to the real 27-binding keymap rather than replacing it, so
    * everything else these tests rely on (dd's own confirmation included)
    * keeps working unchanged. Task 2's timeout tests are the only callers:
-   * the real keymap has no ambiguous sequence of its own to observe.
+   * the real keymap's own ambiguous sequence (bare `d` against `dd`, Task 3)
+   * resolves its short half to operator-pending state with no action of its
+   * own to observe, so these tests still need a synthetic short binding
+   * whose resolution -- unlike operator-pending's -- is something an
+   * assertion can see.
    */
   extraBindings?: IKeyBinding[];
 } = {}) => {
@@ -585,18 +589,104 @@ test('the status line turns the danger colour while a delete is pending confirma
   expect(rgbToHex(span!.fg).toLowerCase()).toBe(tokens.error.toLowerCase());
 });
 
+// --- M1b-2 Task 4: doubled operators (dd/yy/cc) -----------------------------
+//
+// dd's own confirmation (M1b-1's guarantee) must survive operators becoming
+// a second way to reach it: a count must not become a route around asking.
+test('3dd asks for confirmation instead of deleting three messages outright', async () => {
+  const { renderer, store, deleted } = await mount();
+  await act(async () => {
+    renderer.mockInput.pressKey('3');
+    renderer.mockInput.pressKey('d');
+    renderer.mockInput.pressKey('d');
+  });
+  await renderer.flush();
+  expect(deleted).toEqual([]);
+  expect(store.getState().pendingConfirmation).not.toBeNull();
+  expect(store.getState().messages).toHaveLength(4);
+  expect(renderer.captureCharFrame()).toContain('Delete');
+});
+
+// The Minor from M1b-1's final review, driven through real key presses: dd
+// used to be `context: '*'`, so pressing it while focused on the chat list
+// deleted a message in the messages pane the cursor was not even in.
+// Operators make this more reachable, not less (bare d/y/c commit with no
+// per-context keymap entry to filter them at all), so this must hold now.
+test('dd does nothing while focused on the chat list', async () => {
+  const { renderer, store, deleted } = await mount();
+  await act(async () => {
+    renderer.mockInput.pressKey('n');
+    renderer.mockInput.pressKey('f');
+  });
+  await renderer.flush();
+  expect(store.getState().engine.context).toBe(VimContexts.CHAT_LIST);
+
+  await act(async () => { renderer.mockInput.pressKey('d'); renderer.mockInput.pressKey('d'); });
+  await renderer.flush();
+
+  expect(store.getState().pendingConfirmation).toBeNull();
+  expect(deleted).toEqual([]);
+  expect(store.getState().messages).toHaveLength(4);
+  expect(store.getState().engine.context).toBe(VimContexts.CHAT_LIST);
+});
+
+// Registers land in Task 5; until then yy writes to a single unnamed slot.
+test('yy yanks the message under the cursor into the yank slot', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('y'); renderer.mockInput.pressKey('y'); });
+  await renderer.flush();
+  expect(store.getState().yankedText).toBe('msg1');
+});
+
+// The same count guarantee dd needs, proven end to end through an operator
+// that (unlike delete) actually acts on the full range: two messages come
+// back joined, not the anchor alone and not four.
+test('2yy yanks two messages, not four', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => {
+    renderer.mockInput.pressKey('2');
+    renderer.mockInput.pressKey('y');
+    renderer.mockInput.pressKey('y');
+  });
+  await renderer.flush();
+  expect(store.getState().yankedText).toBe('msg1\nmsg2');
+});
+
+test('cc on an own message loads it into the composer for editing, same as e', async () => {
+  const { renderer, store } = await mount({ messages: [ownMessage] });
+  await act(async () => { renderer.mockInput.pressKey('c'); renderer.mockInput.pressKey('c'); });
+  await renderer.flush();
+  expect(store.getState().composerText).toBe('typo here');
+  expect(store.getState().editingMessageId).toBe(1);
+  expect(store.getState().engine.mode).toBe('insert');
+});
+
+test("cc on someone else's message refuses and sets a status message, same as e", async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('c'); renderer.mockInput.pressKey('c'); });
+  await renderer.flush();
+  expect(store.getState().editingMessageId).toBeNull();
+  expect(store.getState().engine.mode).toBe('normal');
+  expect(store.getState().statusMessage).toBeTruthy();
+});
+
 // --- Task 2 (M1b-2): the ambiguous-key timeout, vim's own timeoutlen -------
 //
-// The real keymap has no ambiguous sequence of its own -- Task 1's report
-// verified all 27 bindings still resolve immediately -- so these tests
-// extend it with one test-only binding for bare `d`, alongside the real
-// `dd`. That makes `d` both an exact match and a prefix of `dd`, which is
-// exactly what makes vim-engine.ts's resolve() report `ambiguous` rather
-// than merely `pending`; without a genuine `ambiguous` status, waiting past
-// the timeout below would prove nothing. Its action (CURSOR_EDGE 'last') is
-// deliberately unlike dd's own DELETE_REQUEST, so the two effects -- and
-// which one, if either, actually ran -- are distinguishable on
-// messageCursor and pendingConfirmation independently.
+// Stale as of Task 3, corrected in Task 4: the real keymap does have an
+// ambiguous sequence now -- a bare `d` against the real `dd` (Task 3 made
+// d/y/c live operator triggers; dd stays a literal binding rather than
+// folding into that doubled-operator recognition, exactly so this ambiguity
+// stays real -- see keymap.ts's own comment on the dd binding). But
+// resolving `d` by itself commits only to operator-pending state
+// (engine.operator), with no action of its own to observe --
+// flushPending's `pending` status, not `resolved`. These tests need the
+// short half to have an observable effect, to tell "the short binding
+// fired" apart from "the long one did" on two independent fields, so they
+// still extend the real keymap with one test-only binding for bare `d`
+// rather than relying on the real, actionless one. Its action (CURSOR_EDGE
+// 'last') is deliberately unlike dd's own OPERATOR_APPLY, so the two
+// effects -- and which one, if either, actually ran -- are distinguishable
+// on messageCursor and pendingConfirmation independently.
 const AMBIGUOUS_SHORT_D_BINDING: IKeyBinding = {
   context: '*',
   mode: VimModes.NORMAL,

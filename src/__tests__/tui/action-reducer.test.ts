@@ -56,16 +56,110 @@ test('cursor.edge jumps to first and last', () => {
   }).messageCursor).toBe(3);
 });
 
-// M1b-2 Task 3: OPERATOR_APPLY is live against the real keymap (`dj`
-// genuinely reaches applyAction today), but deleting/yanking/changing the
-// range it names is Task 4/5's work -- this pins that it is at least inert
-// rather than falling to the default throw below.
-test('operator.apply has no patch of its own yet', () => {
+// M1b-2 Task 4: OPERATOR_APPLY now does something per operator. Delete
+// routes through delete.request's own logic -- confirmation, not an
+// outright delete -- so `dd`/`3dd`/`d3j` all still gate on the same y/n
+// prompt M1b-1 built, whatever range named them. Routed through applyAction
+// recursively rather than a duplicated patch, so a later change to the
+// prompt or the refusal can never drift between the two paths.
+test('operator.apply delete asks for confirmation, the same way delete.request does, whatever the range', () => {
+  const state = buildState({ messageCursor: 2 });
   const patch = applyAction({
-    state: buildState({ messageCursor: 0 }),
-    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 1 },
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 2 },
   });
-  expect(patch).toEqual({});
+  expect(patch.pendingConfirmation).toEqual({ kind: 'delete', messageId: state.messages[2]!.id });
+  expect(patch.statusMessage).toBeTruthy();
+});
+
+// The range's own extent is not consulted for delete: only the message at
+// the cursor is ever named in the confirmation. Acting on the full range
+// would mean confirming and deleting more than one message from a single
+// y/n answer -- a bigger, deliberately deferred feature (a pendingConfirmation
+// shape that names several messages, and a loop in App's CONFIRM handling),
+// not a side effect doubling itself asks for. This is what keeps `3dd`
+// honest: it confirms, but confirming deletes one message, not three.
+test('operator.apply delete over a multi-message range still only confirms the one at the cursor', () => {
+  const state = buildState({ messageCursor: 0 });
+  const patch = applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 2 },
+  });
+  expect(patch.pendingConfirmation).toEqual({ kind: 'delete', messageId: state.messages[0]!.id });
+});
+
+// yy: registers land in Task 5 (a named `"`-prefixed map on the store); this
+// is the single unnamed slot Task 5 builds on rather than around -- every
+// yank overwrites it, matching vim's own unnamed register.
+test('operator.apply yank copies the message under the cursor into the single yank slot', () => {
+  const state = buildState({ messageCursor: 1 });
+  const patch = applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0 },
+  });
+  expect(patch.yankedText).toBe(state.messages[1]!.text);
+  expect(patch.statusMessage).toBeTruthy();
+});
+
+// Unlike delete, yank is not destructive, so there is no confirmation to
+// simplify around -- the full range is honoured, joined the way vim joins a
+// multi-line yank into one register value. Proves count multiplies the
+// doubled form correctly one layer below vim-engine.ts's own range tests:
+// two messages come back, not four and not one.
+test('operator.apply yank over a range joins every targeted message, cursor down through the range', () => {
+  const state = buildState({ messageCursor: 0 });
+  const patch = applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 1 },
+  });
+  expect(patch.yankedText).toBe(`${state.messages[0]!.text}\n${state.messages[1]!.text}`);
+});
+
+test('operator.apply yank with no messages is harmless', () => {
+  const state = buildState({ messages: [], messageCursor: 0 });
+  expect(() => applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0 },
+  })).not.toThrow();
+  expect(applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0 },
+  })).toEqual({});
+});
+
+// cc: vim's change is delete-then-insert; the message equivalent already
+// exists as edit.start, refusal included, so change routes through it the
+// same way delete routes through delete.request -- not a copy of its logic.
+test('operator.apply change starts editing the message under the cursor, the same way edit.start does', () => {
+  const state = buildState({
+    messageCursor: 0,
+    messages: [{ peerId: 'u1', id: 9, fromId: 'me', date: 900, text: 'own message', out: 1, entities: [], replyToMessageId: null }],
+  });
+  const patch = applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.CHANGE, unit: 'message', from: 0, to: 0 },
+  });
+  expect(patch.editingMessageId).toBe(9);
+  expect(patch.engine?.mode).toBe(VimModes.INSERT);
+});
+
+test('operator.apply change refuses a message that is not your own, the same way edit.start does', () => {
+  const state = buildState({ messageCursor: 0 });
+  const patch = applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.CHANGE, unit: 'message', from: 0, to: 0 },
+  });
+  expect(patch.editingMessageId).toBeUndefined();
+  expect(patch.statusMessage).toBeTruthy();
+});
+
+test('operator.apply rejects an operator from outside the type system', () => {
+  expect(() =>
+    applyAction({
+      state: buildState(),
+      action: { type: ActionTypes.OPERATOR_APPLY, operator: 'nonsense', unit: 'message', from: 0, to: 0 } as never,
+    }),
+  ).toThrow(/\[applyAction\]/);
 });
 
 test('moving with no messages stays at zero', () => {

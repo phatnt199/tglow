@@ -1,4 +1,4 @@
-import { ActionTypes, VimContexts, VimModes } from './common/index.ts';
+import { ActionTypes, Operators, VimContexts, VimModes } from './common/index.ts';
 import type { IKeyBinding, TVimContext, TVimMode } from './common/index.ts';
 
 const HALF_PAGE_MESSAGES = 10;
@@ -69,23 +69,34 @@ export class KeymapService {
       context: '*', mode: VimModes.NORMAL, keys: 'e', description: 'Edit message',
       action: () => [{ type: ActionTypes.EDIT_START }],
     },
-    // dd, a literal binding -- not `d` followed by a `d` motion. vim-engine.ts
-    // treats `d` (along with `y` and `c`) as an operator trigger
-    // intrinsically, no keymap entry required (see its own OPERATOR_TRIGGERS),
-    // so a bare `d` typed here is genuinely ambiguous against this binding,
-    // exactly the way two competing keymap entries would be: resolve()
-    // reports `ambiguous`, and App's timeoutlen settles it if nothing else
-    // does (vim-engine.test.ts, keymap.test.ts). `d` followed by a real
-    // motion (`dj`) resolves immediately as OPERATOR_APPLY instead of
-    // waiting; `dd` itself stays this one binding rather than becoming
-    // operator-plus-motion, mirroring vim's own doubled-line idiom. The
-    // confirmation this starts is intercepted directly in App (app.tsx),
-    // the same way the reply/edit escapes above are -- y and n only mean
-    // anything while IApplicationState.pendingConfirmation is set, which a
-    // static keymap entry has no way to see.
+    // dd, a literal binding -- not `d` followed by a `d` motion, and kept as
+    // one on purpose rather than folded into vim-engine.ts's own
+    // doubled-operator recognition (which yy/cc rely on instead, having no
+    // literal binding of their own): keeping it means a bare `d` stays
+    // genuinely ambiguous against it, exactly the way two competing keymap
+    // entries would be -- resolve() reports `ambiguous`, and App's
+    // timeoutlen settles it if nothing else does (vim-engine.test.ts,
+    // keymap.test.ts). `d` followed by a real motion (`dj`) still resolves
+    // immediately as OPERATOR_APPLY instead of waiting.
+    //
+    // context is messages, not '*' -- a Minor from M1b-1's final review
+    // (this binding deleted a message in the messages pane while the chat
+    // list had focus) that M1b-2's operators make more reachable, not less,
+    // so it is fixed here. The action itself is OPERATOR_APPLY now, count-
+    // aware like yy/cc and any d+motion delete, and routed through the same
+    // reducer switch they share -- not DELETE_REQUEST directly -- so a typed
+    // count (3dd) reaches the reducer instead of being silently ignored. The
+    // reducer's own OPERATOR_APPLY case still asks for confirmation before
+    // deleting anything (action-reducer.ts): the confirmation itself is
+    // intercepted directly in App (app.tsx), the same way the reply/edit
+    // escapes above are -- y and n only mean anything while
+    // IApplicationState.pendingConfirmation is set, which a static keymap
+    // entry has no way to see.
     {
-      context: '*', mode: VimModes.NORMAL, keys: 'dd', description: 'Delete message',
-      action: () => [{ type: ActionTypes.DELETE_REQUEST }],
+      context: VimContexts.MESSAGES, mode: VimModes.NORMAL, keys: 'dd', description: 'Delete message',
+      action: count => [
+        { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: count - 1 },
+      ],
     },
 
     // Panes — nf echoes the author's NvimTreeFocus mapping.

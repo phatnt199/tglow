@@ -172,8 +172,80 @@ test('dd asks to delete the message under the cursor', () => {
   // both halves of that ambiguity settling.
   const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('d'), keymap });
   expect(pending.status).toBe('ambiguous');
-  expect(engine.resolve({ state: pending.state, key: buildKey('d'), keymap }).actions)
-    .toEqual([{ type: ActionTypes.DELETE_REQUEST }]);
+  // M1b-2 Task 4: dd's own action is OPERATOR_APPLY now, count-aware like
+  // yy/cc and any d+motion delete, rather than DELETE_REQUEST directly --
+  // the reducer's OPERATOR_APPLY case still asks for confirmation before
+  // deleting anything (action-reducer.ts, action-reducer.test.ts).
+  expect(engine.resolve({ state: pending.state, key: buildKey('d'), keymap }).actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0 },
+  ]);
+});
+
+// M1b-2 Task 4: a count reaches dd exactly as it reaches any other counted
+// binding -- state.count flows into applyStateActions's binding.action(count)
+// call the same way it always has; dd's own action just now does something
+// with it instead of ignoring the parameter.
+test('3dd asks to delete three messages, in one OPERATOR_APPLY', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+  let state = INITIAL_ENGINE_STATE;
+  state = engine.resolve({ state, key: buildKey('3'), keymap }).state;
+  const pending = engine.resolve({ state, key: buildKey('d'), keymap });
+  expect(pending.status).toBe('ambiguous');
+  expect(engine.resolve({ state: pending.state, key: buildKey('d'), keymap }).actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 2 },
+  ]);
+});
+
+// The Minor from M1b-1's final review: dd used to be `context: '*'`, so it
+// deleted a message in the messages pane while the cursor was actually
+// focused on the chat list. Fixed by scoping the dd binding itself to
+// VimContexts.MESSAGES and, since d/y/c commit with no keymap entry of
+// their own to filter by context, gating operator entry the same way in
+// vim-engine.ts's operatorForToken (vim-engine.test.ts covers that half).
+test('dd does nothing while focused on the chat list', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+  const chatList: IEngineState = { ...INITIAL_ENGINE_STATE, context: VimContexts.CHAT_LIST };
+  const first = engine.resolve({ state: chatList, key: buildKey('d'), keymap });
+  expect(first.status).toBe('unmapped');
+  const second = engine.resolve({ state: first.state, key: buildKey('d'), keymap });
+  expect(second.status).toBe('unmapped');
+  expect(second.actions).toEqual([]);
+});
+
+// yy/cc get no keymap entry of their own -- reusing vim-engine.ts's
+// operator-pending state instead (see its own doubled-form branch in
+// resolveUnderOperator), the same way bare d/y/c never have. No competing
+// binding means no ambiguity either: unlike bare `d` against the real `dd`,
+// a bare `y` or `c` commits to operator-pending on the very first press.
+test('yy against the real keymap yanks the message under the cursor', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('y'), keymap });
+  expect(pending.status).toBe('pending');
+  expect(pending.state.operator).toBe(Operators.YANK);
+  expect(engine.resolve({ state: pending.state, key: buildKey('y'), keymap }).actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0 },
+  ]);
+});
+
+test('cc against the real keymap targets the message under the cursor for change', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('c'), keymap });
+  expect(pending.state.operator).toBe(Operators.CHANGE);
+  expect(engine.resolve({ state: pending.state, key: buildKey('c'), keymap }).actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.CHANGE, unit: 'message', from: 0, to: 0 },
+  ]);
+});
+
+test('bare y, bare c, yy and cc are none of them bound -- doubling is engine-intrinsic, not a keymap entry', () => {
+  const keys = build().keymapService.getBindings().map(binding => binding.keys);
+  expect(keys).not.toContain('y');
+  expect(keys).not.toContain('c');
+  expect(keys).not.toContain('yy');
+  expect(keys).not.toContain('cc');
 });
 
 // `d` needs no binding of its own: vim-engine.ts treats it (along with `y`
@@ -344,7 +416,9 @@ test('every binding the project promises the user is actually bound', () => {
     { context: '*', mode: VimModes.NORMAL, keys: 'zs' },
     { context: '*', mode: VimModes.NORMAL, keys: 'r' },
     { context: '*', mode: VimModes.NORMAL, keys: 'e' },
-    { context: '*', mode: VimModes.NORMAL, keys: 'dd' },
+    // M1b-2 Task 4: no longer '*' -- the Minor from M1b-1's review (dd
+    // deleted in the messages pane while the chat list had focus).
+    { context: VimContexts.MESSAGES, mode: VimModes.NORMAL, keys: 'dd' },
     // Task 12 (task-11-report.md gap 4b): K shows a link's URL on the status
     // line -- promised by the design spec's own rendering table and, like the
     // row above, one binding away from being silently left out.

@@ -6,7 +6,7 @@ import { getError } from '@venizia/ignis-inversion';
 // -- points at the concrete module rather than the core/ barrel purely
 // because that is where IApplicationState is actually defined.
 import type { IApplicationState } from '../core/application-store.ts';
-import { ActionTypes, VimContexts, VimModes, type TAction } from '../keys/common/index.ts';
+import { ActionTypes, Operators, VimContexts, VimModes, type TAction } from '../keys/common/index.ts';
 import { extractLinkUrls } from './entities.ts';
 
 const clamp = (opts: { value: number; maximum: number }): number => {
@@ -41,17 +41,62 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
       return action.unit === 'message' ? { messageCursor: target } : { chatCursor: target };
     }
 
-    // M1b-2 Task 3: vim-engine.ts's operator mechanism is live against the
-    // real keymap already (`d` needs no binding of its own to sit beside
-    // `dd`, so `dj` genuinely reaches here today), but deleting, yanking or
-    // changing the range it names is Task 4/5's work. No patch rather than
-    // falling to the default throw below: this is a real, typed member of
-    // TAction, not a value from outside the type system (the case that
-    // default exists to catch, pinned by action-reducer.test.ts's own
-    // "unknown action type" test) -- an ordinary `dj` keypress must not
-    // crash the app before that work lands.
+    // M1b-2 Task 4: dd/yy/cc, and any d/y/c + motion (they produce the exact
+    // same action shape, per vim-engine.ts's resolveUnderOperator), all land
+    // here now. Delete and change are routed through applyAction
+    // recursively rather than a copy of their patch, so a later change to
+    // delete's confirmation or edit's refusal can never drift between the
+    // two paths that reach them.
     case ActionTypes.OPERATOR_APPLY: {
-      return {};
+      switch (action.operator) {
+        // dd, 3dd and d+motion all still gate on delete.request's own
+        // confirmation -- operators must not become a way around it
+        // (M1b-1's guarantee). The range's own extent (action.from/to) is
+        // deliberately not consulted: only the message at the cursor is
+        // ever named in the prompt. Acting on the full range would mean
+        // confirming and deleting more than one message from a single y/n
+        // answer -- a new pendingConfirmation shape, and a loop in App's
+        // CONFIRM handling -- a bigger feature than doubling itself asks
+        // for, not a side effect of it.
+        case Operators.DELETE: {
+          return applyAction({ state, action: { type: ActionTypes.DELETE_REQUEST } });
+        }
+
+        // cc: vim's change is delete-then-insert; the message equivalent
+        // already exists as edit.start, refusal included. Like delete,
+        // only the message at the cursor is targeted regardless of the
+        // range's extent -- there is no such thing as changing several
+        // messages into one edit.
+        case Operators.CHANGE: {
+          return applyAction({ state, action: { type: ActionTypes.EDIT_START } });
+        }
+
+        // Yanking is not destructive, so unlike delete and change there is
+        // nothing to confirm and no reason to limit it to the cursor's own
+        // message: the full range is honoured, its messages joined the way
+        // vim joins a multi-line yank into one register value. Registers
+        // land in Task 5 -- yankedText is the single unnamed slot it builds
+        // on top of, not a name from that scheme.
+        case Operators.YANK: {
+          const start = clamp({ value: state.messageCursor + action.from, maximum: state.messages.length - 1 });
+          const end = clamp({ value: state.messageCursor + action.to, maximum: state.messages.length - 1 });
+          const targeted = state.messages.slice(start, end + 1);
+          if (targeted.length === 0) {
+            return {};
+          }
+          const label = targeted.length === 1 ? '1 message' : `${targeted.length} messages`;
+          return {
+            yankedText: targeted.map(message => message.text).join('\n'),
+            statusMessage: `Yanked ${label}`,
+          };
+        }
+
+        default: {
+          throw getError({
+            message: `[action-reducer][applyAction] Unknown operator | Operator: ${(action as { operator: string }).operator}`,
+          });
+        }
+      }
     }
 
     case ActionTypes.MODE_SET: {

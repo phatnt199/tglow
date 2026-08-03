@@ -34,11 +34,13 @@ export interface IApplicationState {
   /** Which full-pane overlay is showing, if any. Orthogonal to engine.context: opening one leaves mode and pane focus exactly as they were. */
   overlay: TOverlay | null;
   /**
-   * Set by `dd`'s DELETE_REQUEST while the status line waits for y/n; null
-   * once answered either way. The only irreversible action in the app gates
-   * on this being non-null: App checks it before engine resolution, the same
-   * category of App-level gate as `overlay` and the reply/edit escapes above,
-   * and swallows every key except y, n and escape while it is set.
+   * Set by DELETE_REQUEST -- which `dd`/`3dd` and any d+motion delete all
+   * route through (M1b-2 Task 4), never bypass -- while the status line
+   * waits for y/n; null once answered either way. The only irreversible
+   * action in the app gates on this being non-null: App checks it before
+   * engine resolution, the same category of App-level gate as `overlay` and
+   * the reply/edit escapes above, and swallows every key except y, n and
+   * escape while it is set.
    */
   pendingConfirmation: { kind: 'delete'; messageId: number } | null;
   /**
@@ -47,6 +49,14 @@ export interface IApplicationState {
    * hidden again today, which is the intended behaviour, not a bug to fix.
    */
   revealedSpoilers: Set<number>;
+  /**
+   * The text `yy` (or a yank composed with a motion) most recently copied --
+   * a single, unnamed slot, not yet a named-register map. Every yank
+   * overwrites it, matching vim's own unnamed register. M1b-2 Task 5 owns
+   * `registers: Record<string, string>` and the `"`-prefixed naming scheme
+   * on top of this; nothing here anticipates that shape.
+   */
+  yankedText: string | null;
 }
 
 const INITIAL_STATE: IApplicationState = {
@@ -66,6 +76,7 @@ const INITIAL_STATE: IApplicationState = {
   overlay: null,
   pendingConfirmation: null,
   revealedSpoilers: new Set(),
+  yankedText: null,
 };
 
 export class ApplicationStoreService {
