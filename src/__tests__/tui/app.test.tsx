@@ -8,7 +8,15 @@ import type { TestRendererSetup } from '@opentui/core/testing';
 import { BindingKeys } from '../../common/index.ts';
 // Concrete module, not the core/ barrel -- see src/tui/action-reducer.ts for why.
 import { ApplicationStoreService } from '../../core/application-store.ts';
-import type { IDialogRow, IMessageRow } from '../../core/cache/index.ts';
+import { DatabaseService, type IDialogRow, type IMessageRow } from '../../core/cache/index.ts';
+// Concrete module, not the core/ barrel -- same reasoning as
+// ApplicationStoreService above (src/tui/action-reducer.ts explains why):
+// a value import (mount() below constructs one), off the root barrel's
+// telegram/global.window crash path. core/cache/index.ts, used for
+// DatabaseService just above, is its own safe sub-barrel -- it re-exports
+// only database.ts/migrate.ts/schema.ts, none of which touch telegram or
+// global.window, which is why it was already fine to use directly there.
+import { MessageSearchService } from '../../core/message-search.ts';
 import { ActionTypes, VimContexts, VimModes, type IKeyBinding } from '../../keys/common/index.ts';
 import { KeyNormalizerService, KeymapService, VimEngineService } from '../../keys/index.ts';
 import { renderWithKeys } from '../helpers/render.tsx';
@@ -65,6 +73,11 @@ const MARK_READ_SETTLE_MILLISECONDS = 20;
 
 // Mirrors IApplicationConfiguration's own default (src/core/configuration.ts) -- vim's timeoutlen.
 const TIMEOUT_MILLISECONDS = 400;
+// Comfortably past TIMEOUT_MILLISECONDS, the same margin SEND_SETTLE_MILLISECONDS
+// gives SEND_ROUND_TRIP_MILLISECONDS above -- long enough that a bare `n`'s own
+// ambiguity against `nf` (M1b-2 Task 9) has genuinely timed out by the time an
+// assertion runs, not merely "probably has by now".
+const AMBIGUOUS_KEY_SETTLE_MILLISECONDS = TIMEOUT_MILLISECONDS + 100;
 
 const pressEscape = async (renderer: TestRendererSetup): Promise<void> => {
   await act(async () => {
@@ -107,15 +120,39 @@ const mount = async (opts: {
     keymapService.getBindings = () => extendedBindings;
   }
 
+  const seedDialogs = opts.dialogs ?? dialogs;
+  const seedMessages = opts.messages ?? messages;
+
   const store = new ApplicationStoreService();
   store.setState({
     patch: {
-      dialogs: opts.dialogs ?? dialogs,
-      messages: opts.messages ?? messages,
+      dialogs: seedDialogs,
+      messages: seedMessages,
       activePeerId: 'u1',
       connection: 'connected',
     },
   });
+
+  // M1b-2 Task 9: `/` search reads the real cache, not state.messages --
+  // seeded here with exactly what the store above was, so the two can never
+  // silently disagree about what a chat's messages are, the same invariant
+  // production keeps by populating state.messages *from* this same database
+  // in the first place (MessageService.loadHistory). Peers for every dialog
+  // (not only 'u1'), deduplicated, since a message's peerId is a foreign key
+  // the schema enforces -- inserting a message for a peer with no row would
+  // otherwise throw.
+  const database = new DatabaseService();
+  database.open({ filePath: ':memory:' });
+  const seededPeerIds = new Set<string>();
+  for (const dialog of seedDialogs) {
+    if (seededPeerIds.has(dialog.peerId)) {
+      continue;
+    }
+    seededPeerIds.add(dialog.peerId);
+    database.upsertPeer({ id: dialog.peerId, type: 'user', accessHash: null, title: dialog.title, username: null });
+  }
+  database.insertMessages({ messages: seedMessages });
+  const messageSearchService = new MessageSearchService(database);
 
   const sent: string[] = [];
   // What the composer held at the moment the send handler ran. MessageService
@@ -186,6 +223,7 @@ const mount = async (opts: {
       timeoutMilliseconds={TIMEOUT_MILLISECONDS}
       tokens={tokens}
       resolveSenderName={() => 'Alice'}
+      messageSearchService={messageSearchService}
       onSend={onSend}
       onEdit={onEdit}
       onDelete={onDelete}
@@ -196,7 +234,7 @@ const mount = async (opts: {
     { width: TERMINAL_WIDTH, height: TERMINAL_HEIGHT },
   );
   await renderer.flush();
-  return { renderer, store, sent, composerAtSend, edited, deleted, opened, marked, quit };
+  return { renderer, store, sent, composerAtSend, edited, deleted, opened, marked, quit, database };
 };
 
 test('starts in NORMAL mode with both panes on screen', async () => {
@@ -1801,6 +1839,296 @@ test('while the chat picker is open, i does not enter insert mode -- it types in
 test('opening the chat picker shrinks the message pane so the status line stays on its own row, uncorrupted', async () => {
   const { renderer, store } = await mount({ dialogs: pickerDialogs });
   await act(async () => { renderer.mockInput.pressKey('p', { ctrl: true }); });
+  await renderer.flush();
+  const rows = renderer.captureCharFrame().split('\n');
+  expect(rows[TERMINAL_HEIGHT - 1]).toContain('NORMAL');
+  expect(rows[TERMINAL_HEIGHT - 1]).toContain(`1/${store.getState().messages.length}`);
+});
+
+// --- M1b-2 Task 9: `/`, n, N -- search the open chat's cached messages ------
+//
+// Unlike the chat picker, SearchOverlay has no results list of its own to
+// render: Enter jumps straight to the first match and n/N (once the overlay
+// has closed) step through the rest, exactly the way vim's own `/` behaves
+// without 'incsearch'. mount()'s own database is seeded with exactly this
+// fixture (both as state.messages and as real cache rows), since
+// MessageSearchService reads the cache, not state.messages directly.
+const searchFixtureMessages: IMessageRow[] = [
+  { peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'morning stand-up at 9', out: 0, entities: [], replyToMessageId: null },
+  { peerId: 'u1', id: 2, fromId: 'u1', date: 200, text: 'lunch plans?', out: 0, entities: [], replyToMessageId: null },
+  { peerId: 'u1', id: 3, fromId: 'u1', date: 300, text: 'another stand-up tomorrow', out: 0, entities: [], replyToMessageId: null },
+  { peerId: 'u1', id: 4, fromId: 'u1', date: 400, text: 'see you then', out: 0, entities: [], replyToMessageId: null },
+];
+
+test('/ opens the search overlay', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  expect(store.getState().overlay).toBe('search');
+  expect(renderer.captureCharFrame()).toContain('Search: ');
+});
+
+test('typing narrows the query, shown live on the overlay', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('stand'); });
+  await renderer.flush();
+  expect(store.getState().searchQuery).toBe('stand');
+  expect(renderer.captureCharFrame()).toContain('Search: stand');
+});
+
+test('backspace in the search overlay removes the last typed character', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('standx'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressBackspace(); });
+  await renderer.flush();
+  expect(store.getState().searchQuery).toBe('stand');
+});
+
+// "stand-up" appears in messages 1 and 3 (state.messages indices 0 and 2,
+// oldest-first) -- the first is index 0, the topmost/earliest one currently
+// loaded, not whichever the DB happens to return first.
+test('Enter jumps the message cursor to the first match and closes the overlay', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('stand'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+  expect(store.getState().overlay).toBeNull();
+  expect(store.getState().messageCursor).toBe(0);
+});
+
+// MessageView only highlights the cursor row while focused
+// (message-view.tsx) -- `/` is context '*', reachable from the chat list the
+// same way `\` and <C-p> are, so without this a jump triggered from there
+// would move messageCursor with nothing on screen to show it moved.
+test('Enter focuses the messages pane, so a jump triggered from the chat list is visible', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => { renderer.mockInput.pressKey('n'); renderer.mockInput.pressKey('f'); });
+  await renderer.flush();
+  expect(store.getState().engine.context).toBe(VimContexts.CHAT_LIST);
+
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('stand'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+
+  expect(store.getState().engine.context).toBe(VimContexts.MESSAGES);
+  expect(store.getState().messageCursor).toBe(0);
+});
+
+// Mirrors the chat picker's own precedent (Enter with nothing selected is a
+// no-op, overlay stays open) -- there is nothing to jump to yet, which reads
+// as "keep refining the query", not as "give up and close".
+test('Enter with no matches does nothing -- the overlay stays open and the cursor does not move', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('nonexistent'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+  expect(store.getState().overlay).toBe('search');
+  expect(store.getState().messageCursor).toBe(0);
+});
+
+// The load-bearing guard, the same one which-key's and the chat picker's own
+// "j does not move the message cursor" tests already cover for their overlays.
+test('while the search overlay is open, j does not move the message cursor', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  expect(store.getState().messageCursor).toBe(0);
+
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('j'); });
+  await renderer.flush();
+
+  expect(store.getState().messageCursor).toBe(0);
+});
+
+// The other half of the same guard: 'i' is ordinarily a mode switch
+// (VimModes.INSERT), so this also proves typed letters become query text
+// while the overlay is open rather than falling through to the engine --
+// mirrors the identical chat-picker test above.
+test('while the search overlay is open, i does not enter insert mode -- it types into the query', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await renderer.flush();
+
+  expect(store.getState().engine.mode).toBe('normal');
+  expect(store.getState().searchQuery).toBe('i');
+});
+
+test('escape closes the search overlay and restores the cursor to where it was', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => { renderer.mockInput.pressKey('j'); renderer.mockInput.pressKey('j'); });
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(2);
+
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('lunch'); });
+  await renderer.flush();
+
+  await pressEscape(renderer);
+  expect(store.getState().overlay).toBeNull();
+  expect(store.getState().messageCursor).toBe(2);
+  expect(store.getState().searchQuery).toBe('');
+});
+
+// The rigorous version of the test just above: nothing the *search overlay's
+// own* key handling does can ever move messageCursor while it is open (every
+// key is swallowed), so a version of app.tsx that simply left messageCursor
+// out of the escape patch entirely -- never reading searchCursorBeforeOpen at
+// all -- would pass that test too, for the wrong reason. This one forces a
+// real difference between "what messageCursor is right now" and "what it was
+// when `/` opened" by writing to the store directly, the way an unrelated
+// event (a live message arriving elsewhere, say) could -- proving escape
+// truly restores the captured snapshot, not merely whatever is current.
+test('escape restores the snapshot taken at open time, not whatever the cursor became afterward', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => { renderer.mockInput.pressKey('j'); });
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(1);
+
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  expect(store.getState().searchCursorBeforeOpen).toBe(1);
+
+  // Simulates something outside the search overlay's own keyboard handling
+  // moving the cursor while it is open -- not reachable through a key press,
+  // since the overlay swallows every one, but a real possibility from, say,
+  // a live update landing mid-search. Wrapped in act() like every state
+  // change here: this still triggers App's own re-render.
+  await act(async () => { store.setState({ patch: { messageCursor: 3 } }); });
+  await renderer.flush();
+
+  await pressEscape(renderer);
+  expect(store.getState().messageCursor).toBe(1);
+});
+
+// The snapshot (searchCursorBeforeOpen) is captured fresh on every open, not
+// carried over from an earlier search session -- proven by actually moving
+// the cursor via a real match first (Enter), then opening a second,
+// uncommitted search and escaping it: the cursor must land back where the
+// FIRST search left it, not at the position from before that search ever ran.
+test('escape after a second search restores to where the cursor was before THAT search opened, not further back', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('lunch'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(1);
+
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('anything'); });
+  await renderer.flush();
+  await pressEscape(renderer);
+
+  expect(store.getState().messageCursor).toBe(1);
+});
+
+// <S-n> shares no prefix with `nf` (keymap.test.ts already pins this at the
+// engine level), so it resolves with no ambiguity and needs no timeout wait,
+// unlike bare `n` below.
+test('N (shift-n) cycles backward through the committed matches, wrapping to the last one', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('stand'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(0);
+
+  await act(async () => { renderer.mockInput.pressKey('n', { shift: true }); });
+  await renderer.flush();
+  // The two "stand-up" matches sit at indices 0 and 2; backward from 0 wraps to 2.
+  expect(store.getState().messageCursor).toBe(2);
+});
+
+// Bare `n` is genuinely ambiguous against `nf` (keymap.test.ts), so it needs
+// App's own timeoutlen to settle before it resolves as SEARCH_CYCLE -- the
+// same wait Task 2's own ambiguous-key tests already rely on.
+test('n alone, once the ambiguity against nf times out, cycles forward through the committed matches', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('stand'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(0);
+
+  await act(async () => { renderer.mockInput.pressKey('n'); });
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(0); // still ambiguous, waiting on the timer
+
+  await act(async () => { await new Promise(resolve => { setTimeout(resolve, AMBIGUOUS_KEY_SETTLE_MILLISECONDS); }); });
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(2);
+});
+
+// The regression this task's own brief called out by name: giving `n` a real
+// binding must not break `nf`, typed at ordinary speed, from resolving
+// exactly as it always did -- both keys land inside one synchronous burst
+// here, well under timeoutMilliseconds, so the ambiguity never gets the
+// chance to settle on its own before the second key completes `nf`.
+test('nf still focuses the chat list when typed quickly, even though n now has its own binding', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => {
+    renderer.mockInput.pressKey('n');
+    renderer.mockInput.pressKey('f');
+  });
+  await renderer.flush();
+  expect(store.getState().engine.context).toBe(VimContexts.CHAT_LIST);
+  // Confirms the ambiguity did not also fire SEARCH_CYCLE on the way --
+  // there was no committed search, so an errant cycle would still have left
+  // messageCursor at 0, but a non-zero count of registered matches would
+  // have caught it; asserting on the pure absence of a search having run is
+  // simpler and just as conclusive.
+  expect(store.getState().searchMatchIds).toEqual([]);
+});
+
+// The owner's own chat list is mostly Vietnamese (task-8-brief.md) -- proven
+// here end to end (cache -> MessageSearchService -> App -> cursor), not only
+// at the database layer (database.test.ts).
+test('/ finds a real Vietnamese message end-to-end', async () => {
+  const vietnameseMessages: IMessageRow[] = [
+    { peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'Chào buổi sáng', out: 0, entities: [], replyToMessageId: null },
+    { peerId: 'u1', id: 2, fromId: 'u1', date: 200, text: 'Hẹn gặp lại nhé', out: 0, entities: [], replyToMessageId: null },
+  ];
+  const { renderer, store } = await mount({ messages: vietnameseMessages });
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('Hẹn'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+  expect(store.getState().overlay).toBeNull();
+  expect(store.getState().messageCursor).toBe(1);
+});
+
+// Mirrors "starting a reply shrinks..." and the chat picker's own chromeHeight
+// regression test: Composer is not rendered at all while the search overlay
+// is open, so if chromeHeight had not grown to match SearchOverlay's own two
+// rows, the status line would be pushed off its row instead of failing loudly.
+test('opening the search overlay shrinks the message pane so the status line stays on its own row, uncorrupted', async () => {
+  const { renderer, store } = await mount({ messages: searchFixtureMessages });
+  await act(async () => { renderer.mockInput.pressKey('/'); });
   await renderer.flush();
   const rows = renderer.captureCharFrame().split('\n');
   expect(rows[TERMINAL_HEIGHT - 1]).toContain('NORMAL');

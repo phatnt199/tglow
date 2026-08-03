@@ -497,3 +497,74 @@ test('warning.dismiss leaves the ordinary status message alone', () => {
   });
   expect(patch.statusMessage).toBeUndefined();
 });
+
+// M1b-2 Task 9: overlay.toggle into 'search' captures the cursor position so
+// the search overlay's own <escape> (app.tsx) can restore it later -- the
+// same "snapshot before, restore on cancel" shape composerTextBeforeEdit
+// already uses for edit.start/edit.cancel.
+test("overlay.toggle into 'search' captures the current message cursor", () => {
+  const state = buildState({ messageCursor: 2, overlay: null });
+  const patch = applyAction({ state, action: { type: ActionTypes.OVERLAY_TOGGLE, overlay: 'search' } });
+  expect(patch.overlay).toBe('search');
+  expect(patch.searchCursorBeforeOpen).toBe(2);
+});
+
+// searchQuery resets alongside chatPickerQuery/chatPickerCursor, whichever
+// overlay opens or closes -- harmless for whichkey/chatpicker, which never
+// read it, the same reasoning those two already carry for each other.
+test('overlay.toggle resets a stale search query regardless of which overlay it opens', () => {
+  const state = buildState({ searchQuery: 'stale query', overlay: null });
+  const patch = applyAction({ state, action: { type: ActionTypes.OVERLAY_TOGGLE, overlay: 'whichkey' } });
+  expect(patch.searchQuery).toBe('');
+});
+
+// M1b-2 Task 9: n/N. searchMatchIds are message ids, not array positions --
+// set once by app.tsx's own Enter-commit, then re-resolved to a *current*
+// index here on every cycle, so a message that moved or vanished since the
+// search was committed is dropped rather than pointing the cursor at the
+// wrong row (or crashing). buildState()'s own fixture is ids 1-4 at indices
+// 0-3, oldest first, exactly like the real oldest-first state.messages.
+test('search.cycle next moves the cursor to the next match after it', () => {
+  const state = buildState({ messageCursor: 0, searchMatchIds: [2, 4] });
+  const patch = applyAction({ state, action: { type: ActionTypes.SEARCH_CYCLE, direction: 'next' } });
+  expect(patch.messageCursor).toBe(1);
+});
+
+test('search.cycle next skips past a match the cursor already sits on, rather than re-selecting it', () => {
+  const state = buildState({ messageCursor: 1, searchMatchIds: [2, 4] });
+  const patch = applyAction({ state, action: { type: ActionTypes.SEARCH_CYCLE, direction: 'next' } });
+  expect(patch.messageCursor).toBe(3);
+});
+
+test('search.cycle next wraps around to the first match once past the last one', () => {
+  const state = buildState({ messageCursor: 3, searchMatchIds: [2, 4] });
+  const patch = applyAction({ state, action: { type: ActionTypes.SEARCH_CYCLE, direction: 'next' } });
+  expect(patch.messageCursor).toBe(1);
+});
+
+test('search.cycle previous moves the cursor to the nearest match before it', () => {
+  const state = buildState({ messageCursor: 3, searchMatchIds: [1, 3] });
+  const patch = applyAction({ state, action: { type: ActionTypes.SEARCH_CYCLE, direction: 'previous' } });
+  expect(patch.messageCursor).toBe(2);
+});
+
+test('search.cycle previous wraps around to the last match once before the first one', () => {
+  const state = buildState({ messageCursor: 0, searchMatchIds: [1, 3] });
+  const patch = applyAction({ state, action: { type: ActionTypes.SEARCH_CYCLE, direction: 'previous' } });
+  expect(patch.messageCursor).toBe(2);
+});
+
+test('search.cycle is a no-op when there is no committed search', () => {
+  const state = buildState({ messageCursor: 1, searchMatchIds: [] });
+  const patch = applyAction({ state, action: { type: ActionTypes.SEARCH_CYCLE, direction: 'next' } });
+  expect(patch).toEqual({});
+});
+
+// A matched id can outlive its own position: a message deleted after the
+// search was committed drops out of state.messages entirely (deleteMessage
+// flags it; listMessages, and every republish that follows, excludes it).
+test('search.cycle skips a matched id no longer present in state.messages', () => {
+  const state = buildState({ messageCursor: 0, searchMatchIds: [99, 3] });
+  const patch = applyAction({ state, action: { type: ActionTypes.SEARCH_CYCLE, direction: 'next' } });
+  expect(patch.messageCursor).toBe(2);
+});

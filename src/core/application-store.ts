@@ -44,6 +44,33 @@ export interface IApplicationState {
   chatPickerQuery: string;
   chatPickerCursor: number;
   /**
+   * The text typed into the `/` search overlay while it is open (M1b-2
+   * Task 9). Meaningless while `overlay !== 'search'`; reset to '' whenever
+   * any overlay opens or closes (mirroring chatPickerQuery's own reset),
+   * since nothing outside the overlay itself ever reads it.
+   */
+  searchQuery: string;
+  /**
+   * The ids of the messages a committed search last matched -- written once,
+   * by app.tsx's own handling of the Enter that closes the search overlay,
+   * never by the reducer directly. Ids, not positions in state.messages: n/N
+   * (SEARCH_CYCLE, action-reducer.ts) re-resolve each id to its *current*
+   * index on every cycle, so a message that moved or was deleted since the
+   * search was committed is dropped rather than pointing the cursor at the
+   * wrong row. Survives the overlay closing -- unlike searchQuery, this is
+   * exactly what n/N need once it has.
+   */
+  searchMatchIds: number[];
+  /**
+   * `messageCursor` at the instant the search overlay opened, so its own
+   * `<escape>` (app.tsx) can put the cursor back exactly where it was --
+   * the same "snapshot before, restore on cancel" shape
+   * composerTextBeforeEdit already uses for edit.start/edit.cancel. Null
+   * whenever no search is open, and cleared (not merely left stale) the
+   * moment escape restores it or Enter commits a jump away from it.
+   */
+  searchCursorBeforeOpen: number | null;
+  /**
    * Set by DELETE_REQUEST -- which `dd`/`3dd` and any d+motion delete all
    * route through (M1b-2 Task 4), never bypass -- while the status line
    * waits for y/n; null once answered either way. The only irreversible
@@ -89,6 +116,9 @@ const INITIAL_STATE: IApplicationState = {
   overlay: null,
   chatPickerQuery: '',
   chatPickerCursor: 0,
+  searchQuery: '',
+  searchMatchIds: [],
+  searchCursorBeforeOpen: null,
   pendingConfirmation: null,
   revealedSpoilers: new Set(),
   registers: {},

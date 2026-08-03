@@ -19,8 +19,8 @@ export interface IRawKeyEvent {
 
 export type TCursorUnit = 'message' | 'chat';
 export type TCursorEdge = 'first' | 'last';
-/** The two overlays that exist. A union of bare literals, like TCursorUnit/TCursorEdge above, not a class: nothing else keys off it. */
-export type TOverlay = 'whichkey' | 'chatpicker';
+/** The three overlays that exist. A union of bare literals, like TCursorUnit/TCursorEdge above, not a class: nothing else keys off it. */
+export type TOverlay = 'whichkey' | 'chatpicker' | 'search';
 
 export type TAction =
   | { type: typeof ActionTypes.CURSOR_MOVE; unit: TCursorUnit; delta: number }
@@ -44,7 +44,8 @@ export type TAction =
   | { type: typeof ActionTypes.CONFIRM }
   | { type: typeof ActionTypes.CANCEL_CONFIRMATION }
   | { type: typeof ActionTypes.LINK_SHOW }
-  | { type: typeof ActionTypes.WARNING_DISMISS };
+  | { type: typeof ActionTypes.WARNING_DISMISS }
+  | { type: typeof ActionTypes.SEARCH_CYCLE; direction: 'next' | 'previous' };
 
 export interface IEngineState {
   mode: TVimMode;

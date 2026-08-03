@@ -80,6 +80,8 @@ by accident.
 | --- | --- |
 | `\` | show key bindings |
 | `<C-p>` | fuzzy jump to any chat (type to filter, `<C-n>`/`<C-p>` or `j`/`k` to move, `Enter` to open, `Esc` to cancel) |
+| `/` | search the open chat's cached messages (type to filter, `Enter` jumps to the first match, `Esc` cancels and restores the cursor) |
+| `n` / `N` | jump to the next / previous search match |
 | `j` / `k` | next / previous message |
 | `3j` | down three messages |
 | `gg` / `G` | oldest loaded / newest |

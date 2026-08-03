@@ -23,13 +23,18 @@ import { writeToClipboard } from '../core/clipboard.ts';
 // Task 8) is called below, not just typed against, so it too has to come
 // from its concrete module rather than the core/ barrel.
 import { fuzzyMatch } from '../core/fuzzy-match.ts';
+// Type-only: App receives a MessageSearchService instance through props
+// (constructed and DI-wired by main.ts) and only ever calls the instance
+// method .search() on it below -- there is no `new MessageSearchService(...)`
+// here for a value import to serve.
+import type { MessageSearchService } from '../core/message-search.ts';
 import {
   ActionTypes, CLIPBOARD_REGISTER, Operators, UNNAMED_REGISTER, VimContexts, VimModes,
   type IEngineState, type IResolveResult, type TAction,
 } from '../keys/common/index.ts';
 import type { KeyNormalizerService, KeymapService, VimEngineService } from '../keys/index.ts';
-import { applyAction } from './action-reducer.ts';
-import { ChatPicker, resolveChatPickerHeight, resolveWhichKeyHeight, WhichKey } from './overlays/index.ts';
+import { applyAction, resolveSearchMatchIndices } from './action-reducer.ts';
+import { ChatPicker, resolveChatPickerHeight, resolveWhichKeyHeight, SEARCH_OVERLAY_HEIGHT, SearchOverlay, WhichKey } from './overlays/index.ts';
 import { ChatList, Composer, MessageView, StatusLine } from './panes/index.ts';
 import type { ITokens } from './theme/index.ts';
 
@@ -38,6 +43,14 @@ export interface IAppProps {
   engine: VimEngineService;
   keymapService: KeymapService;
   keyNormalizer: KeyNormalizerService;
+  /**
+   * `/`'s own search, M1b-2 Task 9. Called directly, synchronously, the same
+   * treatment VimEngineService/KeymapService already get -- unlike
+   * onSend/onEdit/onOpenChat below, this never touches the network
+   * (DatabaseService.searchMessages is a local, synchronous bun:sqlite read),
+   * so it needs no callback-prop wrapping or fire-and-forget error handling.
+   */
+  messageSearchService: MessageSearchService;
   /**
    * How long an `ambiguous` key sequence (vim-engine.ts's own status: an
    * exact match that is also the prefix of a longer binding, the way a
@@ -99,16 +112,33 @@ const OVERLAY_ESCAPE_TOKEN = '<escape>';
 const OVERLAY_LEADER_TOKEN = '\\';
 
 /**
- * The chat picker's own vocabulary while it owns input (M1b-2 Task 8): Enter
- * opens the selected chat, Backspace edits the query, and each pair below is
- * one direction -- `<C-n>`/`j` down, `<C-p>`/`k` up -- echoing vim's own
- * choice of j/k alongside emacs-style C-n/C-p, the same pairing ctrlp.vim and
- * fzf both use.
+ * Enter and Backspace mean the same thing to both the chat picker (M1b-2
+ * Task 8) and the search overlay (Task 9) -- commit the typed query,
+ * edit it -- so both blocks below share these rather than each declaring an
+ * identical pair under its own name.
  */
-const CHAT_PICKER_ENTER_TOKEN = '<return>';
-const CHAT_PICKER_BACKSPACE_TOKEN = '<backspace>';
+const ENTER_TOKEN = '<return>';
+const BACKSPACE_TOKEN = '<backspace>';
+
+/**
+ * The chat picker's own vocabulary while it owns input (M1b-2 Task 8): each
+ * pair below is one direction -- `<C-n>`/`j` down, `<C-p>`/`k` up -- echoing
+ * vim's own choice of j/k alongside emacs-style C-n/C-p, the same pairing
+ * ctrlp.vim and fzf both use. Search (Task 9) has no result list of its own
+ * to move a selection through, so it has no equivalent of these two.
+ */
 const CHAT_PICKER_NEXT_TOKENS: readonly string[] = ['<C-n>', 'j'];
 const CHAT_PICKER_PREVIOUS_TOKENS: readonly string[] = ['<C-p>', 'k'];
+
+/**
+ * Bounds how many cache rows a single `/` query asks MessageSearchService
+ * for. Mirrors main.ts's own HISTORY_LIMIT: state.messages never holds more
+ * than that many rows at once (no pagination past it exists yet), so a match
+ * outside this many of the newest cached rows could never be present in
+ * state.messages for resolveSearchMatchIndices to find anyway -- searching
+ * further than this would only cost time, not find anything reachable.
+ */
+const SEARCH_RESULT_LIMIT = 200;
 
 const CONTROL_CHARACTER_BOUNDARY = 0x20;
 const DELETE_CODE_POINT = 0x7f;
@@ -210,7 +240,7 @@ const resolveClipboardText = (opts: {
 
 export const App = (props: IAppProps) => {
   const {
-    store, engine, keymapService, keyNormalizer, timeoutMilliseconds, tokens, resolveSenderName,
+    store, engine, keymapService, keyNormalizer, messageSearchService, timeoutMilliseconds, tokens, resolveSenderName,
     onSend, onEdit, onDelete, onQuit, onOpenChat, onMarkRead,
   } = props;
 
@@ -523,7 +553,7 @@ export const App = (props: IAppProps) => {
         store.setState({ patch: { chatPickerCursor: Math.max(current.chatPickerCursor - 1, 0) } });
         return;
       }
-      if (pickerToken === CHAT_PICKER_ENTER_TOKEN) {
+      if (pickerToken === ENTER_TOKEN) {
         const selected = results[current.chatPickerCursor];
         if (!selected) {
           return;
@@ -546,7 +576,7 @@ export const App = (props: IAppProps) => {
         });
         return;
       }
-      if (pickerToken === CHAT_PICKER_BACKSPACE_TOKEN) {
+      if (pickerToken === BACKSPACE_TOKEN) {
         store.setState({ patch: { chatPickerQuery: current.chatPickerQuery.slice(0, -1), chatPickerCursor: 0 } });
         return;
       }
@@ -561,10 +591,106 @@ export const App = (props: IAppProps) => {
       return;
     }
 
+    // The search overlay owns every key while it is open (M1b-2 Task 9), the
+    // same guarantee which-key's and the chat picker's own blocks make --
+    // checked ahead of which-key's generic block below for the same reason
+    // chatpicker's is: it has real state of its own (searchQuery) to update,
+    // not merely a choice between swallowing a key and letting it through.
+    // This is also what makes n/N (SEARCH_CYCLE, a real keymap binding as of
+    // this task) reachable only *after* the overlay has closed -- while it is
+    // open, a bare `n` lands here and becomes query text, never the engine.
+    if (current.overlay === 'search') {
+      const searchToken = keyNormalizer.toCanonicalString({ key });
+
+      if (searchToken === OVERLAY_ESCAPE_TOKEN) {
+        store.setState({
+          patch: {
+            overlay: null,
+            searchQuery: '',
+            // Clamped defensively: state.messages could have shrunk (a
+            // delete elsewhere) since searchCursorBeforeOpen was captured,
+            // and an out-of-range messageCursor is not a state this app ever
+            // otherwise allows (action-reducer.ts's own clamp helper is what
+            // keeps CURSOR_MOVE/CURSOR_EDGE from producing one).
+            messageCursor: Math.min(
+              current.searchCursorBeforeOpen ?? current.messageCursor,
+              Math.max(0, current.messages.length - 1),
+            ),
+            searchCursorBeforeOpen: null,
+          },
+        });
+        return;
+      }
+
+      if (searchToken === ENTER_TOKEN) {
+        // A blank query is MessageSearchService's own business rule to
+        // refuse (message-search.ts), not App's to re-check -- activePeerId
+        // is the one thing only App can see, so that guard stays here.
+        const rows = current.activePeerId === null
+          ? []
+          : messageSearchService.search({
+            peerId: current.activePeerId,
+            query: current.searchQuery,
+            limit: SEARCH_RESULT_LIMIT,
+          });
+        const matchIds = rows.map(row => row.id);
+        const positions = resolveSearchMatchIndices({ messages: current.messages, matchIds });
+        // Mirrors the chat picker's own "Enter with nothing selected does
+        // nothing" rule: there is no first match to jump to yet, which reads
+        // as "keep refining the query", not as "give up and close".
+        if (positions.length === 0) {
+          return;
+        }
+        store.setState({
+          patch: {
+            overlay: null,
+            searchQuery: '',
+            // What n/N (SEARCH_CYCLE, action-reducer.ts) cycle through once
+            // this overlay has closed -- ids, not positions, so a message
+            // that later moves or is deleted is dropped rather than
+            // corrupting the cursor (resolveSearchMatchIndices's own doc
+            // comment).
+            searchMatchIds: matchIds,
+            // The first (topmost, oldest-loaded) match currently on screen --
+            // positions is already sorted ascending by resolveSearchMatchIndices.
+            messageCursor: positions[0]!,
+            searchCursorBeforeOpen: null,
+            // `/` can be opened from the chat list (it is context '*', like
+            // \ and <C-p>) -- MessageView only highlights the cursor row
+            // while focused (message-view.tsx), so without this a jump
+            // triggered from there would move messageCursor with nothing on
+            // screen to show it moved. Mirrors CHAT_OPEN's own side effect
+            // (commitResolution below), which focuses messages for the same
+            // reason once it moves the cursor there.
+            engine: { ...current.engine, context: VimContexts.MESSAGES },
+          },
+        });
+        return;
+      }
+
+      if (searchToken === BACKSPACE_TOKEN) {
+        store.setState({ patch: { searchQuery: current.searchQuery.slice(0, -1) } });
+        return;
+      }
+
+      // Any other key is text for the query, narrowing it, never a keymap
+      // binding: a printable 'i' here must not enter insert mode the way it
+      // would in the messages pane underneath -- the same rule the chat
+      // picker's own identical block above already applies.
+      const isSearchPrintable = isPrintableCharacter({ sequence: event.sequence, ctrl: event.ctrl, meta: event.meta });
+      if (isSearchPrintable) {
+        store.setState({ patch: { searchQuery: current.searchQuery + event.sequence } });
+      }
+      return;
+    }
+
     // The which-key overlay owns input while it is open. Everything except
     // the two keys above is swallowed here, before the engine ever sees it,
     // so a stray keystroke cannot move a cursor or seed a pending prefix the
-    // engine would still be holding once the overlay closes.
+    // engine would still be holding once the overlay closes. In practice this
+    // is reached only for 'whichkey' -- 'chatpicker' and 'search' both have
+    // their own dedicated blocks above, checked first, which always return
+    // before this one is ever reached for either of them.
     if (current.overlay !== null) {
       const overlayToken = keyNormalizer.toCanonicalString({ key });
       if (overlayToken === OVERLAY_ESCAPE_TOKEN) {
@@ -725,6 +851,7 @@ export const App = (props: IAppProps) => {
   const whichKeyBindings = keymapService.describe({ mode: state.engine.mode, context: state.engine.context });
   const isWhichKeyOpen = state.overlay === 'whichkey';
   const isChatPickerOpen = state.overlay === 'chatpicker';
+  const isSearchOpen = state.overlay === 'search';
   // Unlike whichKeyBindings above, computed only while actually open:
   // state.dialogs can run into the hundreds, and fuzzy-matching all of them
   // on every render -- most of which have nothing to do with the picker --
@@ -744,11 +871,19 @@ export const App = (props: IAppProps) => {
   // Composer about which of its rows are on screen. Skipping both while the
   // overlay is open is correct, not an oversight: Composer is not rendered at
   // all then.
+  //
+  // SearchOverlay (M1b-2 Task 9) gets its own branch ahead of the plain
+  // Composer fallback, the same way ChatPicker/WhichKey do -- but unlike
+  // either of those two, its own row count (SEARCH_OVERLAY_HEIGHT) is a
+  // constant, not something to compute from state first, since it never
+  // grows a results list of its own.
   const chromeHeight = isChatPickerOpen
     ? resolveChatPickerHeight({ resultCount: chatPickerResults.length }) + STATUS_LINE_HEIGHT
     : isWhichKeyOpen
       ? resolveWhichKeyHeight({ bindingCount: whichKeyBindings.length, width }) + STATUS_LINE_HEIGHT
-      : CHROME_HEIGHT + (replyingTo !== null ? REPLY_PREVIEW_HEIGHT : 0) + (isEditing ? EDIT_INDICATOR_HEIGHT : 0);
+      : isSearchOpen
+        ? SEARCH_OVERLAY_HEIGHT + STATUS_LINE_HEIGHT
+        : CHROME_HEIGHT + (replyingTo !== null ? REPLY_PREVIEW_HEIGHT : 0) + (isEditing ? EDIT_INDICATOR_HEIGHT : 0);
   const paneHeight = Math.max(1, height - chromeHeight);
   const messageWidth = Math.max(1, width - SIDEBAR_WIDTH - RULE_WIDTH);
 
@@ -800,6 +935,12 @@ export const App = (props: IAppProps) => {
           bindings={whichKeyBindings}
           mode={state.engine.mode}
           context={state.engine.context}
+          tokens={tokens}
+          width={width}
+        />
+      ) : isSearchOpen ? (
+        <SearchOverlay
+          query={state.searchQuery}
           tokens={tokens}
           width={width}
         />

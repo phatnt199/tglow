@@ -11,6 +11,15 @@ test('starts with sensible defaults', () => {
   expect(store.getState().activePeerId).toBeNull();
 });
 
+// M1b-2 Task 9: `/` search state starts empty/unset, the same as
+// chatPickerQuery/chatPickerCursor do for the picker overlay.
+test('starts with no search in progress and nothing committed to cycle', () => {
+  const store = new ApplicationStoreService();
+  expect(store.getState().searchQuery).toBe('');
+  expect(store.getState().searchMatchIds).toEqual([]);
+  expect(store.getState().searchCursorBeforeOpen).toBeNull();
+});
+
 test('setState merges shallowly', () => {
   const store = new ApplicationStoreService();
   store.setState({ patch: { connection: 'connected' } });

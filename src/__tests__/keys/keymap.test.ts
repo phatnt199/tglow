@@ -452,6 +452,61 @@ test('<C-p> toggles the chat picker overlay', () => {
   expect(result.actions).toEqual([{ type: ActionTypes.OVERLAY_TOGGLE, overlay: 'chatpicker' }]);
 });
 
+// M1b-2 Task 9: `/` search overlay -- opens exactly like `\` and `<C-p>`
+// above; app.tsx intercepts every key once it is open, the same pattern.
+test('/ toggles the search overlay', () => {
+  const { keymapService, engine } = build();
+  const result = engine.resolve({
+    state: INITIAL_ENGINE_STATE,
+    key: buildKey('/'),
+    keymap: keymapService.getBindings(),
+  });
+  expect(result.status).toBe('resolved');
+  expect(result.actions).toEqual([{ type: ActionTypes.OVERLAY_TOGGLE, overlay: 'search' }]);
+});
+
+// `n` gains a real binding of its own (cycle forward through search matches),
+// which makes it genuinely ambiguous against the real `nf` binding below --
+// the same shape `d` vs `dd` already established (Task 3). This is the
+// collision the brief asked to be checked for; see app.test.tsx for the
+// end-to-end proof that `nf`, typed quickly, still resolves exactly as it did
+// before this task, via App's own timeoutlen (Tasks 1-2).
+test('n is ambiguous against nf', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('n'), keymap });
+  expect(pending.status).toBe('ambiguous');
+  expect(engine.resolve({ state: pending.state, key: buildKey('f'), keymap }).actions).toEqual([
+    { type: ActionTypes.FOCUS_SET, context: VimContexts.CHAT_LIST },
+  ]);
+});
+
+// The other half: nothing completes `nf` within the same key press, so `n`
+// alone is still there for App's timeoutlen to settle via flushPending --
+// which resolves n's own binding (cycle forward), not nf.
+test('n alone, once flushPending settles it, cycles forward through search matches', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('n'), keymap });
+  const flushed = engine.flushPending({ state: pending.state, keymap });
+  expect(flushed.status).toBe('resolved');
+  expect(flushed.actions).toEqual([{ type: ActionTypes.SEARCH_CYCLE, direction: 'next' }]);
+});
+
+// <S-n> shares no prefix with `nf` (a real Shift-N press canonicalizes to
+// "<S-n>", never bare "N" -- ignis-style.md), so it resolves immediately,
+// with no ambiguity to settle, unlike bare n above.
+test('<S-n> cycles backward through search matches, with no ambiguity', () => {
+  const { keymapService, engine } = build();
+  const result = engine.resolve({
+    state: INITIAL_ENGINE_STATE,
+    key: buildKey('n', { shift: true }),
+    keymap: keymapService.getBindings(),
+  });
+  expect(result.status).toBe('resolved');
+  expect(result.actions).toEqual([{ type: ActionTypes.SEARCH_CYCLE, direction: 'previous' }]);
+});
+
 // Both reported bugs -- `\` bound to nothing, and no way back from the chat
 // list -- existed because every test above only asserts what IS bound, never
 // what SHOULD be: a key promised by the README, the status-bar hint or the
@@ -490,6 +545,10 @@ test('every binding the project promises the user is actually bound', () => {
     { context: '*', mode: VimModes.NORMAL, keys: '\\' },
     // M1b-2 Task 8: fuzzy jump to any chat.
     { context: '*', mode: VimModes.NORMAL, keys: '<C-p>' },
+    // M1b-2 Task 9: `/` search, and n/N to cycle its matches.
+    { context: '*', mode: VimModes.NORMAL, keys: '/' },
+    { context: '*', mode: VimModes.NORMAL, keys: 'n' },
+    { context: '*', mode: VimModes.NORMAL, keys: '<S-n>' },
     // M1b-1 message actions -- spec §3.1/§3.2, promised in the README's key
     // table. The same class of bug this whole guard exists for: each of
     // these is one binding away from being silently left out of the table.
@@ -522,19 +581,24 @@ test('every binding the project promises the user is actually bound', () => {
   }
 });
 
-// y and n cannot join the `promised` list above: they only mean anything
-// while IApplicationState.pendingConfirmation is set, so app.tsx intercepts
-// them directly, ahead of engine.resolve, the same way it already has to for
-// the which-key overlay's escape and the reply/edit escapes (see keymap.ts's
-// own comment on the dd binding). keymapService.getBindings() never contains
-// them, and isBound() would always report them missing -- not because the
-// promise is broken, but because it is kept somewhere this helper cannot
-// see. What this guards instead is the contract app.tsx's interception
-// actually depends on: it compares keyNormalizer.toCanonicalString(key)
-// against the literal strings 'y' and 'n', so a change to normalization that
-// altered how a bare letter stringifies (see the ignis-style note on
-// capital letters, for the shape such a change could take) would silently
-// break the delete confirmation with nothing else here to catch it.
+// y cannot join the `promised` list above: outside a pending confirmation it
+// is already engine-intrinsic (vim-engine.ts's OPERATOR_TRIGGERS, the yank
+// trigger, no keymap entry -- the same reason bare `d` has none either), and
+// while IApplicationState.pendingConfirmation is set, both `y` and `n` mean
+// "answer the question" instead, intercepted directly in app.tsx ahead of
+// engine.resolve (the same way it already has to for the which-key overlay's
+// escape and the reply/edit escapes -- see keymap.ts's own comment on the dd
+// binding). `n` itself DID join the list above as of M1b-2 Task 9 (it is now
+// a real binding, cycling search matches) -- the two meanings never collide,
+// since the pendingConfirmation gate in app.tsx returns before engine.resolve
+// is ever reached, so a real `n` keymap entry is simply unreachable for as
+// long as a confirmation is pending. What this test guards is the contract
+// app.tsx's own interception depends on regardless: it compares
+// keyNormalizer.toCanonicalString(key) against the literal strings 'y' and
+// 'n', so a change to normalization that altered how a bare letter
+// stringifies (see the ignis-style note on capital letters, for the shape
+// such a change could take) would silently break the delete confirmation with
+// nothing else here to catch it.
 test('y and n normalize to the literal tokens the delete confirmation compares against', () => {
   const { keyNormalizer } = build();
   expect(keyNormalizer.toCanonicalString({ key: buildKey('y') })).toBe('y');

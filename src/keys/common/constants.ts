@@ -76,6 +76,7 @@ export class ActionTypes {
   static readonly CANCEL_CONFIRMATION = 'confirmation.cancel';
   static readonly LINK_SHOW = 'link.show';
   static readonly WARNING_DISMISS = 'warning.dismiss';
+  static readonly SEARCH_CYCLE = 'search.cycle';
 }
 
 const SUPPORTED_MODES: readonly string[] = [

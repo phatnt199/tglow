@@ -6,6 +6,9 @@ import { getError } from '@venizia/ignis-inversion';
 // -- points at the concrete module rather than the core/ barrel purely
 // because that is where IApplicationState is actually defined.
 import type { IApplicationState } from '../core/application-store.ts';
+// Same reasoning as the type-only import above -- IMessageRow is defined in
+// cache/database.ts, and this stays off the core/ barrel's crash path too.
+import type { IMessageRow } from '../core/cache/database.ts';
 import { ActionTypes, Operators, UNNAMED_REGISTER, VimContexts, VimModes, type TAction } from '../keys/common/index.ts';
 import { extractLinkUrls } from './entities.ts';
 
@@ -14,6 +17,25 @@ const clamp = (opts: { value: number; maximum: number }): number => {
     return 0;
   }
   return Math.min(Math.max(opts.value, 0), opts.maximum);
+};
+
+/**
+ * Maps a committed search's message ids back to their *current* position in
+ * `messages`, sorted ascending -- `messages`' own oldest-first order, the
+ * same order the message pane renders top to bottom. Not memoized at commit
+ * time: a message deleted (or otherwise dropped from the loaded window)
+ * since the search ran is silently excluded here rather than pointing the
+ * cursor at the wrong row or crashing. Exported so app.tsx's own Enter-commit
+ * (the one place that first populates IApplicationState.searchMatchIds) can
+ * share this exact resolution rather than keeping a second copy that could
+ * drift from what SEARCH_CYCLE below considers "the same match, right now".
+ */
+export const resolveSearchMatchIndices = (opts: { messages: IMessageRow[]; matchIds: number[] }): number[] => {
+  const { messages, matchIds } = opts;
+  const positions = matchIds
+    .map(id => messages.findIndex(message => message.id === id))
+    .filter(index => index !== -1);
+  return positions.sort((left, right) => left - right);
 };
 
 /**
@@ -153,16 +175,27 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
       // second time must return to null rather than re-opening the same
       // overlay it already is.
       //
-      // chatPickerQuery/chatPickerCursor reset unconditionally alongside it --
-      // harmless for whichkey, which never reads them, and what lets a fresh
-      // <C-p> always open onto an empty query rather than whatever was typed
-      // the last time the picker was open. The picker's own escape and Enter
-      // (app.tsx) close it by setting overlay directly rather than through
-      // this action, so they reset the same two fields themselves.
+      // chatPickerQuery/chatPickerCursor/searchQuery reset unconditionally
+      // alongside it -- harmless for whichkey, which never reads any of them,
+      // and what lets a fresh <C-p> or `/` always open onto an empty query
+      // rather than whatever was typed the last time. The picker's and
+      // search's own escape and Enter (app.tsx) close their overlay by
+      // setting `overlay` directly rather than through this action, so each
+      // resets its own fields itself on the way out.
       return {
         overlay: state.overlay === action.overlay ? null : action.overlay,
         chatPickerQuery: '',
         chatPickerCursor: 0,
+        searchQuery: '',
+        // Only the transition INTO 'search' needs this snapshot -- and this
+        // case can only ever be reached with action.overlay === 'search' from
+        // outside it (state.overlay !== 'search' already), since app.tsx's
+        // own overlay-swallow block intercepts every key, including a second
+        // `/`, once the search overlay actually owns input (mirrors
+        // chatpicker's own equivalent guarantee). searchCursorBeforeOpen is
+        // what the search overlay's own <escape> (app.tsx) restores
+        // messageCursor from.
+        searchCursorBeforeOpen: action.overlay === 'search' ? state.messageCursor : null,
       };
     }
 
@@ -196,6 +229,28 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
         return { statusMessage: urls[0] };
       }
       return { statusMessage: `${urls[0]} (+${urls.length - 1} more)` };
+    }
+
+    // M1b-2 Task 9: n/N. Always relative to the *current* messageCursor, not
+    // to whichever match a previous cycle landed on -- the same fidelity real
+    // vim's own n/N have (a manual j/k in between still counts). Enter itself
+    // (app.tsx) does not route through this case -- it always jumps to
+    // positions[0], the topmost loaded match, regardless of where the cursor
+    // already was -- but shares resolveSearchMatchIndices with it above, so
+    // the two can never disagree about what a committed search's ids
+    // currently resolve to. Wraps around in both directions here, vim's own
+    // 'wrapscan' default; Enter has no "wrap" case of its own to need one.
+    case ActionTypes.SEARCH_CYCLE: {
+      const positions = resolveSearchMatchIndices({ messages: state.messages, matchIds: state.searchMatchIds });
+      if (positions.length === 0) {
+        return {};
+      }
+      if (action.direction === 'next') {
+        const next = positions.find(position => position > state.messageCursor);
+        return { messageCursor: next ?? positions[0] };
+      }
+      const previous = [...positions].reverse().find(position => position < state.messageCursor);
+      return { messageCursor: previous ?? positions[positions.length - 1] };
     }
 
     // The only thing that clears integrityWarning. Nothing else may: the field

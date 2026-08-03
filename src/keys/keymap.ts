@@ -196,6 +196,41 @@ export class KeymapService {
       context: '*', mode: VimModes.NORMAL, keys: '<C-p>', description: 'Jump to a chat',
       action: () => [{ type: ActionTypes.OVERLAY_TOGGLE, overlay: 'chatpicker' }],
     },
+    // M1b-2 Task 9: `/` searches the open chat's cached messages. Opens the
+    // overlay exactly like `\` and <C-p> above; app.tsx intercepts every key,
+    // including a second `/`, once it is open, the same pattern.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: '/', description: 'Search messages',
+      action: () => [{ type: ActionTypes.OVERLAY_TOGGLE, overlay: 'search' }],
+    },
+    // n/N cycle the matches a search last committed (app.tsx, on the Enter
+    // that closes the overlay) -- vim's own next/previous-match keys, so they
+    // carry direction the way CURSOR_MOVE's own delta does rather than being
+    // two separate action types. Context '*', like gg/<S-g>/<C-d>/<C-u> above:
+    // these move the *message* cursor regardless of which pane currently has
+    // focus, the same reasoning app.tsx's own CURSOR_MOVE/CURSOR_EDGE comment
+    // gives for those.
+    //
+    // Giving `n` a real binding makes it genuinely ambiguous against `nf`
+    // below -- the same shape bare `d` already has against `dd` (Task 3) --
+    // since `nf` is also context '*' and a bare `n` is now both an exact match
+    // in its own right and a prefix of a longer one. App's existing timeoutlen
+    // (Tasks 1-2) is what settles it; a fast `nf` still resolves immediately,
+    // unchanged (keymap.test.ts, app.test.tsx). This was a deliberate choice,
+    // not an oversight: `n`/`N` are vim's own search-cycle keys, so giving
+    // them the ordinary keymap treatment (rather than an app.tsx-level
+    // intercept with no keymap entry, the way y/n mean "confirm/cancel" only
+    // while a delete is pending) is what keeps this feature reachable the way
+    // a user would expect, at the cost of `nf` no longer resolving with zero
+    // delay if the two keys are typed more than timeoutMilliseconds apart.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: 'n', description: 'Next search match',
+      action: () => [{ type: ActionTypes.SEARCH_CYCLE, direction: 'next' }],
+    },
+    {
+      context: '*', mode: VimModes.NORMAL, keys: '<S-n>', description: 'Previous search match',
+      action: () => [{ type: ActionTypes.SEARCH_CYCLE, direction: 'previous' }],
+    },
 
     // Application. <C-l> echoes vim's own redraw-the-screen key, which is what
     // a reader reaches for to clear something stuck on their statusline.

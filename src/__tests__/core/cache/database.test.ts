@@ -190,6 +190,7 @@ test('every method rejects use before open, naming itself in the error', () => {
     { method: 'listDialogs', call: () => database.listDialogs() },
     { method: 'insertMessages', call: () => database.insertMessages({ messages: [] }) },
     { method: 'listMessages', call: () => database.listMessages({ peerId: 'u1', limit: 1 }) },
+    { method: 'searchMessages', call: () => database.searchMessages({ peerId: 'u1', query: 'hi', limit: 1 }) },
     { method: 'deleteMessage', call: () => database.deleteMessage({ peerId: 'u1', id: 1 }) },
     { method: 'getSyncState', call: () => database.getSyncState({ key: 'pts' }) },
     { method: 'setSyncState', call: () => database.setSyncState({ key: 'pts', value: 1 }) },
@@ -228,5 +229,139 @@ test('deleteMessage marks the row deleted rather than removing it', () => {
 
   database.insertMessages({ messages: [message] });
   expect(database.listMessages({ peerId: 'u1', limit: 10 })).toEqual([]);
+  database.close();
+});
+
+// M1b-2 Task 9: `/` search. Scoped to one peer, case-insensitive substring,
+// excluding deleted rows -- the same three cache-reading rules listMessages
+// already follows, now behind a LIKE instead of an exact peer/deleted match.
+test('searchMessages finds a case-insensitive substring match', () => {
+  const database = buildDatabase();
+  database.insertMessages({
+    messages: [
+      { peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'Meet at the Cafe tomorrow', out: 0, entities: [], replyToMessageId: null },
+      { peerId: 'u1', id: 2, fromId: 'u1', date: 200, text: 'unrelated message', out: 0, entities: [], replyToMessageId: null },
+    ],
+  });
+  expect(database.searchMessages({ peerId: 'u1', query: 'CAFE', limit: 10 }).map(row => row.id)).toEqual([1]);
+  database.close();
+});
+
+test('searchMessages is scoped to one peer', () => {
+  const database = buildDatabase();
+  database.insertMessages({
+    messages: [
+      { peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'find me', out: 0, entities: [], replyToMessageId: null },
+      { peerId: 'u2', id: 1, fromId: 'u2', date: 100, text: 'find me too', out: 0, entities: [], replyToMessageId: null },
+    ],
+  });
+  const rows = database.searchMessages({ peerId: 'u1', query: 'find', limit: 10 });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.peerId).toBe('u1');
+  database.close();
+});
+
+test('searchMessages excludes deleted messages', () => {
+  const database = buildDatabase();
+  database.insertMessages({
+    messages: [{ peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'gone but findable', out: 0, entities: [], replyToMessageId: null }],
+  });
+  database.deleteMessage({ peerId: 'u1', id: 1 });
+  expect(database.searchMessages({ peerId: 'u1', query: 'findable', limit: 10 })).toEqual([]);
+  database.close();
+});
+
+test('searchMessages honours its limit', () => {
+  const database = buildDatabase();
+  database.insertMessages({
+    messages: [1, 2, 3].map(id => ({
+      peerId: 'u1', id, fromId: 'u1', date: id * 100, text: `ping ${id}`, out: 0, entities: [], replyToMessageId: null,
+    })),
+  });
+  expect(database.searchMessages({ peerId: 'u1', query: 'ping', limit: 2 })).toHaveLength(2);
+  database.close();
+});
+
+// Same newest-first order as listMessages, so a caller that reconciles a
+// match against a limited, newest-first-loaded state.messages window (app.tsx,
+// M1b-2 Task 9) sees the matches most likely to actually be in that window
+// first, rather than the oldest ones if the true match count exceeds `limit`.
+test('searchMessages reads back newest-first, like listMessages', () => {
+  const database = buildDatabase();
+  database.insertMessages({
+    messages: [1, 2, 3].map(id => ({
+      peerId: 'u1', id, fromId: 'u1', date: id * 100, text: `ping ${id}`, out: 0, entities: [], replyToMessageId: null,
+    })),
+  });
+  expect(database.searchMessages({ peerId: 'u1', query: 'ping', limit: 10 }).map(row => row.id)).toEqual([3, 2, 1]);
+  database.close();
+});
+
+test('searchMessages returns nothing when nothing matches', () => {
+  const database = buildDatabase();
+  database.insertMessages({
+    messages: [{ peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'hello', out: 0, entities: [], replyToMessageId: null }],
+  });
+  expect(database.searchMessages({ peerId: 'u1', query: 'goodbye', limit: 10 })).toEqual([]);
+  database.close();
+});
+
+// The bug a naive LIKE ships: SQLite treats `%` as "any run of characters",
+// so a user searching for a literal percent sign must not have it silently
+// widen into a wildcard -- id 2 contains the substring "50" but no literal
+// "50%", and must NOT come back for a query of "50%" the way it would if `%`
+// were passed straight into the pattern unescaped.
+test('% in the query is escaped, so it matches a literal percent sign rather than acting as a wildcard', () => {
+  const database = buildDatabase();
+  database.insertMessages({
+    messages: [
+      { peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'Discount: 50% today', out: 0, entities: [], replyToMessageId: null },
+      { peerId: 'u1', id: 2, fromId: 'u1', date: 200, text: 'Only 50 seats left', out: 0, entities: [], replyToMessageId: null },
+    ],
+  });
+  expect(database.searchMessages({ peerId: 'u1', query: '50%', limit: 10 }).map(row => row.id)).toEqual([1]);
+  database.close();
+});
+
+// Same defect, for `_` -- SQLite's other LIKE wildcard, matching any single
+// character. Unescaped, a query of "a_b" would also match "axb".
+test('_ in the query is escaped, so it matches a literal underscore rather than acting as a single-character wildcard', () => {
+  const database = buildDatabase();
+  database.insertMessages({
+    messages: [
+      { peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'code a_b works', out: 0, entities: [], replyToMessageId: null },
+      { peerId: 'u1', id: 2, fromId: 'u1', date: 200, text: 'code axb is different', out: 0, entities: [], replyToMessageId: null },
+    ],
+  });
+  expect(database.searchMessages({ peerId: 'u1', query: 'a_b', limit: 10 }).map(row => row.id)).toEqual([1]);
+  database.close();
+});
+
+// A literal backslash in the query is the same defect class again: it is the
+// character this file uses as the LIKE ESCAPE, so a query containing one must
+// not corrupt the escaping of the % or _ that happens to follow it.
+test('a literal backslash in the query still matches literally', () => {
+  const database = buildDatabase();
+  database.insertMessages({
+    messages: [
+      { peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'path is C:\\Users\\a_b', out: 0, entities: [], replyToMessageId: null },
+    ],
+  });
+  expect(database.searchMessages({ peerId: 'u1', query: '\\a_b', limit: 10 }).map(row => row.id)).toEqual([1]);
+  database.close();
+});
+
+// The owner's own chat list is mostly Vietnamese (task-8-brief.md) -- this is
+// the same reason that task tested against real Vietnamese text rather than
+// an all-ASCII stand-in.
+test('searchMessages matches a real Vietnamese string', () => {
+  const database = buildDatabase();
+  database.insertMessages({
+    messages: [
+      { peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'Chào bạn, khỏe không?', out: 0, entities: [], replyToMessageId: null },
+      { peerId: 'u1', id: 2, fromId: 'u1', date: 200, text: 'unrelated message', out: 0, entities: [], replyToMessageId: null },
+    ],
+  });
+  expect(database.searchMessages({ peerId: 'u1', query: 'khỏe', limit: 10 }).map(row => row.id)).toEqual([1]);
   database.close();
 });
