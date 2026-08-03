@@ -70,7 +70,7 @@ export interface IKeyBinding {
   description: string;
 }
 
-export type TResolveStatus = 'pending' | 'resolved' | 'unmapped';
+export type TResolveStatus = 'pending' | 'resolved' | 'unmapped' | 'ambiguous';
 
 export interface IResolveResult {
   state: IEngineState;

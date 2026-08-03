@@ -93,6 +93,41 @@ export class VimEngineService {
     return { state, actions };
   };
 
+  private findCandidates = (opts: { state: IEngineState; keymap: IKeyBinding[] }): IKeyBinding[] => {
+    const { state, keymap } = opts;
+    return keymap.filter(binding => {
+      return (
+        this.matchesMode({ binding, mode: state.mode }) &&
+        this.matchesContext({ binding, context: state.context })
+      );
+    });
+  };
+
+  // A context-specific binding beats a wildcard one for the same keys, so
+  // `j` in the chat list moves the chat cursor rather than the message cursor.
+  // Without this, resolution depends on keymap declaration order.
+  //
+  // Matching compares whole token sequences, not raw strings: a binding's
+  // `keys` field is authored as a compact string ("gg", "<escape>") but
+  // parseKeySequence splits it back into the tokens it represents first.
+  // A typed "<" is one token; "<escape>" parses to one different token; the
+  // two can never equal or prefix each other regardless of which
+  // characters either contains. Comparing raw strings instead (as this did
+  // before) makes "<" a string-level prefix of every bracketed binding.
+  //
+  // Shared by resolve (sequence = pending + the just-typed token) and
+  // flushPending (sequence = pending alone, since no key arrived) so the two
+  // can never disagree about what counts as an exact match.
+  private findExactMatch = (opts: { candidates: IKeyBinding[]; sequence: string[] }): IKeyBinding | undefined => {
+    const { candidates, sequence } = opts;
+    return (
+      candidates.find(binding => {
+        return this.tokensMatch({ bindingTokens: parseKeySequence(binding.keys), sequence }) && binding.context !== '*';
+      }) ??
+      candidates.find(binding => this.tokensMatch({ bindingTokens: parseKeySequence(binding.keys), sequence }))
+    );
+  };
+
   resolve = (opts: { state: IEngineState; key: IKey; keymap: IKeyBinding[] }): IResolveResult => {
     const { state, key, keymap } = opts;
 
@@ -107,41 +142,57 @@ export class VimEngineService {
       return { state: counted, actions: [], status: 'pending' };
     }
 
-    const candidates = keymap.filter(binding => {
-      return (
-        this.matchesMode({ binding, mode: state.mode }) &&
-        this.matchesContext({ binding, context: state.context })
-      );
-    });
-
+    const candidates = this.findCandidates({ state, keymap });
     const sequence: string[] = [...state.pending, token];
 
-    // A context-specific binding beats a wildcard one for the same keys, so
-    // `j` in the chat list moves the chat cursor rather than the message cursor.
-    // Without this, resolution depends on keymap declaration order.
-    //
-    // Matching compares whole token sequences, not raw strings: a binding's
-    // `keys` field is authored as a compact string ("gg", "<escape>") but
-    // parseKeySequence splits it back into the tokens it represents first.
-    // A typed "<" is one token; "<escape>" parses to one different token; the
-    // two can never equal or prefix each other regardless of which
-    // characters either contains. Comparing raw strings instead (as this did
-    // before) makes "<" a string-level prefix of every bracketed binding.
-    const exact =
-      candidates.find(binding => {
-        return this.tokensMatch({ bindingTokens: parseKeySequence(binding.keys), sequence }) && binding.context !== '*';
-      }) ??
-      candidates.find(binding => this.tokensMatch({ bindingTokens: parseKeySequence(binding.keys), sequence }));
+    const exact = this.findExactMatch({ candidates, sequence });
+    const isPrefix = candidates.some(binding => {
+      return this.isPrefixOfBinding({ bindingTokens: parseKeySequence(binding.keys), sequence });
+    });
+
+    // Both true means this sequence is a live binding in its own right *and*
+    // the start of a longer one -- vim's own operator-pending case (`d` vs
+    // `dd`). Resolving early here is what made the longer binding
+    // unreachable; reporting the ambiguity and keeping the tokens pending
+    // lets the next key complete `dd` while flushPending stays able to
+    // resolve the shorter `d` if nothing more comes.
+    if (exact && isPrefix) {
+      return { state: { ...state, pending: sequence }, actions: [], status: 'ambiguous' };
+    }
+
     if (exact) {
       const applied = this.applyStateActions({ state, binding: exact, count: state.count ?? 1 });
       return { state: applied.state, actions: applied.actions, status: 'resolved' };
     }
 
-    const isPrefix = candidates.some(binding => {
-      return this.isPrefixOfBinding({ bindingTokens: parseKeySequence(binding.keys), sequence });
-    });
     if (isPrefix) {
       return { state: { ...state, pending: sequence }, actions: [], status: 'pending' };
+    }
+
+    return { state: { ...state, pending: [], count: null }, actions: [], status: 'unmapped' };
+  };
+
+  /**
+   * The timer's way of saying "nothing more is coming" -- called on
+   * `timeoutlen` expiry, never on a key press, so it takes no `key` and
+   * consults only `state.pending`. Resolves the shorter binding an
+   * `ambiguous` result left pending, or clears a prefix that never became
+   * one. Pure like `resolve`: no timer lives here, only the decision of what
+   * a timeout means once App's has already fired.
+   */
+  flushPending = (opts: { state: IEngineState; keymap: IKeyBinding[] }): IResolveResult => {
+    const { state, keymap } = opts;
+
+    if (state.pending.length === 0) {
+      return { state, actions: [], status: 'unmapped' };
+    }
+
+    const candidates = this.findCandidates({ state, keymap });
+    const exact = this.findExactMatch({ candidates, sequence: state.pending });
+
+    if (exact) {
+      const applied = this.applyStateActions({ state, binding: exact, count: state.count ?? 1 });
+      return { state: applied.state, actions: applied.actions, status: 'resolved' };
     }
 
     return { state: { ...state, pending: [], count: null }, actions: [], status: 'unmapped' };

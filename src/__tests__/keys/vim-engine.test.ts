@@ -186,19 +186,29 @@ test('focus.set updates the returned context', () => {
   expect(result.state.context).toBe(VimContexts.CHAT_LIST);
 });
 
-test('resolve never mutates the state it is given', () => {
+test('resolve and flushPending never mutate the state they are given', () => {
   // A frozen copy makes a mutation throw immediately, which fails the test
   // loudly -- rather than relying on a later equality check that could pass
   // for the wrong reason if a shared constant got contaminated elsewhere.
   const buildFrozenState = (): IEngineState => Object.freeze({ ...INITIAL_ENGINE_STATE });
   const engine = buildEngine();
 
-  // The pending/count path.
+  // resolve -- the pending/count path.
   expect(() => engine.resolve({ state: buildFrozenState(), key: buildKey('3'), keymap })).not.toThrow();
-  // The resolved path.
+  // resolve -- the resolved path.
   expect(() => engine.resolve({ state: buildFrozenState(), key: buildKey('j'), keymap })).not.toThrow();
-  // The unmapped path.
+  // resolve -- the unmapped path.
   expect(() => engine.resolve({ state: buildFrozenState(), key: buildKey('z'), keymap })).not.toThrow();
+
+  // flushPending -- nothing pending: returned as-is, so mutation is moot, but
+  // pinned here anyway so the four flushPending branches read as a set.
+  expect(() => engine.flushPending({ state: buildFrozenState(), keymap })).not.toThrow();
+  // flushPending -- a pending sequence with an exact match ('gg') resolves it.
+  const frozenExactPending = Object.freeze({ ...INITIAL_ENGINE_STATE, pending: ['g', 'g'] });
+  expect(() => engine.flushPending({ state: frozenExactPending, keymap })).not.toThrow();
+  // flushPending -- a pending prefix with no exact match ('g') clears it.
+  const frozenPrefixOnly = Object.freeze({ ...INITIAL_ENGINE_STATE, pending: ['g'] });
+  expect(() => engine.flushPending({ state: frozenPrefixOnly, keymap })).not.toThrow();
 });
 
 // Otherwise `j` in the chat list would move the message cursor, and which one
@@ -241,38 +251,72 @@ test('a context-specific binding beats a wildcard one for the same keys', () => 
   ).toEqual([{ type: ActionTypes.CURSOR_MOVE, unit: 'message', delta: 1 }]);
 });
 
-// M1a limitation, not a bug: resolve checks for an exact match before it
-// checks for a prefix, so a keymap that binds both a key and a longer
-// sequence starting with it makes the longer binding unreachable. The M1a
-// keymap avoids this: 'g' and 'n' are only ever prefixes, and nothing binds
-// both a key and a longer sequence starting with it inside one mode.
-//
-// 'j' and 'jk' are NOT an instance of it, but they do compete -- an earlier
-// version of this comment claimed they could not, "because they live in
-// different modes", and that is false. INSERT's fall-through for an unmatched
-// key is literal text, not the absence of a binding, so the bare `j` this
-// engine correctly reports as `pending` is a character the user is owed.
-// Holding it is the engine's job; emitting it once the prefix is proven dead
-// is App's, and while nothing did, every typed j was swallowed. The flush
-// rule and its tests live in src/tui/app.tsx and src/__tests__/tui/app.test.tsx.
-//
-// Resolving the exact-before-prefix limit properly needs operator-pending
-// semantics and a timeout, which is M1b work.
-test('a binding that is also a prefix of a longer one makes the longer one unreachable (known limit, see M1b)', () => {
-  const conflictingKeymap: IKeyBinding[] = [
-    {
-      context: '*', mode: VimModes.NORMAL, keys: 'g', description: 'short',
-      action: () => [{ type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'first' }],
-    },
-    {
-      context: '*', mode: VimModes.NORMAL, keys: 'gg', description: 'long',
-      action: () => [{ type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'last' }],
-    },
-  ];
-  const result = buildEngine().resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('g'), keymap: conflictingKeymap });
+// vim resolves this with timeoutlen. The engine stays pure: it reports the
+// ambiguity and App owns the timer.
+const ambiguousKeymap: IKeyBinding[] = [
+  { context: '*', mode: VimModes.NORMAL, keys: 'd', description: 'short',
+    action: () => [{ type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'first' }] },
+  { context: '*', mode: VimModes.NORMAL, keys: 'dd', description: 'long',
+    action: () => [{ type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'last' }] },
+];
+
+test('a key that is both an exact match and a prefix reports ambiguous, not resolved', () => {
+  const result = buildEngine().resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('d'), keymap: ambiguousKeymap });
+  expect(result.status).toBe('ambiguous');
+  expect(result.actions).toEqual([]);
+  expect(result.state.pending).toEqual(['d']);
+});
+
+test('completing the longer binding resolves it and beats the timeout', () => {
+  const engine = buildEngine();
+  const first = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('d'), keymap: ambiguousKeymap });
+  const second = engine.resolve({ state: first.state, key: buildKey('d'), keymap: ambiguousKeymap });
+  expect(second.status).toBe('resolved');
+  expect(second.actions).toEqual([{ type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'last' }]);
+  expect(second.state.pending).toEqual([]);
+});
+
+test('flushPending resolves the shorter binding when the timer fires', () => {
+  const engine = buildEngine();
+  const first = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('d'), keymap: ambiguousKeymap });
+  const flushed = engine.flushPending({ state: first.state, keymap: ambiguousKeymap });
+  expect(flushed.status).toBe('resolved');
+  expect(flushed.actions).toEqual([{ type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'first' }]);
+  expect(flushed.state.pending).toEqual([]);
+});
+
+test('flushPending on a prefix with no exact match clears without acting', () => {
+  const engine = buildEngine();
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('g'), keymap });
+  const flushed = engine.flushPending({ state: pending.state, keymap });
+  expect(flushed.status).toBe('unmapped');
+  expect(flushed.actions).toEqual([]);
+  expect(flushed.state.pending).toEqual([]);
+});
+
+test('flushPending with nothing pending is a no-op', () => {
+  const flushed = buildEngine().flushPending({ state: INITIAL_ENGINE_STATE, keymap });
+  expect(flushed.status).toBe('unmapped');
+  expect(flushed.state).toEqual(INITIAL_ENGINE_STATE);
+});
+
+test('flushPending preserves a typed count', () => {
+  const engine = buildEngine();
+  const counted = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('3'), keymap: ambiguousKeymap });
+  const pending = engine.resolve({ state: counted.state, key: buildKey('d'), keymap: ambiguousKeymap });
+  expect(pending.status).toBe('ambiguous');
+  const flushed = engine.flushPending({ state: pending.state, keymap: ambiguousKeymap });
+  expect(flushed.status).toBe('resolved');
+});
+
+test('a key that is only a prefix still reports pending, not ambiguous', () => {
+  const result = buildEngine().resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('g'), keymap });
+  expect(result.status).toBe('pending');
+});
+
+test('a key that is only an exact match still resolves immediately', () => {
+  const result = buildEngine().resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('j'), keymap });
   expect(result.status).toBe('resolved');
-  expect(result.actions).toEqual([{ type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'first' }]);
-  expect(result.state.pending).toEqual([]);
 });
 
 // Code review on Task 16: bracket-notating named keys ("<escape>") moved the
