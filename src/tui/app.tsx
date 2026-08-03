@@ -9,18 +9,27 @@ import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
 // points at the concrete module rather than the core/ barrel purely because
 // that is where IApplicationState is actually defined.
 import type { ApplicationStoreService, IApplicationState } from '../core/application-store.ts';
-// Same reasoning as the type-only import above, but this one is a value
+// Type-only too, so -- like the import above -- safe from the core/ barrel's
+// crash path regardless of which module it pointed at; kept on cache/index.ts
+// rather than database.ts to match how src/tui/panes/chat-list.tsx already
+// imports this same type.
+import type { IDialogRow } from '../core/cache/index.ts';
+// Same reasoning as the type-only imports above, but this one is a value
 // import (writeToClipboard is called below, not just typed against) -- the
 // concrete module is what keeps it off the core/ barrel's telegram/
 // global.window crash path, not merely off the hook by being erased.
 import { writeToClipboard } from '../core/clipboard.ts';
+// Same reasoning as writeToClipboard directly above: fuzzyMatch (M1b-2
+// Task 8) is called below, not just typed against, so it too has to come
+// from its concrete module rather than the core/ barrel.
+import { fuzzyMatch } from '../core/fuzzy-match.ts';
 import {
   ActionTypes, CLIPBOARD_REGISTER, Operators, UNNAMED_REGISTER, VimContexts, VimModes,
   type IEngineState, type IResolveResult, type TAction,
 } from '../keys/common/index.ts';
 import type { KeyNormalizerService, KeymapService, VimEngineService } from '../keys/index.ts';
 import { applyAction } from './action-reducer.ts';
-import { resolveWhichKeyHeight, WhichKey } from './overlays/index.ts';
+import { ChatPicker, resolveChatPickerHeight, resolveWhichKeyHeight, WhichKey } from './overlays/index.ts';
 import { ChatList, Composer, MessageView, StatusLine } from './panes/index.ts';
 import type { ITokens } from './theme/index.ts';
 
@@ -72,17 +81,34 @@ const RULE_WIDTH = 1;
 const VERTICAL_RULE = '│';
 
 /**
- * The two keys the which-key overlay owns outright while it is open, in the
- * same canonical form the keymap itself is authored in (key-normalizer.ts).
+ * The two keys an overlay owns outright while it is open, in the same
+ * canonical form the keymap itself is authored in (key-normalizer.ts).
  * <escape> is checked directly here, ahead of engine resolution, so closing
- * the overlay cannot also run whatever <escape> otherwise means in the pane
+ * an overlay cannot also run whatever <escape> otherwise means in the pane
  * underneath it -- refocusing the messages pane from the chat list, for
- * instance. The leader needs no such override: the engine already resolves
- * it to OVERLAY_TOGGLE below, which the reducer toggles closed the same way
- * it toggled open, so it is left to flow through the ordinary path.
+ * instance. Shared by both overlays below (which-key and, as of M1b-2
+ * Task 8, the chat picker), since closing without side effects is the same
+ * requirement either way. The leader is which-key's alone -- it needs no such
+ * override, since the engine already resolves it to OVERLAY_TOGGLE, which the
+ * reducer toggles closed the same way it toggled open, so it is left to flow
+ * through the ordinary path; the chat picker has no equivalent because its
+ * own opening key, <C-p>, means something else entirely once it owns input
+ * (see CHAT_PICKER_PREVIOUS_TOKENS below).
  */
 const OVERLAY_ESCAPE_TOKEN = '<escape>';
 const OVERLAY_LEADER_TOKEN = '\\';
+
+/**
+ * The chat picker's own vocabulary while it owns input (M1b-2 Task 8): Enter
+ * opens the selected chat, Backspace edits the query, and each pair below is
+ * one direction -- `<C-n>`/`j` down, `<C-p>`/`k` up -- echoing vim's own
+ * choice of j/k alongside emacs-style C-n/C-p, the same pairing ctrlp.vim and
+ * fzf both use.
+ */
+const CHAT_PICKER_ENTER_TOKEN = '<return>';
+const CHAT_PICKER_BACKSPACE_TOKEN = '<backspace>';
+const CHAT_PICKER_NEXT_TOKENS: readonly string[] = ['<C-n>', 'j'];
+const CHAT_PICKER_PREVIOUS_TOKENS: readonly string[] = ['<C-p>', 'k'];
 
 const CONTROL_CHARACTER_BOUNDARY = 0x20;
 const DELETE_CODE_POINT = 0x7f;
@@ -113,6 +139,20 @@ const isPrintableCharacter = (opts: { sequence: string; ctrl: boolean; meta: boo
 
   const codePoint = codePoints[0].codePointAt(0) ?? 0;
   return codePoint >= CONTROL_CHARACTER_BOUNDARY && codePoint !== DELETE_CODE_POINT;
+};
+
+/**
+ * `state.dialogs`, fuzzy-matched against the chat picker's own query and
+ * resolved back from fuzzyMatch's `{index, score}` pairs to the dialogs
+ * themselves. The one place that mapping happens, shared by the keyboard
+ * handler below (to know what Enter/`<C-n>`/`<C-p>` act on) and the render
+ * body (to know what ChatPicker draws, and how tall resolveChatPickerHeight
+ * says it is) -- so the two can never disagree about what is currently
+ * showing.
+ */
+const resolveChatPickerResults = (opts: { dialogs: IDialogRow[]; query: string }): IDialogRow[] => {
+  const { dialogs, query } = opts;
+  return fuzzyMatch({ candidates: dialogs.map(dialog => dialog.title), query }).map(match => dialogs[match.index]!);
 };
 
 const logger: ILogger = ApplicationLogger.get('App');
@@ -458,9 +498,72 @@ export const App = (props: IAppProps) => {
       return;
     }
 
-    // The overlay owns input while it is open. Everything except the two
-    // keys above is swallowed here, before the engine ever sees it, so a
-    // stray keystroke cannot move a cursor or seed a pending prefix the
+    // The chat picker owns every key while it is open, the same guarantee
+    // which-key's own block just below makes -- but unlike which-key it has
+    // real state of its own to update (chatPickerQuery/chatPickerCursor),
+    // not merely a choice between swallowing a key and letting it through,
+    // so it gets its own block, checked first.
+    if (current.overlay === 'chatpicker') {
+      const pickerToken = keyNormalizer.toCanonicalString({ key });
+
+      if (pickerToken === OVERLAY_ESCAPE_TOKEN) {
+        store.setState({ patch: { overlay: null, chatPickerQuery: '', chatPickerCursor: 0 } });
+        return;
+      }
+
+      const results = resolveChatPickerResults({ dialogs: current.dialogs, query: current.chatPickerQuery });
+
+      if (CHAT_PICKER_NEXT_TOKENS.includes(pickerToken)) {
+        store.setState({
+          patch: { chatPickerCursor: Math.min(current.chatPickerCursor + 1, Math.max(0, results.length - 1)) },
+        });
+        return;
+      }
+      if (CHAT_PICKER_PREVIOUS_TOKENS.includes(pickerToken)) {
+        store.setState({ patch: { chatPickerCursor: Math.max(current.chatPickerCursor - 1, 0) } });
+        return;
+      }
+      if (pickerToken === CHAT_PICKER_ENTER_TOKEN) {
+        const selected = results[current.chatPickerCursor];
+        if (!selected) {
+          return;
+        }
+        // Reuses CHAT_OPEN's own side effect (commitResolution's switch case
+        // below) rather than duplicating the onOpenChat/onMarkRead chain --
+        // chatCursor moves to match the picked chat as part of the same
+        // patch, so the chat list's own cursor lands exactly where it would
+        // have if the user had instead navigated there with j/k and pressed
+        // Enter directly.
+        const targetIndex = current.dialogs.findIndex(dialog => dialog.peerId === selected.peerId);
+        commitResolution({
+          current,
+          result: {
+            state: current.engine,
+            actions: [{ type: ActionTypes.CHAT_OPEN }, { type: ActionTypes.FOCUS_SET, context: VimContexts.MESSAGES }],
+            status: 'resolved',
+          },
+          initialPatch: { chatCursor: targetIndex, overlay: null, chatPickerQuery: '', chatPickerCursor: 0 },
+        });
+        return;
+      }
+      if (pickerToken === CHAT_PICKER_BACKSPACE_TOKEN) {
+        store.setState({ patch: { chatPickerQuery: current.chatPickerQuery.slice(0, -1), chatPickerCursor: 0 } });
+        return;
+      }
+
+      // Any other key is text for the query, narrowing it, never a keymap
+      // binding: a printable 'i' here must not enter insert mode the way it
+      // would in the messages pane underneath.
+      const isPrintable = isPrintableCharacter({ sequence: event.sequence, ctrl: event.ctrl, meta: event.meta });
+      if (isPrintable) {
+        store.setState({ patch: { chatPickerQuery: current.chatPickerQuery + event.sequence, chatPickerCursor: 0 } });
+      }
+      return;
+    }
+
+    // The which-key overlay owns input while it is open. Everything except
+    // the two keys above is swallowed here, before the engine ever sees it,
+    // so a stray keystroke cannot move a cursor or seed a pending prefix the
     // engine would still be holding once the overlay closes.
     if (current.overlay !== null) {
       const overlayToken = keyNormalizer.toCanonicalString({ key });
@@ -621,6 +724,15 @@ export const App = (props: IAppProps) => {
   // than branching on whether the overlay is actually open.
   const whichKeyBindings = keymapService.describe({ mode: state.engine.mode, context: state.engine.context });
   const isWhichKeyOpen = state.overlay === 'whichkey';
+  const isChatPickerOpen = state.overlay === 'chatpicker';
+  // Unlike whichKeyBindings above, computed only while actually open:
+  // state.dialogs can run into the hundreds, and fuzzy-matching all of them
+  // on every render -- most of which have nothing to do with the picker --
+  // would be wasted work the which-key case, filtering barely thirty
+  // bindings, does not have to worry about.
+  const chatPickerResults = isChatPickerOpen
+    ? resolveChatPickerResults({ dialogs: state.dialogs, query: state.chatPickerQuery })
+    : [];
   const isEditing = state.editingMessageId !== null;
   // The overlay replaces the composer and grows upward, so the panes above
   // it must shrink by however many rows it actually renders -- Math.max(1, …)
@@ -632,9 +744,11 @@ export const App = (props: IAppProps) => {
   // Composer about which of its rows are on screen. Skipping both while the
   // overlay is open is correct, not an oversight: Composer is not rendered at
   // all then.
-  const chromeHeight = isWhichKeyOpen
-    ? resolveWhichKeyHeight({ bindingCount: whichKeyBindings.length, width }) + STATUS_LINE_HEIGHT
-    : CHROME_HEIGHT + (replyingTo !== null ? REPLY_PREVIEW_HEIGHT : 0) + (isEditing ? EDIT_INDICATOR_HEIGHT : 0);
+  const chromeHeight = isChatPickerOpen
+    ? resolveChatPickerHeight({ resultCount: chatPickerResults.length }) + STATUS_LINE_HEIGHT
+    : isWhichKeyOpen
+      ? resolveWhichKeyHeight({ bindingCount: whichKeyBindings.length, width }) + STATUS_LINE_HEIGHT
+      : CHROME_HEIGHT + (replyingTo !== null ? REPLY_PREVIEW_HEIGHT : 0) + (isEditing ? EDIT_INDICATOR_HEIGHT : 0);
   const paneHeight = Math.max(1, height - chromeHeight);
   const messageWidth = Math.max(1, width - SIDEBAR_WIDTH - RULE_WIDTH);
 
@@ -673,7 +787,15 @@ export const App = (props: IAppProps) => {
         />
       </box>
 
-      {isWhichKeyOpen ? (
+      {isChatPickerOpen ? (
+        <ChatPicker
+          results={chatPickerResults}
+          query={state.chatPickerQuery}
+          cursor={state.chatPickerCursor}
+          tokens={tokens}
+          width={width}
+        />
+      ) : isWhichKeyOpen ? (
         <WhichKey
           bindings={whichKeyBindings}
           mode={state.engine.mode}

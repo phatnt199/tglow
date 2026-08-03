@@ -79,6 +79,7 @@ by accident.
 | Key | Action |
 | --- | --- |
 | `\` | show key bindings |
+| `<C-p>` | fuzzy jump to any chat (type to filter, `<C-n>`/`<C-p>` or `j`/`k` to move, `Enter` to open, `Esc` to cancel) |
 | `j` / `k` | next / previous message |
 | `3j` | down three messages |
 | `gg` / `G` | oldest loaded / newest |

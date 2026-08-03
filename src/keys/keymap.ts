@@ -181,6 +181,21 @@ export class KeymapService {
       context: '*', mode: VimModes.NORMAL, keys: '\\', description: 'Show key bindings',
       action: () => [{ type: ActionTypes.OVERLAY_TOGGLE, overlay: 'whichkey' }],
     },
+    // M1b-2 Task 8: fuzzy jump to any chat. This binding is only ever what
+    // opens the picker -- once state.overlay is 'chatpicker', app.tsx (not
+    // this table) intercepts every key directly, ahead of engine resolution,
+    // the same pattern it already uses for the which-key overlay's own
+    // escape, because <C-p> means something different once the picker owns
+    // input: move the selection up, the job k also does, never close it.
+    // That is also why reusing OVERLAY_TOGGLE's ordinary "closes if already
+    // the same overlay" reducer behaviour is safe here: the only way that
+    // branch could fire is a second <C-p> reaching the engine while
+    // chatpicker is already open, which app.tsx's own swallow guard makes
+    // unreachable.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: '<C-p>', description: 'Jump to a chat',
+      action: () => [{ type: ActionTypes.OVERLAY_TOGGLE, overlay: 'chatpicker' }],
+    },
 
     // Application. <C-l> echoes vim's own redraw-the-screen key, which is what
     // a reader reaches for to clear something stuck on their statusline.

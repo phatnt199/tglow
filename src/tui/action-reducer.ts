@@ -152,7 +152,18 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
       // The same key that opens an overlay closes it again: pressing \\ a
       // second time must return to null rather than re-opening the same
       // overlay it already is.
-      return { overlay: state.overlay === action.overlay ? null : action.overlay };
+      //
+      // chatPickerQuery/chatPickerCursor reset unconditionally alongside it --
+      // harmless for whichkey, which never reads them, and what lets a fresh
+      // <C-p> always open onto an empty query rather than whatever was typed
+      // the last time the picker was open. The picker's own escape and Enter
+      // (app.tsx) close it by setting overlay directly rather than through
+      // this action, so they reset the same two fields themselves.
+      return {
+        overlay: state.overlay === action.overlay ? null : action.overlay,
+        chatPickerQuery: '',
+        chatPickerCursor: 0,
+      };
     }
 
     case ActionTypes.SPOILER_REVEAL: {

@@ -7,6 +7,7 @@ export * from './clipboard.ts';
 export * from './configuration.ts';
 export * from './dialog-service.ts';
 export * from './difference-service.ts';
+export * from './fuzzy-match.ts';
 export * from './logger-provider.ts';
 export * from './message-service.ts';
 export * from './session-store.ts';

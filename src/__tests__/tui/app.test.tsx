@@ -75,13 +75,14 @@ const pressEscape = async (renderer: TestRendererSetup): Promise<void> => {
 };
 
 const mount = async (opts: {
+  dialogs?: IDialogRow[];
   messages?: IMessageRow[];
   onSend?: (text: string) => Promise<void>;
   onEdit?: (edit: { messageId: number; text: string }) => Promise<void>;
   onDelete?: (deletion: { messageId: number }) => Promise<void>;
   onOpenChat?: (chat: { peerId: string }) => Promise<void>;
   /**
-   * Appended to the real 27-binding keymap rather than replacing it, so
+   * Appended to the real 28-binding keymap rather than replacing it, so
    * everything else these tests rely on (dd's own confirmation included)
    * keeps working unchanged. Task 2's timeout tests are the only callers:
    * the real keymap's own ambiguous sequence (bare `d` against `dd`, Task 3)
@@ -108,7 +109,12 @@ const mount = async (opts: {
 
   const store = new ApplicationStoreService();
   store.setState({
-    patch: { dialogs, messages: opts.messages ?? messages, activePeerId: 'u1', connection: 'connected' },
+    patch: {
+      dialogs: opts.dialogs ?? dialogs,
+      messages: opts.messages ?? messages,
+      activePeerId: 'u1',
+      connection: 'connected',
+    },
   });
 
   const sent: string[] = [];
@@ -1621,4 +1627,182 @@ test('escape closes the overlay without also refocusing the pane underneath it',
   await pressEscape(renderer);
   expect(store.getState().overlay).toBeNull();
   expect(store.getState().engine.context).toBe(VimContexts.CHAT_LIST);
+});
+
+// --- M1b-2 Task 8: <C-p>, fuzzy jump to any chat -----------------------------
+//
+// The owner's own chat list is mostly Vietnamese (task-8-brief.md) -- this
+// fixture mirrors that, rather than an all-ASCII stand-in, so the tests below
+// exercise the actual reason the feature exists, not just wiring in the
+// abstract. 'u1' stays first and stays Alice so activePeerId (set by mount's
+// own store.setState above) still points at a real dialog.
+const pickerDialogs: IDialogRow[] = [
+  { peerId: 'u1', title: 'Alice', pinned: 0, unreadCount: 2, lastMessageAt: 400, topMessageId: 3, readOutboxMaxId: 0 },
+  { peerId: 'u2', title: 'Đức anh hoàng', pinned: 0, unreadCount: 0, lastMessageAt: 300, topMessageId: 1, readOutboxMaxId: 0 },
+  { peerId: 'u3', title: 'Em Việt Tú', pinned: 0, unreadCount: 0, lastMessageAt: 200, topMessageId: 1, readOutboxMaxId: 0 },
+  { peerId: 'u4', title: 'Nga Trần', pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 1, readOutboxMaxId: 0 },
+];
+
+test('<C-p> opens the chat picker', async () => {
+  const { renderer, store } = await mount({ dialogs: pickerDialogs });
+  await act(async () => { renderer.mockInput.pressKey('p', { ctrl: true }); });
+  await renderer.flush();
+  expect(store.getState().overlay).toBe('chatpicker');
+  // "Jump to chat" is the picker's own prompt -- unlike a dialog title, it
+  // can never appear for any other reason (the sidebar, say), so it is safe
+  // to look for in the whole frame rather than one row of it.
+  expect(renderer.captureCharFrame()).toContain('Jump to chat');
+});
+
+test('escape closes the chat picker without opening anything or changing the active chat', async () => {
+  const { renderer, store, opened } = await mount({ dialogs: pickerDialogs });
+  expect(store.getState().activePeerId).toBe('u1');
+
+  await act(async () => { renderer.mockInput.pressKey('p', { ctrl: true }); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('duc'); });
+  await renderer.flush();
+
+  await pressEscape(renderer);
+  expect(store.getState().overlay).toBeNull();
+  expect(store.getState().activePeerId).toBe('u1');
+  expect(opened).toEqual([]);
+});
+
+// The headline case task-8-brief.md names directly: typing narrows the list,
+// and it does so with a plain ASCII query against a diacritic candidate --
+// "duc" is not in "Đức anh hoàng" as a literal substring at all, only as a
+// fold of it -- proving the wiring end to end, not just fuzzy-match.ts alone.
+test('typing "duc" narrows the list to Đức anh hoàng, and Enter opens it', async () => {
+  const { renderer, store, opened } = await mount({ dialogs: pickerDialogs });
+  await act(async () => { renderer.mockInput.pressKey('p', { ctrl: true }); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('duc'); });
+  await renderer.flush();
+  expect(store.getState().chatPickerQuery).toBe('duc');
+
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+  expect(opened).toEqual(['u2']);
+  expect(store.getState().overlay).toBeNull();
+  expect(store.getState().engine.context).toBe(VimContexts.MESSAGES);
+  // Mirrors "return in the chat list opens the chat" -- jumping via the
+  // picker moves the chat list's own cursor to match, exactly as opening the
+  // same chat by navigating to it with j/k and Enter would.
+  expect(store.getState().chatCursor).toBe(1);
+});
+
+test('backspace in the chat picker removes the last typed character', async () => {
+  const { renderer, store } = await mount({ dialogs: pickerDialogs });
+  await act(async () => { renderer.mockInput.pressKey('p', { ctrl: true }); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.typeText('ducx'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressBackspace(); });
+  await renderer.flush();
+  expect(store.getState().chatPickerQuery).toBe('duc');
+});
+
+test('j clamps the selection at the last result rather than running past it', async () => {
+  const { renderer, store } = await mount({ dialogs: pickerDialogs });
+  await act(async () => { renderer.mockInput.pressKey('p', { ctrl: true }); });
+  await renderer.flush();
+  await act(async () => {
+    renderer.mockInput.pressKey('j');
+    renderer.mockInput.pressKey('j');
+    renderer.mockInput.pressKey('j');
+    renderer.mockInput.pressKey('j');
+    renderer.mockInput.pressKey('j');
+  });
+  await renderer.flush();
+  expect(store.getState().chatPickerCursor).toBe(pickerDialogs.length - 1);
+});
+
+test('k clamps the selection at zero rather than going negative', async () => {
+  const { renderer, store } = await mount({ dialogs: pickerDialogs });
+  await act(async () => { renderer.mockInput.pressKey('p', { ctrl: true }); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('k'); });
+  await renderer.flush();
+  expect(store.getState().chatPickerCursor).toBe(0);
+});
+
+test('j (or <C-n>) moves the selection down, and Enter opens the newly selected chat', async () => {
+  const { renderer, opened } = await mount({ dialogs: pickerDialogs });
+  await act(async () => { renderer.mockInput.pressKey('p', { ctrl: true }); });
+  await renderer.flush();
+  // No query typed: every dialog is a match, in original order (fuzzyMatch's
+  // own empty-query rule), so pickerDialogs[0] (Alice) starts selected and one
+  // step down lands on pickerDialogs[1].
+  await act(async () => { renderer.mockInput.pressKey('n', { ctrl: true }); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+  expect(opened).toEqual(['u2']);
+});
+
+// <C-p> is overloaded: from outside the picker it opens it, but the brief
+// gives it a second job once the picker owns input -- move the selection up,
+// the same as k -- so it must never also close the overlay it is already
+// inside, or the key would be self-defeating the moment the picker needs it
+// for anything past the first result.
+test('<C-p> moves the selection back up rather than closing the picker it just opened', async () => {
+  const { renderer, opened, store } = await mount({ dialogs: pickerDialogs });
+  await act(async () => { renderer.mockInput.pressKey('p', { ctrl: true }); });
+  await renderer.flush();
+  await act(async () => {
+    renderer.mockInput.pressKey('j');
+    renderer.mockInput.pressKey('j');
+  });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('p', { ctrl: true }); });
+  await renderer.flush();
+  expect(store.getState().overlay).toBe('chatpicker');
+
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+  expect(opened).toEqual(['u2']);
+});
+
+// The load-bearing guard, the same one which-key's own "j does not move the
+// message cursor" test and the delete confirmation's "j does not move the
+// cursor" test both already cover for their own overlays: a stray key must
+// not reach the pane underneath.
+test('while the chat picker is open, j does not move the message cursor', async () => {
+  const { renderer, store } = await mount({ dialogs: pickerDialogs });
+  expect(store.getState().messageCursor).toBe(0);
+
+  await act(async () => { renderer.mockInput.pressKey('p', { ctrl: true }); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('j'); });
+  await renderer.flush();
+
+  expect(store.getState().messageCursor).toBe(0);
+});
+
+// The other half of the same guard: 'i' is ordinarily a mode switch
+// (VimModes.INSERT), so this also proves typed letters become query text
+// while the picker is open rather than falling through to the engine.
+test('while the chat picker is open, i does not enter insert mode -- it types into the query', async () => {
+  const { renderer, store } = await mount({ dialogs: pickerDialogs });
+  await act(async () => { renderer.mockInput.pressKey('p', { ctrl: true }); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await renderer.flush();
+
+  expect(store.getState().engine.mode).toBe('normal');
+  expect(store.getState().chatPickerQuery).toBe('i');
+});
+
+// Mirrors "starting a reply shrinks..." and the which-key overlay's own
+// implicit budget: Composer is not rendered at all while the picker is open,
+// so if chromeHeight had not grown to match ChatPicker's own rows, the status
+// line would be pushed off its row instead of failing loudly.
+test('opening the chat picker shrinks the message pane so the status line stays on its own row, uncorrupted', async () => {
+  const { renderer, store } = await mount({ dialogs: pickerDialogs });
+  await act(async () => { renderer.mockInput.pressKey('p', { ctrl: true }); });
+  await renderer.flush();
+  const rows = renderer.captureCharFrame().split('\n');
+  expect(rows[TERMINAL_HEIGHT - 1]).toContain('NORMAL');
+  expect(rows[TERMINAL_HEIGHT - 1]).toContain(`1/${store.getState().messages.length}`);
 });

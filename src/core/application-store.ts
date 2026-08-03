@@ -34,6 +34,16 @@ export interface IApplicationState {
   /** Which full-pane overlay is showing, if any. Orthogonal to engine.context: opening one leaves mode and pane focus exactly as they were. */
   overlay: TOverlay | null;
   /**
+   * The text typed into the `<C-p>` chat picker while it is open, and the
+   * fuzzy-matched result its cursor is currently on. Meaningless while
+   * `overlay !== 'chatpicker'`, and reset to '' / 0 every time the picker
+   * opens or closes (action-reducer.ts's OVERLAY_TOGGLE case, and the
+   * picker's own escape/Enter in app.tsx) so a query typed in a previous
+   * session of it can never leak into the next.
+   */
+  chatPickerQuery: string;
+  chatPickerCursor: number;
+  /**
    * Set by DELETE_REQUEST -- which `dd`/`3dd` and any d+motion delete all
    * route through (M1b-2 Task 4), never bypass -- while the status line
    * waits for y/n; null once answered either way. The only irreversible
@@ -77,6 +87,8 @@ const INITIAL_STATE: IApplicationState = {
   statusMessage: null,
   integrityWarning: null,
   overlay: null,
+  chatPickerQuery: '',
+  chatPickerCursor: 0,
   pendingConfirmation: null,
   revealedSpoilers: new Set(),
   registers: {},

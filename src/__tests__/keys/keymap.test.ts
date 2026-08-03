@@ -437,6 +437,21 @@ test('\\ toggles the which-key overlay', () => {
   expect(result.actions).toEqual([{ type: ActionTypes.OVERLAY_TOGGLE, overlay: 'whichkey' }]);
 });
 
+// M1b-2 Task 8: <C-p>, fuzzy jump to any chat. Only the opening half lives in
+// the keymap -- once the chat picker overlay is open, app.tsx intercepts
+// every key (including a second <C-p>) directly, ahead of engine resolution,
+// the same way it already does for the which-key overlay's own escape.
+test('<C-p> toggles the chat picker overlay', () => {
+  const { keymapService, engine } = build();
+  const result = engine.resolve({
+    state: INITIAL_ENGINE_STATE,
+    key: buildKey('p', { ctrl: true }),
+    keymap: keymapService.getBindings(),
+  });
+  expect(result.status).toBe('resolved');
+  expect(result.actions).toEqual([{ type: ActionTypes.OVERLAY_TOGGLE, overlay: 'chatpicker' }]);
+});
+
 // Both reported bugs -- `\` bound to nothing, and no way back from the chat
 // list -- existed because every test above only asserts what IS bound, never
 // what SHOULD be: a key promised by the README, the status-bar hint or the
@@ -473,6 +488,8 @@ test('every binding the project promises the user is actually bound', () => {
     // The leader -- advertised in the status-bar hint and rendered, but
     // bound to nothing until this task.
     { context: '*', mode: VimModes.NORMAL, keys: '\\' },
+    // M1b-2 Task 8: fuzzy jump to any chat.
+    { context: '*', mode: VimModes.NORMAL, keys: '<C-p>' },
     // M1b-1 message actions -- spec §3.1/§3.2, promised in the README's key
     // table. The same class of bug this whole guard exists for: each of
     // these is one binding away from being silently left out of the table.

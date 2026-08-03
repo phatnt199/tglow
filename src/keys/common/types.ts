@@ -19,8 +19,8 @@ export interface IRawKeyEvent {
 
 export type TCursorUnit = 'message' | 'chat';
 export type TCursorEdge = 'first' | 'last';
-/** The only overlay that exists yet. A bare literal, like TCursorUnit/TCursorEdge above, not a class: nothing else keys off it. */
-export type TOverlay = 'whichkey';
+/** The two overlays that exist. A union of bare literals, like TCursorUnit/TCursorEdge above, not a class: nothing else keys off it. */
+export type TOverlay = 'whichkey' | 'chatpicker';
 
 export type TAction =
   | { type: typeof ActionTypes.CURSOR_MOVE; unit: TCursorUnit; delta: number }
