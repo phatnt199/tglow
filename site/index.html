@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tglow — a Telegram client that never leaves the keyboard</title>
+<meta name="description" content="A vim-native Telegram client for the terminal. Read, reply and search without touching the mouse.">
+<meta property="og:title" content="tglow">
+<meta property="og:description" content="A vim-native Telegram client for the terminal.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%23080808'/><text y='23' x='4' font-family='monospace' font-size='20' fill='%23EBC17A'>❯</text></svg>">
+<style>
+/* devglow · sage — the same seventeen values tglow renders with.
+   Not chosen for this page; taken from the palette the author already
+   runs across neovim, zsh, alacritty and superfile. */
+:root{
+  --void:#080808; --fg:#E6E6E6; --dim:#797979; --rule:#282828; --raised:#111111;
+  --gold:#EBC17A; --teal:#7DB9B6; --green:#87AFAF; --sky:#7EAAC7; --pink:#D68C8C;
+  --cell:0.62rem;             /* one character cell, the page's only unit of rhythm */
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,"JetBrains Mono","Ubuntu Mono","DejaVu Sans Mono",monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{
+  background:var(--void); color:var(--fg);
+  font:400 15px/1.7 var(--mono);
+  padding-bottom:2.6rem;                 /* clears the pinned status line */
+  overflow-x:hidden;
+}
+::selection{background:var(--rule);color:var(--fg)}
+
+/* ── the buffer ─────────────────────────────────────────────────────────
+   Content sits in a column with a gutter to its left, exactly as a message
+   sits beside its rail in the application. */
+.buffer{max-width:78rem;margin:0 auto;padding:0 1.25rem}
+.row{display:grid;grid-template-columns:4.5rem minmax(0,1fr);gap:0}
+.gutter{
+  color:var(--dim); text-align:right; padding-right:1.5rem;
+  user-select:none; font-variant-numeric:tabular-nums;
+  position:sticky; top:1.5rem; align-self:start; height:1.7em;
+  transition:color .18s ease;
+}
+.row[data-current="true"] .gutter{color:var(--gold)}
+.body{min-width:0}
+
+/* ── rules, never boxes ────────────────────────────────────────────────
+   nvim separates splits with a single line; so does tglow; so does this. */
+.rule{border:0;border-top:1px solid var(--rule);margin:4.5rem 0 2.25rem}
+.rule:first-of-type{margin-top:3rem}
+
+h1{font-size:clamp(2.6rem,9vw,4.6rem);font-weight:700;letter-spacing:-.045em;line-height:1}
+h2{font-size:1.02rem;font-weight:400;color:var(--dim);letter-spacing:.16em;text-transform:uppercase;margin-bottom:1.75rem}
+h3{font-size:1rem;font-weight:700;margin-bottom:.35rem}
+p{max-width:62ch;color:var(--fg)}
+p+p{margin-top:1rem}
+.lede{font-size:clamp(1.05rem,2.4vw,1.3rem);line-height:1.6;max-width:56ch}
+.muted{color:var(--dim)}
+a{color:var(--sky);text-underline-offset:.25em;text-decoration-thickness:1px}
+a:hover{color:var(--gold)}
+a:focus-visible,button:focus-visible{outline:2px solid var(--gold);outline-offset:3px;border-radius:2px}
+
+/* ── hero ─────────────────────────────────────────────────────────────── */
+.hero{padding:5.5rem 0 .5rem}
+.wordmark{display:flex;align-items:baseline;gap:.9rem;flex-wrap:wrap}
+.wordmark .prompt{color:var(--gold);font-size:clamp(2rem,7vw,3.4rem);line-height:1}
+.tagline{margin-top:1.75rem}
+.version{
+  display:inline-block;margin-top:2rem;padding:.2rem .6rem;
+  border:1px solid var(--rule);color:var(--dim);font-size:.82rem;letter-spacing:.06em;
+}
+
+/* ── the captured frame ───────────────────────────────────────────────
+   Real output, not a screenshot: selectable text in the real palette. */
+.frame{
+  margin:2.75rem 0 0; background:var(--raised); border-left:2px solid var(--rule);
+  padding:1.1rem 1.25rem; overflow-x:auto; font-size:.83rem; line-height:1.62;
+  white-space:pre; -webkit-overflow-scrolling:touch;
+}
+.frame .n{color:var(--dim)}
+.frame .t{color:var(--dim)}
+.frame .who{color:var(--dim)}
+.frame .me{color:var(--teal)}
+.frame .them{color:var(--fg)}
+.frame .tick{color:var(--teal)}
+.frame .lnk{color:var(--sky);text-decoration:underline;text-underline-offset:.2em}
+.frame .cd{color:var(--green)}
+.frame .bd{color:var(--fg);font-weight:700}
+.frame .cur{background:#383838}
+.caption{margin-top:.7rem;color:var(--dim);font-size:.78rem}
+
+/* ── keys ─────────────────────────────────────────────────────────────── */
+.keys{display:grid;grid-template-columns:repeat(auto-fill,minmax(15.5rem,1fr));gap:.2rem 2rem;margin-top:.5rem}
+.k{display:flex;gap:1rem;align-items:baseline;padding:.16rem 0}
+.k kbd{color:var(--gold);font:inherit;font-size:.88rem;min-width:5.2rem;flex-shrink:0}
+.k span{color:var(--dim);font-size:.88rem}
+
+/* ── feature list ─────────────────────────────────────────────────────── */
+.items{display:grid;gap:2.25rem;margin-top:.5rem}
+@media(min-width:52rem){.items{grid-template-columns:1fr 1fr;gap:2.5rem 3.5rem}}
+.item h3::before{content:"▎";color:var(--teal);margin-right:.55rem}
+.item p{color:var(--dim);font-size:.93rem;max-width:46ch}
+
+/* ── install ──────────────────────────────────────────────────────────── */
+.cmd{
+  background:var(--raised);border-left:2px solid var(--rule);
+  padding:1rem 1.25rem;margin-top:1.25rem;overflow-x:auto;
+  white-space:pre;font-size:.85rem;line-height:1.75;
+}
+.cmd .c{color:var(--dim)}
+.cmd .p{color:var(--teal)}
+.step{margin-top:2rem}
+.step:first-of-type{margin-top:.5rem}
+.step h3{color:var(--fg)}
+.step h3::before{content:attr(data-n);color:var(--gold);margin-right:.75rem;font-weight:400}
+
+/* ── honest section ───────────────────────────────────────────────────── */
+.not{max-width:62ch;color:var(--dim);font-size:.93rem}
+.not li{list-style:none;padding:.3rem 0 .3rem 1.5rem;position:relative}
+.not li::before{content:"—";position:absolute;left:0;color:var(--rule)}
+
+/* ── status line, pinned like lualine ─────────────────────────────────── */
+.status{
+  position:fixed;left:0;right:0;bottom:0;z-index:10;
+  background:var(--void);border-top:1px solid var(--rule);
+  display:flex;align-items:stretch;font-size:.8rem;line-height:2.6;
+}
+.status .mode{background:var(--teal);color:var(--void);padding:0 .85rem;font-weight:700;letter-spacing:.06em}
+.status .where{padding:0 .9rem;color:var(--fg)}
+.status .spacer{flex:1}
+.status .hint{padding:0 .9rem;color:var(--dim);display:none}
+@media(min-width:40rem){.status .hint{display:block}}
+
+footer{margin-top:4.5rem;padding-bottom:2rem;color:var(--dim);font-size:.82rem}
+
+@media(max-width:44rem){
+  .row{grid-template-columns:2.4rem minmax(0,1fr)}
+  .gutter{padding-right:.9rem;font-size:.8rem}
+  .buffer{padding:0 .9rem}
+}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
+</style>
+</head>
+<body>
+
+<main class="buffer">
+
+  <!-- hero ─────────────────────────────────────────────────────────── -->
+  <section class="row hero" data-section="tglow">
+    <div class="gutter" aria-hidden="true">0</div>
+    <div class="body">
+      <div class="wordmark"><span class="prompt" aria-hidden="true">❯</span><h1>tglow</h1></div>
+      <p class="lede tagline">A Telegram client that never leaves the keyboard. Read, reply, search and send from the terminal — in vim's own grammar.</p>
+      <span class="version">v0.2.0 · Linux x64</span>
+
+      <div class="frame" role="img" aria-label="A tglow message view: four messages with a relative-number gutter, timestamps, sender names, a link, inline code and read receipts.">
+<span class="n">    3</span> <span class="t">09:14</span> <span class="who">Đức       </span>    <span class="them">morning — spec is up at <span class="lnk">this link</span> if you want</span>
+                          <span class="them">a look</span>
+<span class="n">    2</span> <span class="t">09:15</span> <span class="who">me        </span> <span class="tick">✓</span>  <span class="me">reading it now</span>
+<span class="n">    1</span> <span class="t">09:16</span> <span class="who">Đức       </span>    <span class="them">run it with <span class="cd">`bun run build`</span> before you push</span>
+<span class="cur"><span class="n">    4</span> <span class="t">09:22</span> <span class="who">me        </span> <span class="tick">✓</span>  <span class="me"><span class="bd">shipped</span> — v0.2.0 is out</span></span>
+      </div>
+      <p class="caption">Real output. The gutter counts distance from the cursor, so <kbd>3j</kbd> is obvious before you type it.</p>
+    </div>
+  </section>
+
+  <hr class="rule">
+
+  <!-- thesis ───────────────────────────────────────────────────────── -->
+  <section class="row" data-section="what it is">
+    <div class="gutter" aria-hidden="true">1</div>
+    <div class="body">
+      <h2>What it is</h2>
+      <p class="lede">An editor that happens to chat.</p>
+      <p class="muted" style="margin-top:1.25rem">tglow opens in normal mode. Nothing you type is sent by accident. Messages are lines in a buffer, the gutter counts relative to your cursor, and the keys are the ones already in your fingers — <kbd>j</kbd> and <kbd>k</kbd> to move, <kbd>i</kbd> to write, <kbd>dd</kbd> to delete, <kbd>.</kbd> to repeat.</p>
+      <p class="muted">It is not a port of the Telegram app to a smaller screen. The layout borrows from <span style="color:var(--fg)">git blame</span> rather than from a chat bubble: a fixed rail of gutter, time and sender, and one content column that wrapped lines respect.</p>
+    </div>
+  </section>
+
+  <hr class="rule">
+
+  <!-- keys ─────────────────────────────────────────────────────────── -->
+  <section class="row" data-section="keys">
+    <div class="gutter" aria-hidden="true">2</div>
+    <div class="body">
+      <h2>Keys</h2>
+      <p class="muted" style="margin-bottom:2rem">Press <kbd style="color:var(--gold)">\</kbd> in the application and it lists every binding for wherever you are. You should not have to read a manual to use a chat client.</p>
+      <div class="keys">
+        <div class="k"><kbd>j / k</kbd><span>next, previous message</span></div>
+        <div class="k"><kbd>3j</kbd><span>down three</span></div>
+        <div class="k"><kbd>gg / G</kbd><span>oldest loaded, newest</span></div>
+        <div class="k"><kbd>&lt;C-p&gt;</kbd><span>jump to a chat by name</span></div>
+        <div class="k"><kbd>/</kbd><span>search this chat</span></div>
+        <div class="k"><kbd>n / N</kbd><span>next, previous match</span></div>
+        <div class="k"><kbd>i</kbd><span>write a message</span></div>
+        <div class="k"><kbd>jk</kbd><span>back to normal mode</span></div>
+        <div class="k"><kbd>r</kbd><span>reply</span></div>
+        <div class="k"><kbd>e</kbd><span>edit your own message</span></div>
+        <div class="k"><kbd>dd</kbd><span>delete, after confirming</span></div>
+        <div class="k"><kbd>d3j</kbd><span>delete across three</span></div>
+        <div class="k"><kbd>yy</kbd><span>yank a message</span></div>
+        <div class="k"><kbd>"+y</kbd><span>yank to the system clipboard</span></div>
+        <div class="k"><kbd>.</kbd><span>repeat the last change</span></div>
+        <div class="k"><kbd>zs</kbd><span>reveal a spoiler</span></div>
+        <div class="k"><kbd>&lt;S-k&gt;</kbd><span>show a link's URL</span></div>
+        <div class="k"><kbd>&lt;C-w&gt;h / l</kbd><span>move between panes</span></div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule">
+
+  <!-- features ─────────────────────────────────────────────────────── -->
+  <section class="row" data-section="what it does">
+    <div class="gutter" aria-hidden="true">3</div>
+    <div class="body">
+      <h2>What it does</h2>
+      <div class="items">
+        <div class="item">
+          <h3>Messages look like messages</h3>
+          <p>Links, <strong style="color:var(--fg)">bold</strong>, <code style="color:var(--green)">code</code>, strikethrough and code blocks render as themselves. Spoilers stay masked until you ask.</p>
+        </div>
+        <div class="item">
+          <h3>Nothing is lost while you are away</h3>
+          <p>Messages sent while tglow was closed are recovered on launch, not silently skipped — the part most terminal clients quietly omit.</p>
+        </div>
+        <div class="item">
+          <h3>Your text survives a failure</h3>
+          <p>A send that fails leaves what you typed exactly where it was. Delete asks first, every time, because a mistyped <kbd>dd</kbd> cannot be undone.</p>
+        </div>
+        <div class="item">
+          <h3>It speaks your language</h3>
+          <p>Vietnamese, CJK and emoji measure and wrap correctly. <kbd>duc</kbd> finds <span style="color:var(--fg)">Đức anh hoàng</span> — diacritics optional.</p>
+        </div>
+        <div class="item">
+          <h3>Logs never touch the screen</h3>
+          <p>Diagnostics go to a file. The alternate screen belongs to the interface, so nothing ever prints over a frame.</p>
+        </div>
+        <div class="item">
+          <h3>One binary</h3>
+          <p>No runtime to install, no node_modules. Database migrations are compiled in, so a fresh machine needs only the executable.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule">
+
+  <!-- install ──────────────────────────────────────────────────────── -->
+  <section class="row" data-section="install">
+    <div class="gutter" aria-hidden="true">4</div>
+    <div class="body">
+      <h2>Install</h2>
+
+      <div class="step">
+        <h3 data-n="1">Get the binary</h3>
+        <div class="cmd"><span class="c"># from the releases page</span>
+chmod +x tglow-linux-x64
+sha256sum -c tglow.sha256</div>
+      </div>
+
+      <div class="step">
+        <h3 data-n="2">Bring your own API credentials</h3>
+        <p class="muted" style="font-size:.93rem;margin-top:.5rem">Get an <code>api_id</code> and <code>api_hash</code> from <a href="https://my.telegram.org">my.telegram.org</a>, under API development tools. tglow ships no keys: Telegram restricts credentials that appear inside distributed applications, so yours stay yours.</p>
+        <div class="cmd">mkdir -p ~/.config/tglow
+<span class="c"># put your own two values in here</span>
+printf 'api_id = 0\napi_hash = ""\n' &gt; ~/.config/tglow/config.toml</div>
+      </div>
+
+      <div class="step">
+        <h3 data-n="3">Log in once</h3>
+        <p class="muted" style="font-size:.93rem;margin-top:.5rem">It asks for your phone number and the code Telegram sends. The code and any two-factor password are read without echo, so neither is left in your scrollback.</p>
+        <div class="cmd"><span class="p">❯</span> ./tglow-linux-x64</div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule">
+
+  <!-- honest ───────────────────────────────────────────────────────── -->
+  <section class="row" data-section="not yet">
+    <div class="gutter" aria-hidden="true">5</div>
+    <div class="body">
+      <h2>Not yet</h2>
+      <p class="muted" style="margin-bottom:1.25rem">Things people reasonably expect, that this version does not do:</p>
+      <ul class="not">
+        <li>No media. Photos, stickers and voice notes are not displayed — the renderer for them exists and is proven, but is not wired up.</li>
+        <li>No reactions, typing indicators or online status.</li>
+        <li>Two themes. The other ten devglow palettes, and colorschemes you can write yourself, are next.</li>
+        <li>Recovery after being offline covers private chats. Channels and supergroups are not backfilled yet.</li>
+        <li>Linux x64 only.</li>
+      </ul>
+    </div>
+  </section>
+
+  <footer class="row">
+    <div class="gutter" aria-hidden="true">6</div>
+    <div class="body">
+      <p class="muted" style="font-size:.82rem">Built on Bun, OpenTUI and GramJS. Coloured with <span style="color:var(--gold)">devglow · sage</span>.</p>
+      <p class="muted" style="font-size:.82rem;margin-top:.4rem">Your session file is equivalent to a logged-in device. It is written <code>0600</code>. Do not share it.</p>
+    </div>
+  </footer>
+
+</main>
+
+<!-- status line, pinned, showing where you are -->
+<div class="status" role="status" aria-live="polite">
+  <span class="mode">NORMAL</span>
+  <span class="where" id="where">tglow</span>
+  <span class="spacer"></span>
+  <span class="hint">\ for keys</span>
+</div>
+
+<script>
+// The gutter counts distance from the section you are reading, the way
+// relativenumber counts distance from the cursor. It is the page's only
+// piece of state, and it encodes position rather than decorating it.
+(function () {
+  var rows = Array.prototype.slice.call(document.querySelectorAll('.row[data-section]'));
+  var where = document.getElementById('where');
+  if (!rows.length) { return; }
+
+  function paint() {
+    var mid = window.innerHeight / 2;
+    var current = 0;
+    var best = Infinity;
+
+    for (var i = 0; i < rows.length; i++) {
+      var box = rows[i].getBoundingClientRect();
+      var distance = Math.abs(box.top + Math.min(box.height, window.innerHeight) / 2 - mid);
+      if (distance < best) { best = distance; current = i; }
+    }
+
+    for (var j = 0; j < rows.length; j++) {
+      var offset = Math.abs(j - current);
+      var gutter = rows[j].querySelector('.gutter');
+      // The current row shows its own index, every other its distance —
+      // exactly what the application draws beside a message.
+      gutter.textContent = offset === 0 ? String(j) : String(offset);
+      rows[j].setAttribute('data-current', offset === 0 ? 'true' : 'false');
+    }
+
+    var name = rows[current].getAttribute('data-section');
+    if (where.textContent !== name) { where.textContent = name; }
+  }
+
+  var ticking = false;
+  function onScroll() {
+    if (ticking) { return; }
+    ticking = true;
+    window.requestAnimationFrame(function () { paint(); ticking = false; });
+  }
+
+  paint();
+  window.addEventListener('scroll', onScroll, { passive: true });
+  window.addEventListener('resize', onScroll, { passive: true });
+})();
+</script>
+</body>
+</html>
