@@ -50,13 +50,16 @@ export interface IApplicationState {
    */
   revealedSpoilers: Set<number>;
   /**
-   * The text `yy` (or a yank composed with a motion) most recently copied --
-   * a single, unnamed slot, not yet a named-register map. Every yank
-   * overwrites it, matching vim's own unnamed register. M1b-2 Task 5 owns
-   * `registers: Record<string, string>` and the `"`-prefixed naming scheme
-   * on top of this; nothing here anticipates that shape.
+   * Named registers, vim's own `"`-prefixed scheme (M1b-2 Task 5): `"ayy`
+   * (or `"add`) writes `registers.a`; an unprefixed yy or dd goes to
+   * `registers[UNNAMED_REGISTER]` (`registers['"']`), vim's own name for
+   * the unnamed register. The pending name a `"` press is still choosing
+   * lives on `engine.register` instead -- it is part of the key sequence
+   * being assembled, not a value any operator has actually written yet.
+   * `+` is an ordinary key here too; Task 6 gives it an OSC 52 side effect,
+   * not a different shape.
    */
-  yankedText: string | null;
+  registers: Record<string, string>;
 }
 
 const INITIAL_STATE: IApplicationState = {
@@ -76,7 +79,7 @@ const INITIAL_STATE: IApplicationState = {
   overlay: null,
   pendingConfirmation: null,
   revealedSpoilers: new Set(),
-  yankedText: null,
+  registers: {},
 };
 
 export class ApplicationStoreService {

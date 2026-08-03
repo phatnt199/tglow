@@ -248,6 +248,40 @@ test('bare y, bare c, yy and cc are none of them bound -- doubling is engine-int
   expect(keys).not.toContain('cc');
 });
 
+// M1b-2 Task 5: registers. `"` is engine-intrinsic exactly like the bare
+// operator triggers above -- no keymap entry of its own.
+test('bare " is not bound -- register-pending is engine-intrinsic, not a keymap entry', () => {
+  const keys = build().keymapService.getBindings().map(binding => binding.keys);
+  expect(keys).not.toContain('"');
+});
+
+test('"ayy against the real keymap names register a, then yanks the message under the cursor', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+  let state = INITIAL_ENGINE_STATE;
+  state = engine.resolve({ state, key: buildKey('"'), keymap }).state;
+  const named = engine.resolve({ state, key: buildKey('a'), keymap });
+  expect(named.status).toBe('resolved');
+  expect(named.state.register).toBe('a');
+  state = named.state;
+  state = engine.resolve({ state, key: buildKey('y'), keymap }).state;
+  const applied = engine.resolve({ state, key: buildKey('y'), keymap });
+  expect(applied.actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0 },
+  ]);
+});
+
+// Decision 3 (task-5-brief.md), against the real keymap this time: the same
+// M1b-1 rule dd's own context fix and operatorForToken's gate already apply.
+test('" does nothing while focused on the chat list', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+  const chatList: IEngineState = { ...INITIAL_ENGINE_STATE, context: VimContexts.CHAT_LIST };
+  const result = engine.resolve({ state: chatList, key: buildKey('"'), keymap });
+  expect(result.status).toBe('unmapped');
+  expect(result.state.register).toBeNull();
+});
+
 // `d` needs no binding of its own: vim-engine.ts treats it (along with `y`
 // and `c`) as an operator trigger intrinsically, the same way it already
 // treats digits as counts without a keymap entry for each one (see

@@ -26,6 +26,7 @@ export type TAction =
   | { type: typeof ActionTypes.CURSOR_MOVE; unit: TCursorUnit; delta: number }
   | { type: typeof ActionTypes.CURSOR_EDGE; unit: TCursorUnit; edge: TCursorEdge }
   | { type: typeof ActionTypes.OPERATOR_APPLY; operator: TOperator; unit: TCursorUnit; from: number; to: number }
+  | { type: typeof ActionTypes.REGISTER_SET; name: string }
   | { type: typeof ActionTypes.MODE_SET; mode: TVimMode }
   | { type: typeof ActionTypes.FOCUS_SET; context: TVimContext }
   | { type: typeof ActionTypes.CHAT_OPEN }
@@ -69,6 +70,17 @@ export interface IEngineState {
    * way. Null whenever operator is, and whenever no count preceded it.
    */
   operatorCount: number | null;
+  /**
+   * The named register a `"` press is naming, or has named, for the next
+   * operator to consume -- `a` in `"ayy`, or null for the default register
+   * (an unnamed yy/dd). Consumed (reset to null) the moment an operator
+   * actually applies, exactly like operator/operatorCount reset once their
+   * own operation commits: a name is part of the sequence being assembled,
+   * not a value that should outlive it. IApplicationState.registers (M1b-2
+   * Task 5) is where a consumed name's text actually lands; this field
+   * only ever holds the name itself.
+   */
+  register: string | null;
 }
 
 export interface IKeyBinding {

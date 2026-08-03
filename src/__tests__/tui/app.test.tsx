@@ -630,12 +630,14 @@ test('dd does nothing while focused on the chat list', async () => {
   expect(store.getState().engine.context).toBe(VimContexts.CHAT_LIST);
 });
 
-// Registers land in Task 5; until then yy writes to a single unnamed slot.
-test('yy yanks the message under the cursor into the yank slot', async () => {
+// M1b-2 Task 5: registers. An unnamed yy writes UNNAMED_REGISTER, vim's own
+// name for the unnamed register -- exactly what this always did before
+// named registers existed, just under a different key.
+test('yy yanks the message under the cursor into the default register', async () => {
   const { renderer, store } = await mount();
   await act(async () => { renderer.mockInput.pressKey('y'); renderer.mockInput.pressKey('y'); });
   await renderer.flush();
-  expect(store.getState().yankedText).toBe('msg1');
+  expect(store.getState().registers['"']).toBe('msg1');
 });
 
 // The same count guarantee dd needs, proven end to end through an operator
@@ -649,7 +651,82 @@ test('2yy yanks two messages, not four', async () => {
     renderer.mockInput.pressKey('y');
   });
   await renderer.flush();
-  expect(store.getState().yankedText).toBe('msg1\nmsg2');
+  expect(store.getState().registers['"']).toBe('msg1\nmsg2');
+});
+
+// --- M1b-2 Task 5: registers -------------------------------------------------
+
+// "ayy: a named register, not the default one -- the brief's own headline example.
+test('"ayy yanks into register a, not the default register', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => {
+    renderer.mockInput.pressKey('"');
+    renderer.mockInput.pressKey('a');
+    renderer.mockInput.pressKey('y');
+    renderer.mockInput.pressKey('y');
+  });
+  await renderer.flush();
+  expect(store.getState().registers.a).toBe('msg1');
+  expect(store.getState().registers['"']).toBeUndefined();
+});
+
+// Decision 2 (task-5-brief.md): a register name must not survive a cancelled
+// operation. Proven end to end: after "a, escape, and an entirely unrelated
+// yy, the text must land in the default register, not register a.
+test('"a then escape does not leave a register pending for a later, unrelated yy', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => {
+    renderer.mockInput.pressKey('"');
+    renderer.mockInput.pressKey('a');
+  });
+  await renderer.flush();
+  expect(store.getState().engine.register).toBe('a');
+
+  await pressEscape(renderer);
+  expect(store.getState().engine.register).toBeNull();
+
+  await act(async () => { renderer.mockInput.pressKey('y'); renderer.mockInput.pressKey('y'); });
+  await renderer.flush();
+  expect(store.getState().registers.a).toBeUndefined();
+  expect(store.getState().registers['"']).toBe('msg1');
+});
+
+// Decision 3 (task-5-brief.md): registers follow the same M1b-1 rule
+// operators do -- dd already does nothing from the chat list (above); "
+// must not do anything there either.
+test('" does nothing while focused on the chat list', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('n'); renderer.mockInput.pressKey('f'); });
+  await renderer.flush();
+  expect(store.getState().engine.context).toBe(VimContexts.CHAT_LIST);
+
+  await act(async () => { renderer.mockInput.pressKey('"'); renderer.mockInput.pressKey('a'); });
+  await renderer.flush();
+  expect(store.getState().engine.register).toBeNull();
+});
+
+// Decision 1 (task-5-brief.md): delete also writes to a register, named when
+// "a preceded it, and does so immediately -- not gated on the confirmation
+// that follows, since the register is a harmless, local, freely-overwritable
+// value, unlike the confirmation guarding the one irreversible, networked
+// effect.
+test('"add writes the deleted message into register a immediately, not gated on the confirmation', async () => {
+  const { renderer, store, deleted } = await mount();
+  await act(async () => {
+    renderer.mockInput.pressKey('"');
+    renderer.mockInput.pressKey('a');
+    renderer.mockInput.pressKey('d');
+    renderer.mockInput.pressKey('d');
+  });
+  await renderer.flush();
+  expect(store.getState().pendingConfirmation).not.toBeNull();
+  expect(store.getState().registers.a).toBe('msg1');
+  expect(deleted).toEqual([]);
+
+  await act(async () => { renderer.mockInput.pressKey('y'); });
+  await renderer.flush();
+  expect(deleted).toHaveLength(1);
+  expect(store.getState().registers.a).toBe('msg1');
 });
 
 test('cc on an own message loads it into the composer for editing, same as e', async () => {

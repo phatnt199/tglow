@@ -209,6 +209,11 @@ test('resolve and flushPending never mutate the state they are given', () => {
   // flushPending -- a pending prefix with no exact match ('g') clears it.
   const frozenPrefixOnly = Object.freeze({ ...INITIAL_ENGINE_STATE, pending: ['g'] });
   expect(() => engine.flushPending({ state: frozenPrefixOnly, keymap })).not.toThrow();
+
+  // resolve -- entering register-pending, and consuming the name that follows it.
+  expect(() => engine.resolve({ state: buildFrozenState(), key: buildKey('"'), keymap })).not.toThrow();
+  const frozenRegisterPending = Object.freeze({ ...INITIAL_ENGINE_STATE, pending: ['"'] });
+  expect(() => engine.resolve({ state: frozenRegisterPending, key: buildKey('a'), keymap })).not.toThrow();
 });
 
 // Otherwise `j` in the chat list would move the message cursor, and which one
@@ -568,4 +573,146 @@ test('the doubled form also does nothing outside the messages context', () => {
   const second = engine.resolve({ state: first.state, key: buildKey('y'), keymap });
   expect(second.status).toBe('unmapped');
   expect(second.actions).toEqual([]);
+});
+
+// M1b-2 Task 5: registers. `"` enters register-pending -- the next key
+// names the register -- gated the same way operator entry is (M1b-1), since
+// it too commits with no keymap entry of its own for a context to filter by.
+test('" enters register-pending, waiting for a name', () => {
+  const engine = buildEngine();
+  const result = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('"'), keymap });
+  expect(result.status).toBe('pending');
+  expect(result.state.register).toBeNull();
+});
+
+test('"a names the register a, and REGISTER_SET reports it rather than staying silent', () => {
+  const engine = buildEngine();
+  const opened = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('"'), keymap });
+  const named = engine.resolve({ state: opened.state, key: buildKey('a'), keymap });
+  expect(named.status).toBe('resolved');
+  expect(named.actions).toEqual([{ type: ActionTypes.REGISTER_SET, name: 'a' }]);
+  expect(named.state.register).toBe('a');
+  expect(named.state.pending).toEqual([]);
+});
+
+test('+ is accepted as a register name -- Task 6 gives it a clipboard side effect, not a different shape here', () => {
+  const engine = buildEngine();
+  const opened = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('"'), keymap });
+  const named = engine.resolve({ state: opened.state, key: buildKey('+'), keymap });
+  expect(named.state.register).toBe('+');
+});
+
+// The brief's own words: reject anything else by cancelling rather than
+// storing under a junk name.
+test('an invalid register name cancels rather than storing junk', () => {
+  const engine = buildEngine();
+  const opened = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('"'), keymap });
+  const rejected = engine.resolve({ state: opened.state, key: buildKey('1'), keymap });
+  expect(rejected.status).toBe('unmapped');
+  expect(rejected.state.register).toBeNull();
+  expect(rejected.state.pending).toEqual([]);
+  expect(rejected.actions).toEqual([]);
+});
+
+// Capital letters arrive as <S-x>, never a bare 'X' (ignis-style.md) -- so an
+// uppercase register name can never be typed, and the validation must reject
+// the canonical token a real Shift-A press actually produces.
+test('an uppercase register name is rejected -- only lowercase a-z and + are accepted', () => {
+  const engine = buildEngine();
+  const opened = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('"'), keymap });
+  const rejected = engine.resolve({ state: opened.state, key: buildKey('a', { shift: true }), keymap });
+  expect(rejected.state.register).toBeNull();
+  expect(rejected.status).toBe('unmapped');
+});
+
+// "ayy: the register survives entering operator-pending (still 'a' the
+// instant yy's own commit happens) and is spent, not carried forward, the
+// moment the doubled trigger actually resolves.
+test('"a survives through operator-pending and is consumed once yy actually resolves', () => {
+  const engine = buildEngine();
+  let state = INITIAL_ENGINE_STATE;
+  state = engine.resolve({ state, key: buildKey('"'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('a'), keymap }).state;
+  expect(state.register).toBe('a');
+
+  const pendingYank = engine.resolve({ state, key: buildKey('y'), keymap });
+  expect(pendingYank.state.register).toBe('a');
+
+  const applied = engine.resolve({ state: pendingYank.state, key: buildKey('y'), keymap });
+  expect(applied.actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0 },
+  ]);
+  expect(applied.state.register).toBeNull();
+});
+
+// "ayy then "byy: naming a second register must not be confused with the
+// first -- proven here by the field the engine itself tracks; the store
+// actually keeping both texts apart is action-reducer.test.ts's own claim.
+test('"ayy then "byy names two different registers, not the same one twice', () => {
+  const engine = buildEngine();
+  let state = INITIAL_ENGINE_STATE;
+  state = engine.resolve({ state, key: buildKey('"'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('a'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('y'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('y'), keymap }).state;
+  expect(state.register).toBeNull();
+
+  state = engine.resolve({ state, key: buildKey('"'), keymap }).state;
+  const namedB = engine.resolve({ state, key: buildKey('b'), keymap });
+  expect(namedB.state.register).toBe('b');
+});
+
+// Decision 2 (task-5-brief.md): a register name must not survive a
+// cancelled operation. "a then Escape must not leave a pending for the next,
+// entirely unrelated yy -- proven by actually running that next yy, not just
+// inspecting the field escape itself clears.
+test('"a then escape does not leave a register pending for the next unrelated yank', () => {
+  const engine = buildEngine();
+  let state = INITIAL_ENGINE_STATE;
+  state = engine.resolve({ state, key: buildKey('"'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('a'), keymap }).state;
+  expect(state.register).toBe('a');
+
+  state = engine.resolve({ state, key: buildKey('escape'), keymap }).state;
+  expect(state.register).toBeNull();
+
+  const pending = engine.resolve({ state, key: buildKey('y'), keymap });
+  const applied = engine.resolve({ state: pending.state, key: buildKey('y'), keymap });
+  expect(applied.state.register).toBeNull();
+});
+
+// Decision 3 (task-5-brief.md): registers follow the same M1b-1 rule
+// operators do -- " does nothing from the chat list, the same reason dd
+// does nothing there.
+test('" does nothing outside the messages context, the same as an operator trigger', () => {
+  const engine = buildEngine();
+  const chatList: IEngineState = { ...INITIAL_ENGINE_STATE, context: VimContexts.CHAT_LIST };
+  const result = engine.resolve({ state: chatList, key: buildKey('"'), keymap });
+  expect(result.status).toBe('unmapped');
+  expect(result.state.register).toBeNull();
+});
+
+test('" in insert mode does not enter register-pending', () => {
+  const engine = buildEngine();
+  const insert: IEngineState = { ...INITIAL_ENGINE_STATE, mode: VimModes.INSERT };
+  const result = engine.resolve({ state: insert, key: buildKey('"'), keymap });
+  expect(result.state.register).toBeNull();
+});
+
+// A count typed before the register (3"ayy) must still reach the operator --
+// count and register are independent modifiers of the same upcoming
+// operator, threaded through entirely separately (state.count vs
+// state.register), so neither should crowd the other out.
+test('a count typed before the register still reaches the operator once named', () => {
+  const engine = buildEngine();
+  let state = INITIAL_ENGINE_STATE;
+  state = engine.resolve({ state, key: buildKey('3'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('"'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('a'), keymap }).state;
+  expect(state.register).toBe('a');
+  state = engine.resolve({ state, key: buildKey('y'), keymap }).state;
+  const applied = engine.resolve({ state, key: buildKey('y'), keymap });
+  expect(applied.actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 2 },
+  ]);
 });

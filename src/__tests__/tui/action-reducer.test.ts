@@ -2,7 +2,7 @@ import { test, expect } from 'bun:test';
 
 // Concrete module, not the core/ barrel -- see src/tui/action-reducer.ts for why.
 import { ApplicationStoreService, type IApplicationState } from '../../core/application-store.ts';
-import { ActionTypes, Operators, VimContexts, VimModes } from '../../keys/common/index.ts';
+import { ActionTypes, INITIAL_ENGINE_STATE, Operators, VimContexts, VimModes } from '../../keys/common/index.ts';
 import { applyAction } from '../../tui/action-reducer.ts';
 
 const buildState = (patch: Partial<IApplicationState> = {}): IApplicationState => {
@@ -88,17 +88,79 @@ test('operator.apply delete over a multi-message range still only confirms the o
   expect(patch.pendingConfirmation).toEqual({ kind: 'delete', messageId: state.messages[0]!.id });
 });
 
-// yy: registers land in Task 5 (a named `"`-prefixed map on the store); this
-// is the single unnamed slot Task 5 builds on rather than around -- every
-// yank overwrites it, matching vim's own unnamed register.
-test('operator.apply yank copies the message under the cursor into the single yank slot', () => {
+// M1b-2 Task 5, decision 1: unlike Task 4's deliberate no-op, delete now
+// also writes the targeted message into a register -- real vim's own
+// unnamed register captures a delete exactly as it captures a yank, and
+// leaving tglow's dd the one operator that never populated any register
+// would silently break the single most common reason a vim user reaches for
+// dd at all: dd then (Task 6+) p to move a message.
+test('operator.apply delete also writes the targeted message into the default register', () => {
+  const state = buildState({ messageCursor: 2 });
+  const patch = applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 2 },
+  });
+  expect(patch.registers).toEqual({ '"': state.messages[2]!.text });
+});
+
+test('operator.apply delete writes into the named register when one is pending, not just the default', () => {
+  const state = buildState({ messageCursor: 0, engine: { ...INITIAL_ENGINE_STATE, register: 'a' } });
+  const patch = applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0 },
+  });
+  expect(patch.registers).toEqual({ a: state.messages[0]!.text });
+});
+
+test('operator.apply delete with no messages does not touch the register', () => {
+  const state = buildState({ messages: [], messageCursor: 0 });
+  const patch = applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0 },
+  });
+  expect(patch.registers).toBeUndefined();
+});
+
+// yy with no register named (M1b-2 Task 5): writes UNNAMED_REGISTER, vim's
+// own name for the unnamed register -- exactly what an unprefixed yy always
+// did before named registers existed, just under a different key.
+test('operator.apply yank with no register named copies into the default register', () => {
   const state = buildState({ messageCursor: 1 });
   const patch = applyAction({
     state,
     action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0 },
   });
-  expect(patch.yankedText).toBe(state.messages[1]!.text);
+  expect(patch.registers).toEqual({ '"': state.messages[1]!.text });
   expect(patch.statusMessage).toBeTruthy();
+});
+
+test('operator.apply yank writes into the named register when one is pending', () => {
+  const state = buildState({ messageCursor: 1, engine: { ...INITIAL_ENGINE_STATE, register: 'a' } });
+  const patch = applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0 },
+  });
+  expect(patch.registers).toEqual({ a: state.messages[1]!.text });
+});
+
+// The brief's own test list: "ayy then "byy keeps both -- proven here at the
+// store, not just the engine field (vim-engine.test.ts's own version proves
+// the field; this proves what actually lands in the map).
+test('yanking into a then b keeps both registers, not just the last one', () => {
+  const afterA = applyAction({
+    state: buildState({ messageCursor: 0, engine: { ...INITIAL_ENGINE_STATE, register: 'a' } }),
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0 },
+  });
+  const state = buildState({
+    messageCursor: 1,
+    registers: afterA.registers,
+    engine: { ...INITIAL_ENGINE_STATE, register: 'b' },
+  });
+  const afterB = applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0 },
+  });
+  expect(afterB.registers).toEqual({ a: 'm1', b: 'm2' });
 });
 
 // Unlike delete, yank is not destructive, so there is no confirmation to
@@ -112,7 +174,7 @@ test('operator.apply yank over a range joins every targeted message, cursor down
     state,
     action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 1 },
   });
-  expect(patch.yankedText).toBe(`${state.messages[0]!.text}\n${state.messages[1]!.text}`);
+  expect(patch.registers).toEqual({ '"': `${state.messages[0]!.text}\n${state.messages[1]!.text}` });
 });
 
 test('operator.apply yank with no messages is harmless', () => {
@@ -125,6 +187,16 @@ test('operator.apply yank with no messages is harmless', () => {
     state,
     action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0 },
   })).toEqual({});
+});
+
+// M1b-2 Task 5: the status line's only sign a register was even named --
+// naming one moves no cursor and changes no mode, so without this it would
+// look exactly like a dead key, the same class of bug yy's own status
+// message and <S-k>'s "no link" message already exist to avoid.
+test('register.set surfaces the register name rather than looking like a no-op', () => {
+  const patch = applyAction({ state: buildState(), action: { type: ActionTypes.REGISTER_SET, name: 'a' } });
+  expect(patch.statusMessage).toBeTruthy();
+  expect(patch.statusMessage).toContain('a');
 });
 
 // cc: vim's change is delete-then-insert; the message equivalent already

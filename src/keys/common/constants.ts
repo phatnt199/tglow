@@ -33,10 +33,21 @@ export class Operators {
 
 export type TOperator = (typeof Operators)[Exclude<keyof typeof Operators, 'prototype'>];
 
+/**
+ * `"`, vim's own name for both the key that opens register-pending
+ * (vim-engine.ts) and the unnamed register an unprefixed yank or delete
+ * writes to (action-reducer.ts, IApplicationState.registers) -- one
+ * character playing both roles, exactly as real vim overloads it. A plain
+ * constant, not a static-readonly class: it names a single value, not an
+ * enumerable family the way Operators/VimModes/VimContexts each do.
+ */
+export const UNNAMED_REGISTER = '"';
+
 export class ActionTypes {
   static readonly CURSOR_MOVE = 'cursor.move';
   static readonly CURSOR_EDGE = 'cursor.edge';
   static readonly OPERATOR_APPLY = 'operator.apply';
+  static readonly REGISTER_SET = 'register.set';
   static readonly MODE_SET = 'mode.set';
   static readonly FOCUS_SET = 'focus.set';
   static readonly CHAT_OPEN = 'chat.open';
@@ -76,4 +87,5 @@ export const INITIAL_ENGINE_STATE: IEngineState = {
   count: null,
   operator: null,
   operatorCount: null,
+  register: null,
 };

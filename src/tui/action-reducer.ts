@@ -6,7 +6,7 @@ import { getError } from '@venizia/ignis-inversion';
 // -- points at the concrete module rather than the core/ barrel purely
 // because that is where IApplicationState is actually defined.
 import type { IApplicationState } from '../core/application-store.ts';
-import { ActionTypes, Operators, VimContexts, VimModes, type TAction } from '../keys/common/index.ts';
+import { ActionTypes, Operators, UNNAMED_REGISTER, VimContexts, VimModes, type TAction } from '../keys/common/index.ts';
 import { extractLinkUrls } from './entities.ts';
 
 const clamp = (opts: { value: number; maximum: number }): number => {
@@ -59,7 +59,27 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
         // CONFIRM handling -- a bigger feature than doubling itself asks
         // for, not a side effect of it.
         case Operators.DELETE: {
-          return applyAction({ state, action: { type: ActionTypes.DELETE_REQUEST } });
+          const message = state.messages[state.messageCursor];
+          const requested = applyAction({ state, action: { type: ActionTypes.DELETE_REQUEST } });
+          if (!message) {
+            return requested;
+          }
+          // M1b-2 Task 5, decision 1: unlike Task 4's deliberate no-op,
+          // delete now also writes the targeted message into a register --
+          // real vim's own unnamed register captures a delete exactly as it
+          // captures a yank, and leaving dd the one operator that never
+          // populated any register would silently break the single most
+          // common reason a vim user reaches for dd at all: dd then (Task
+          // 6+ paste) p to move a message. Written here, at resolution
+          // time, rather than gated on the y/n confirmation that follows:
+          // the register is a harmless, local, freely-overwritable value,
+          // unlike the confirmation, which guards the one irreversible,
+          // networked effect. A cancelled dd still "copies" the message --
+          // real vim has no confirmation step to cancel in the first place,
+          // so this is a new question tglow's own confirmation raises, not
+          // one vim already answers, and a local copy costs nothing to keep.
+          const name = state.engine.register ?? UNNAMED_REGISTER;
+          return { ...requested, registers: { ...state.registers, [name]: message.text } };
         }
 
         // cc: vim's change is delete-then-insert; the message equivalent
@@ -74,9 +94,9 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
         // Yanking is not destructive, so unlike delete and change there is
         // nothing to confirm and no reason to limit it to the cursor's own
         // message: the full range is honoured, its messages joined the way
-        // vim joins a multi-line yank into one register value. Registers
-        // land in Task 5 -- yankedText is the single unnamed slot it builds
-        // on top of, not a name from that scheme.
+        // vim joins a multi-line yank into one register value -- named
+        // (state.engine.register) when a "-prefix set one, UNNAMED_REGISTER
+        // otherwise (M1b-2 Task 5).
         case Operators.YANK: {
           const start = clamp({ value: state.messageCursor + action.from, maximum: state.messages.length - 1 });
           const end = clamp({ value: state.messageCursor + action.to, maximum: state.messages.length - 1 });
@@ -85,8 +105,9 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
             return {};
           }
           const label = targeted.length === 1 ? '1 message' : `${targeted.length} messages`;
+          const name = state.engine.register ?? UNNAMED_REGISTER;
           return {
-            yankedText: targeted.map(message => message.text).join('\n'),
+            registers: { ...state.registers, [name]: targeted.map(message => message.text).join('\n') },
             statusMessage: `Yanked ${label}`,
           };
         }
@@ -97,6 +118,18 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
           });
         }
       }
+    }
+
+    // M1b-2 Task 5: the status line's only sign a register was even named --
+    // naming one moves no cursor and changes no mode, so without this it
+    // would look exactly like a dead key, the same class of bug yy's own
+    // status message above and <S-k>'s "no link" message below already
+    // exist to avoid. engine.register itself is already set by the time
+    // this runs (vim-engine.ts's resolve() sets it directly, read here off
+    // state.engine which app.tsx's commitResolution keeps in sync), so this
+    // case only has a status message to add, nothing to patch onto engine.
+    case ActionTypes.REGISTER_SET: {
+      return { statusMessage: `Register: ${action.name}` };
     }
 
     case ActionTypes.MODE_SET: {
