@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
 
-import { useKeyboard, useTerminalDimensions } from '@opentui/react';
+import { useKeyboard, useRenderer, useTerminalDimensions } from '@opentui/react';
 import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
 
 // Type-only import, erased at runtime under verbatimModuleSyntax, so this
@@ -9,8 +9,14 @@ import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
 // points at the concrete module rather than the core/ barrel purely because
 // that is where IApplicationState is actually defined.
 import type { ApplicationStoreService, IApplicationState } from '../core/application-store.ts';
+// Same reasoning as the type-only import above, but this one is a value
+// import (writeToClipboard is called below, not just typed against) -- the
+// concrete module is what keeps it off the core/ barrel's telegram/
+// global.window crash path, not merely off the hook by being erased.
+import { writeToClipboard } from '../core/clipboard.ts';
 import {
-  ActionTypes, VimContexts, VimModes, type IEngineState, type IResolveResult, type TAction,
+  ActionTypes, CLIPBOARD_REGISTER, Operators, UNNAMED_REGISTER, VimContexts, VimModes,
+  type IEngineState, type IResolveResult, type TAction,
 } from '../keys/common/index.ts';
 import type { KeyNormalizerService, KeymapService, VimEngineService } from '../keys/index.ts';
 import { applyAction } from './action-reducer.ts';
@@ -135,6 +141,33 @@ const toFlushedText = (opts: { pending: string[] }): string => {
     .join('');
 };
 
+/**
+ * The text to copy to the system clipboard, if `action` just wrote it into
+ * the clipboard register (Task 6's `+`) -- null for every other operator,
+ * every other register name, and an operator that targeted zero messages
+ * (a no-op yank/delete: `actionPatch` then carries no `registers` key at all
+ * to read one back out of). Pure: only decides whether a copy is warranted,
+ * never performs one -- see the OPERATOR_APPLY case in commitResolution
+ * below for the actual write, which is the side effect this stays free of.
+ */
+const resolveClipboardText = (opts: {
+  action: TAction;
+  registerName: string;
+  actionPatch: Partial<IApplicationState>;
+}): string | null => {
+  const { action, registerName, actionPatch } = opts;
+  if (action.type !== ActionTypes.OPERATOR_APPLY) {
+    return null;
+  }
+  if (action.operator !== Operators.YANK && action.operator !== Operators.DELETE) {
+    return null;
+  }
+  if (registerName !== CLIPBOARD_REGISTER) {
+    return null;
+  }
+  return actionPatch.registers?.[registerName] ?? null;
+};
+
 export const App = (props: IAppProps) => {
   const {
     store, engine, keymapService, keyNormalizer, timeoutMilliseconds, tokens, resolveSenderName,
@@ -154,6 +187,13 @@ export const App = (props: IAppProps) => {
   );
   const state = useSyncExternalStore(subscribe, store.getState, store.getState);
   const { width, height } = useTerminalDimensions();
+  // The real renderer in production, and in tests -- @opentui/core/testing's
+  // TestRenderer is exactly a CliRenderer, backed by fake stdin/stdout rather
+  // than a mock. Read once per render rather than per key press: it is a
+  // stable per-instance object either way (useRenderer throws if AppContext
+  // has none, which both main.ts and renderWithKeys always provide), so there
+  // is nothing to gain from reading it inside useKeyboard's callback instead.
+  const renderer = useRenderer();
 
   // MessageService clears composerText only after its network round-trip
   // resolves, so the composer sits populated with no in-flight indicator for
@@ -194,7 +234,8 @@ export const App = (props: IAppProps) => {
       // opens the item under it (e.g. [CURSOR_MOVE, CHAT_OPEN]) reads the
       // post-move position in both places, not the pre-move snapshot.
       const accumulated = { ...current, ...patch };
-      patch = { ...patch, ...applyAction({ state: accumulated, action }) };
+      const actionPatch = applyAction({ state: accumulated, action });
+      patch = { ...patch, ...actionPatch };
 
       switch (action.type) {
         case ActionTypes.COMPOSER_SEND: {
@@ -295,6 +336,36 @@ export const App = (props: IAppProps) => {
         }
         case ActionTypes.APPLICATION_QUIT: {
           onQuit();
+          break;
+        }
+        case ActionTypes.OPERATOR_APPLY: {
+          // M1b-2 Task 6: "+y (and "+d -- delete writes a register exactly
+          // as yank does, Task 5) copies to the system clipboard. registerName
+          // mirrors action-reducer.ts's own OPERATOR_APPLY computation
+          // exactly -- the same accumulated.engine.register read, off the
+          // same pre-resolution snapshot -- rather than re-deriving it from
+          // a source that could drift from what the reducer actually wrote.
+          const registerName = accumulated.engine.register ?? UNNAMED_REGISTER;
+          const clipboardText = resolveClipboardText({ action, registerName, actionPatch });
+          if (clipboardText !== null) {
+            writeToClipboard({
+              text: clipboardText,
+              // OpenTUI's own copyToClipboardOSC52 (@opentui/core) performs
+              // its own UTF-8-safe base64 encoding, from plain text, entirely
+              // inside the native renderer core -- outside the JS frame loop,
+              // which is what makes it safe to call from here (clipboard.ts's
+              // own doc comment says why a raw write from anywhere else is
+              // not). write's own `sequence` parameter goes unused for
+              // exactly that reason: feeding it the already-built OSC 52
+              // sequence would base64-encode an already-encoded payload,
+              // corrupting the clipboard the same way a mis-encoded write
+              // would. buildOsc52Sequence's exact wire format is pinned
+              // directly by clipboard.test.ts; production delivery goes
+              // through OpenTUI's own implementation instead, reached here
+              // with the plain text still in scope through this closure.
+              write: () => { renderer.copyToClipboardOSC52(clipboardText); },
+            });
+          }
           break;
         }
         default: {

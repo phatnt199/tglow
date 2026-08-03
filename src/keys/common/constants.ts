@@ -43,6 +43,16 @@ export type TOperator = (typeof Operators)[Exclude<keyof typeof Operators, 'prot
  */
 export const UNNAMED_REGISTER = '"';
 
+/**
+ * `+`, vim's own name for the system-clipboard register (M1b-2 Task 6). An
+ * ordinary register name everywhere register state itself lives
+ * (IEngineState.register, IApplicationState.registers, this file's own
+ * REGISTER_NAME_PATTERN counterpart in vim-engine.ts) -- the one name App
+ * gives an OSC 52 side effect once an operator actually writes to it
+ * (app.tsx's commitResolution), not a different shape here.
+ */
+export const CLIPBOARD_REGISTER = '+';
+
 export class ActionTypes {
   static readonly CURSOR_MOVE = 'cursor.move';
   static readonly CURSOR_EDGE = 'cursor.edge';

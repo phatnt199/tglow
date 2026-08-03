@@ -729,6 +729,71 @@ test('"add writes the deleted message into register a immediately, not gated on 
   expect(store.getState().registers.a).toBe('msg1');
 });
 
+// --- M1b-2 Task 6: system clipboard ------------------------------------------
+//
+// copyToClipboardOSC52 is a plain, mutable instance method (not readonly), so
+// reassigning it on the real (test) renderer is type-safe with no cast and no
+// subclass -- the same pattern mount()'s own extraBindings support uses for
+// KeymapService.getBindings. Stubbing it here also means these tests never
+// depend on the test renderer's own OSC 52 capability detection: the real
+// implementation checks isOsc52Supported() and no-ops if it is ever false,
+// which this stub bypasses entirely by never calling through to it.
+test('"+yy copies the yanked message to the system clipboard, not just the register', async () => {
+  const { renderer, store } = await mount();
+  const copied: string[] = [];
+  renderer.renderer.copyToClipboardOSC52 = (text: string): boolean => { copied.push(text); return true; };
+
+  await act(async () => {
+    renderer.mockInput.pressKey('"');
+    renderer.mockInput.pressKey('+');
+    renderer.mockInput.pressKey('y');
+    renderer.mockInput.pressKey('y');
+  });
+  await renderer.flush();
+
+  expect(store.getState().registers['+']).toBe('msg1');
+  expect(copied).toEqual(['msg1']);
+});
+
+// The ordinary case (Task 5's own default-register yy) must not gain a side
+// effect it never had: only the register named `+` reaches the clipboard.
+test('a plain yy (default register) does not touch the system clipboard', async () => {
+  const { renderer, store } = await mount();
+  const copied: string[] = [];
+  renderer.renderer.copyToClipboardOSC52 = (text: string): boolean => { copied.push(text); return true; };
+
+  await act(async () => { renderer.mockInput.pressKey('y'); renderer.mockInput.pressKey('y'); });
+  await renderer.flush();
+
+  expect(store.getState().registers['"']).toBe('msg1');
+  expect(copied).toEqual([]);
+});
+
+// Delete writes a register exactly as yank does (Task 5, above), so "+dd
+// must copy to the clipboard exactly as "+yy does -- and, like "add's own
+// register write, immediately on OPERATOR_APPLY resolving, not gated on the
+// y/n confirmation that follows (the confirmation guards only the one
+// irreversible, networked effect; the register and the clipboard write it now
+// drives are both harmless, local, freely-overwritable side effects).
+test('"+dd copies the deleted message to the system clipboard immediately, not gated on the confirmation', async () => {
+  const { renderer, store, deleted } = await mount();
+  const copied: string[] = [];
+  renderer.renderer.copyToClipboardOSC52 = (text: string): boolean => { copied.push(text); return true; };
+
+  await act(async () => {
+    renderer.mockInput.pressKey('"');
+    renderer.mockInput.pressKey('+');
+    renderer.mockInput.pressKey('d');
+    renderer.mockInput.pressKey('d');
+  });
+  await renderer.flush();
+
+  expect(store.getState().pendingConfirmation).not.toBeNull();
+  expect(store.getState().registers['+']).toBe('msg1');
+  expect(copied).toEqual(['msg1']);
+  expect(deleted).toEqual([]);
+});
+
 test('cc on an own message loads it into the composer for editing, same as e', async () => {
   const { renderer, store } = await mount({ messages: [ownMessage] });
   await act(async () => { renderer.mockInput.pressKey('c'); renderer.mockInput.pressKey('c'); });
