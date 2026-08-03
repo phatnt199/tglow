@@ -41,6 +41,19 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
       return action.unit === 'message' ? { messageCursor: target } : { chatCursor: target };
     }
 
+    // M1b-2 Task 3: vim-engine.ts's operator mechanism is live against the
+    // real keymap already (`d` needs no binding of its own to sit beside
+    // `dd`, so `dj` genuinely reaches here today), but deleting, yanking or
+    // changing the range it names is Task 4/5's work. No patch rather than
+    // falling to the default throw below: this is a real, typed member of
+    // TAction, not a value from outside the type system (the case that
+    // default exists to catch, pinned by action-reducer.test.ts's own
+    // "unknown action type" test) -- an ordinary `dj` keypress must not
+    // crash the app before that work lands.
+    case ActionTypes.OPERATOR_APPLY: {
+      return {};
+    }
+
     case ActionTypes.MODE_SET: {
       return { engine: { ...state.engine, mode: action.mode } };
     }

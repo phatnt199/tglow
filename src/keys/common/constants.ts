@@ -20,9 +20,23 @@ export class VimContexts {
 
 export type TVimContext = (typeof VimContexts)[Exclude<keyof typeof VimContexts, 'prototype'>];
 
+/**
+ * The three operators that compose with a motion -- vim-engine.ts treats
+ * `d`/`y`/`c` as their triggers intrinsically, the same way it treats
+ * digits as counts, so no keymap entry names these directly.
+ */
+export class Operators {
+  static readonly DELETE = 'delete';
+  static readonly YANK = 'yank';
+  static readonly CHANGE = 'change';
+}
+
+export type TOperator = (typeof Operators)[Exclude<keyof typeof Operators, 'prototype'>];
+
 export class ActionTypes {
   static readonly CURSOR_MOVE = 'cursor.move';
   static readonly CURSOR_EDGE = 'cursor.edge';
+  static readonly OPERATOR_APPLY = 'operator.apply';
   static readonly MODE_SET = 'mode.set';
   static readonly FOCUS_SET = 'focus.set';
   static readonly CHAT_OPEN = 'chat.open';
@@ -60,4 +74,6 @@ export const INITIAL_ENGINE_STATE: IEngineState = {
   context: VimContexts.MESSAGES,
   pending: [],
   count: null,
+  operator: null,
+  operatorCount: null,
 };

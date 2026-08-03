@@ -3,7 +3,7 @@ import { test, expect } from 'bun:test';
 import { Container, BindingScopes } from '@venizia/ignis-inversion';
 
 import { BindingKeys } from '../../common/index.ts';
-import { ActionTypes, INITIAL_ENGINE_STATE, VimContexts, VimModes } from '../../keys/common/index.ts';
+import { ActionTypes, INITIAL_ENGINE_STATE, Operators, VimContexts, VimModes } from '../../keys/common/index.ts';
 import type { IEngineState, IKey, IKeyBinding } from '../../keys/common/index.ts';
 import { KeyNormalizerService } from '../../keys/key-normalizer.ts';
 import { VimEngineService } from '../../keys/vim-engine.ts';
@@ -370,4 +370,119 @@ test('a real escape key press still resolves the <escape> binding', () => {
   const result = engine.resolve({ state: insert, key: buildKey('escape'), keymap: namedKeymap });
   expect(result.status).toBe('resolved');
   expect(result.state.mode).toBe(VimModes.NORMAL);
+});
+
+// M1b-2 Task 3: operators compose with motions and counts. `d`/`y`/`c` are
+// engine-intrinsic operator triggers -- like the digits accumulateCount
+// handles above, they need no entry in `keymap` at all -- so every test
+// below uses the same plain `keymap` fixture the rest of this file already
+// shares (no dd binding in it), which is what lets `d` commit immediately
+// instead of racing a competing binding the way it does against the real
+// production keymap (see keymap.test.ts for that half).
+test('d alone enters operator-pending', () => {
+  const engine = buildEngine();
+  const result = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('d'), keymap });
+  expect(result.state.operator).toBe(Operators.DELETE);
+});
+
+test('dj applies delete over one message downward', () => {
+  const engine = buildEngine();
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('d'), keymap });
+  const applied = engine.resolve({ state: pending.state, key: buildKey('j'), keymap });
+  expect(applied.actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 1 },
+  ]);
+  expect(applied.state.operator).toBeNull();
+});
+
+test('d3j applies delete over three', () => {
+  const engine = buildEngine();
+  let state = INITIAL_ENGINE_STATE;
+  state = engine.resolve({ state, key: buildKey('d'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('3'), keymap }).state;
+  const applied = engine.resolve({ state, key: buildKey('j'), keymap });
+  expect(applied.actions[0]).toMatchObject({ operator: Operators.DELETE, from: 0, to: 3 });
+});
+
+test('3dj also applies over three — the count may precede the operator', () => {
+  const engine = buildEngine();
+  let state = INITIAL_ENGINE_STATE;
+  state = engine.resolve({ state, key: buildKey('3'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('d'), keymap }).state;
+  const applied = engine.resolve({ state, key: buildKey('j'), keymap });
+  expect(applied.actions[0]).toMatchObject({ from: 0, to: 3 });
+});
+
+test('escape cancels operator-pending without acting', () => {
+  const engine = buildEngine();
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('d'), keymap });
+  const cancelled = engine.resolve({ state: pending.state, key: buildKey('escape'), keymap });
+  expect(cancelled.state.operator).toBeNull();
+  expect(cancelled.actions).toEqual([]);
+});
+
+test('a key that is not a motion cancels operator-pending rather than acting', () => {
+  const engine = buildEngine();
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('d'), keymap });
+  const bogus = engine.resolve({ state: pending.state, key: buildKey('z'), keymap });
+  expect(bogus.state.operator).toBeNull();
+  expect(bogus.actions).toEqual([]);
+});
+
+test('an operator does not fire an ordinary cursor move', () => {
+  const engine = buildEngine();
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('d'), keymap });
+  const applied = engine.resolve({ state: pending.state, key: buildKey('j'), keymap });
+  expect(applied.actions.some(action => action.type === ActionTypes.CURSOR_MOVE)).toBe(false);
+});
+
+// Chosen deliberately, per M1b-2's own brief: vim multiplies an operator's
+// count against the motion's (2d3j deletes 6, not 3 and not 23). Getting
+// this right needs the two counts kept apart -- state.count alone cannot
+// tell "2, carried over from before the operator" from "2, the first digit
+// of a fresh motion count" apart, and collapsing them into one field either
+// silently concatenates (2 then 3 reads as 23) or drops one arbitrarily.
+// IEngineState.operatorCount exists for exactly this: the count pending
+// when the operator commits moves there, and `count` resets to null so a
+// motion's own count accumulates fresh -- ordinarily, and here.
+test('a count before the operator multiplies with a count typed after it, as in vim', () => {
+  const engine = buildEngine();
+  let state = INITIAL_ENGINE_STATE;
+  state = engine.resolve({ state, key: buildKey('2'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('d'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('3'), keymap }).state;
+  const applied = engine.resolve({ state, key: buildKey('j'), keymap });
+  expect(applied.actions[0]).toMatchObject({ from: 0, to: 6 });
+});
+
+// Proof that operatorCount's split from count does not cost ordinary
+// multi-digit motion counts: nothing preceded the operator here, so this
+// exercises the same accumulateCount path any un-operated 12j would.
+test('a multi-digit count after the operator accumulates normally', () => {
+  const engine = buildEngine();
+  let state = INITIAL_ENGINE_STATE;
+  state = engine.resolve({ state, key: buildKey('d'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('1'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('2'), keymap }).state;
+  const applied = engine.resolve({ state, key: buildKey('j'), keymap });
+  expect(applied.actions[0]).toMatchObject({ from: 0, to: 12 });
+});
+
+test('y and c are also live operator triggers, not only d', () => {
+  const engine = buildEngine();
+  expect(engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('y'), keymap }).state.operator)
+    .toBe(Operators.YANK);
+  expect(engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('c'), keymap }).state.operator)
+    .toBe(Operators.CHANGE);
+});
+
+// accumulateCount's own gate excludes INSERT deliberately (a digit there is
+// composer text, not a count) -- operator entry must draw the same line, or
+// typing an ordinary message containing the letter "d" would silently steal
+// keystrokes into operator-pending instead of the composer.
+test('d in insert mode does not enter operator-pending', () => {
+  const engine = buildEngine();
+  const insert: IEngineState = { ...INITIAL_ENGINE_STATE, mode: VimModes.INSERT };
+  const result = engine.resolve({ state: insert, key: buildKey('d'), keymap });
+  expect(result.state.operator).toBeNull();
 });

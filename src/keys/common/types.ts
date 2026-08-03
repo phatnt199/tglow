@@ -1,4 +1,4 @@
-import type { ActionTypes, TVimContext, TVimMode } from './constants.ts';
+import type { ActionTypes, TOperator, TVimContext, TVimMode } from './constants.ts';
 
 /** A key press, normalised away from any specific terminal library. */
 export interface IKey {
@@ -25,6 +25,7 @@ export type TOverlay = 'whichkey';
 export type TAction =
   | { type: typeof ActionTypes.CURSOR_MOVE; unit: TCursorUnit; delta: number }
   | { type: typeof ActionTypes.CURSOR_EDGE; unit: TCursorUnit; edge: TCursorEdge }
+  | { type: typeof ActionTypes.OPERATOR_APPLY; operator: TOperator; unit: TCursorUnit; from: number; to: number }
   | { type: typeof ActionTypes.MODE_SET; mode: TVimMode }
   | { type: typeof ActionTypes.FOCUS_SET; context: TVimContext }
   | { type: typeof ActionTypes.CHAT_OPEN }
@@ -57,6 +58,17 @@ export interface IEngineState {
   pending: string[];
   /** The 3 in 3j. Null when no count has been typed. */
   count: number | null;
+  /** The operator waiting for a motion -- `d`, `y`, `c` -- or null when none is pending. */
+  operator: TOperator | null;
+  /**
+   * The count that was pending when the operator committed (the 2 in
+   * 2d3j), kept apart from `count` so a motion's own count (the 3)
+   * multiplies against it -- vim's own rule -- rather than the two
+   * colliding in one field. `count` itself resets to null the moment the
+   * operator commits, so a motion's count still accumulates the ordinary
+   * way. Null whenever operator is, and whenever no count preceded it.
+   */
+  operatorCount: number | null;
 }
 
 export interface IKeyBinding {

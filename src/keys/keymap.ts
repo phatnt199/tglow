@@ -69,11 +69,16 @@ export class KeymapService {
       context: '*', mode: VimModes.NORMAL, keys: 'e', description: 'Edit message',
       action: () => [{ type: ActionTypes.EDIT_START }],
     },
-    // dd, not bare d: resolve() checks for an exact match before it checks
-    // for a prefix (see vim-engine.ts's own resolve, and the invariant test
-    // pinning this in vim-engine.test.ts), so a bare `d` binding would make
-    // `dd` permanently unreachable. Operator-pending with a timeout, which
-    // would let both coexist the way real vim does, is M1b-2 work. The
+    // dd, a literal binding -- not `d` followed by a `d` motion. vim-engine.ts
+    // treats `d` (along with `y` and `c`) as an operator trigger
+    // intrinsically, no keymap entry required (see its own OPERATOR_TRIGGERS),
+    // so a bare `d` typed here is genuinely ambiguous against this binding,
+    // exactly the way two competing keymap entries would be: resolve()
+    // reports `ambiguous`, and App's timeoutlen settles it if nothing else
+    // does (vim-engine.test.ts, keymap.test.ts). `d` followed by a real
+    // motion (`dj`) resolves immediately as OPERATOR_APPLY instead of
+    // waiting; `dd` itself stays this one binding rather than becoming
+    // operator-plus-motion, mirroring vim's own doubled-line idiom. The
     // confirmation this starts is intercepted directly in App (app.tsx),
     // the same way the reply/edit escapes above are -- y and n only mean
     // anything while IApplicationState.pendingConfirmation is set, which a

@@ -2,7 +2,7 @@ import { test, expect } from 'bun:test';
 
 // Concrete module, not the core/ barrel -- see src/tui/action-reducer.ts for why.
 import { ApplicationStoreService, type IApplicationState } from '../../core/application-store.ts';
-import { ActionTypes, VimContexts, VimModes } from '../../keys/common/index.ts';
+import { ActionTypes, Operators, VimContexts, VimModes } from '../../keys/common/index.ts';
 import { applyAction } from '../../tui/action-reducer.ts';
 
 const buildState = (patch: Partial<IApplicationState> = {}): IApplicationState => {
@@ -54,6 +54,18 @@ test('cursor.edge jumps to first and last', () => {
     state: buildState({ messageCursor: 0 }),
     action: { type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'last' },
   }).messageCursor).toBe(3);
+});
+
+// M1b-2 Task 3: OPERATOR_APPLY is live against the real keymap (`dj`
+// genuinely reaches applyAction today), but deleting/yanking/changing the
+// range it names is Task 4/5's work -- this pins that it is at least inert
+// rather than falling to the default throw below.
+test('operator.apply has no patch of its own yet', () => {
+  const patch = applyAction({
+    state: buildState({ messageCursor: 0 }),
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 1 },
+  });
+  expect(patch).toEqual({});
 });
 
 test('moving with no messages stays at zero', () => {

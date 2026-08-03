@@ -3,7 +3,7 @@ import { test, expect } from 'bun:test';
 import { Container, BindingScopes } from '@venizia/ignis-inversion';
 
 import { BindingKeys } from '../../common/index.ts';
-import { ActionTypes, INITIAL_ENGINE_STATE, VimContexts, VimModes } from '../../keys/common/index.ts';
+import { ActionTypes, INITIAL_ENGINE_STATE, Operators, VimContexts, VimModes } from '../../keys/common/index.ts';
 import type { IEngineState, IKey, TVimContext, TVimMode } from '../../keys/common/index.ts';
 import { KeyNormalizerService } from '../../keys/key-normalizer.ts';
 import { KeymapService } from '../../keys/keymap.ts';
@@ -165,19 +165,68 @@ test('bare K is not bound -- only <S-k>, so it stays reachable', () => {
 test('dd asks to delete the message under the cursor', () => {
   const { keymapService, engine } = build();
   const keymap = keymapService.getBindings();
+  // M1b-2 Task 3: `d` is now a live operator trigger (vim-engine.ts, engine-
+  // intrinsic, no keymap entry), so the first `d` is genuinely ambiguous
+  // against this real `dd` binding -- not merely `pending`, the way an
+  // ordinary unclaimed prefix like `g` still is. See the two tests below for
+  // both halves of that ambiguity settling.
   const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('d'), keymap });
-  expect(pending.status).toBe('pending');
+  expect(pending.status).toBe('ambiguous');
   expect(engine.resolve({ state: pending.state, key: buildKey('d'), keymap }).actions)
     .toEqual([{ type: ActionTypes.DELETE_REQUEST }]);
 });
 
-// Task 8's own limit, not a regression: the engine resolves an exact match
-// before it checks for a prefix (pinned generically in vim-engine.test.ts),
-// so a bare `d` binding would make `dd` permanently unreachable. Operator-
-// pending with a timeout, which would let both coexist, is M1b-2 work.
+// `d` needs no binding of its own: vim-engine.ts treats it (along with `y`
+// and `c`) as an operator trigger intrinsically, the same way it already
+// treats digits as counts without a keymap entry for each one (see
+// OPERATOR_TRIGGERS in vim-engine.ts). This just pins that keymap.ts really
+// has no literal `d` entry to collide with `dd` -- not that one would be
+// unreachable if it existed; Task 1 already removed that limit
+// (vim-engine.test.ts's own ambiguous-status tests).
 test('bare d is not bound -- only dd, so it stays reachable', () => {
   const { keymapService } = build();
   expect(keymapService.getBindings().some(binding => binding.keys === 'd')).toBe(false);
+});
+
+// The other half of the ambiguity above: a real motion, not a second `d`,
+// settles it immediately in the same key press -- no timeout needed, since
+// resolve() already knows `dd` cannot complete once the second key isn't
+// `d`. This is the first genuinely ambiguous sequence the real keymap has
+// ever produced (Task 1's report verified zero among the original 27
+// bindings), so it is also what makes App's timeoutlen (Task 2) live
+// against production key presses for the first time -- previously only
+// app.test.tsx's own test-only binding could construct one.
+test('d then a real motion resolves immediately as an operator application, not dd', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('d'), keymap });
+  expect(pending.status).toBe('ambiguous');
+  expect(pending.state.operator).toBeNull();
+
+  const applied = engine.resolve({ state: pending.state, key: buildKey('j'), keymap });
+  expect(applied.status).toBe('resolved');
+  expect(applied.actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 1 },
+  ]);
+});
+
+// "d alone waits": nothing completes the ambiguity within the same
+// synchronous key press, so it is still there for App's timeoutlen to
+// settle via flushPending -- which commits the operator (not DELETE_REQUEST,
+// dd's own action) and keeps waiting for a motion, exactly as real vim's
+// operator-pending has no timeout of its own once the ambiguity itself is
+// resolved.
+test('d alone against the real keymap commits the operator once flushPending fires, not dd', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('d'), keymap });
+  const flushed = engine.flushPending({ state: pending.state, keymap });
+  expect(flushed.status).toBe('pending');
+  expect(flushed.actions).toEqual([]);
+  expect(flushed.state.operator).toBe(Operators.DELETE);
+  expect(flushed.state.pending).toEqual([]);
 });
 
 test('describe returns only bindings for the given mode and context', () => {
