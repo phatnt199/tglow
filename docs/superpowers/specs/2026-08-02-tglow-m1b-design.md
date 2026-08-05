@@ -37,10 +37,28 @@ Nothing may be marked done until every row is accounted for.
 | **`pts` gap recovery — private chats and basic groups** | | **✅** | |
 | **`pts` gap recovery — channels and supergroups** | | ❌ outstanding | |
 | **`pts` gap recovery — non-message updates** | | ❌ outstanding | |
-| **vim operators, registers, `.` repeat** | | | **✅** |
+| **vim operators, registers, `.` repeat** | | | **⚠️ mostly** |
 | **`<C-p>` fuzzy chat jump** | | | **✅** |
 | **`/` incremental search over cached history** | | | **✅** |
 | **remaining 10 devglow palettes** | | | **✅** |
+| **user-defined themes** (§4.4 says "a later milestone") | | | **✅ early** |
+
+> **What the operators row is missing.** Marked ⚠️ rather than ✅ deliberately:
+> the same overstatement the `pts` row above was corrected for. Operators
+> compose with motions and counts (`d3j`, `y}`), registers work including `"+`
+> through OSC 52, and `.` repeats — but three gaps were carried through the
+> M1b-2 reviews and are still open:
+>
+> - **`3dd` deletes one message, not three.** The count is dropped rather than
+>   misreported: the confirmation says "Delete this message?" and one message is
+>   what goes. Ranged batch-delete needs a plural confirmation and a partial
+>   failure story (what the status line says when the second of three fails),
+>   which is why two reviews carried it rather than half-building it.
+> - **`.` always writes the unnamed register,** ignoring a preceding `"x`.
+> - **A fresh count on `.` discards the original motion's direction** — `3.`
+>   after `dk` deletes downward.
+>
+> `<C-p>`, `/` and the palettes carry no such qualification.
 
 M1b-1 is the message layer — what you hit reading and answering. M1b-2 is the
 editor layer. **This document specs both; only M1b-1 is planned now.**
@@ -156,6 +174,16 @@ operator-pending.
 - The dialog's unread count clears locally and in the chat list.
 - Own messages render `✓` when sent, `✓✓` when the other side has read them,
   from `read_outbox_max_id` — the column already exists and is never used.
+
+  **Delivered in two steps.** M1b-1 rendered the ticks, but `read_outbox_max_id`
+  was written only by `DialogService.sync()` at startup, so a tick froze at
+  whatever it was when tglow launched: a message sent and read while you watched
+  kept its single tick until the next run. `UpdateService` now subscribes to
+  `UpdateReadHistoryOutbox` (users, basic groups) and `UpdateReadChannelOutbox`
+  (channels, supergroups) and advances the column live. The inbox pair is
+  deliberately ignored — it reports what this account has read elsewhere, and
+  treating it as a receipt would mark your own messages seen because you read
+  theirs.
 - Never mark read on a chat the cursor merely passes over in the list. Reading
   is an explicit act; auto-reading messages the user has not seen is the kind of
   behaviour that gets a client distrusted.

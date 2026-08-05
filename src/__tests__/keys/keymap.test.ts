@@ -642,3 +642,42 @@ test('y and n normalize to the literal tokens the delete confirmation compares a
   expect(keyNormalizer.toCanonicalString({ key: buildKey('y') })).toBe('y');
   expect(keyNormalizer.toCanonicalString({ key: buildKey('n') })).toBe('n');
 });
+
+// ---------------------------------------------------------------------------
+// The operators, registers and repeat are NOT table bindings -- vim-engine.ts
+// reduces them, and keymap.ts carries display-only descriptors so which-key
+// can list them. That split is exactly where the `\` bug can happen again in a
+// new place: a descriptor advertises a key in the which-key popup while the
+// engine ignores it, and the guard above cannot see it because the key was
+// never meant to be in getBindings().
+//
+// So this asserts the two halves against each other. Every intrinsic key the
+// popup advertises must be one the engine actually acts on -- anything the
+// engine reports `unmapped` for is advertised and dead.
+// ---------------------------------------------------------------------------
+test('every intrinsic key which-key advertises is one the engine actually acts on', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+
+  const advertised = keymapService
+    .describe({ mode: VimModes.NORMAL, context: VimContexts.MESSAGES })
+    .map(entry => entry.keys);
+
+  // The seven from the plan's Task 12 list that are engine-intrinsic rather
+  // than table-driven. `dd` is asserted in the promised-keys guard above,
+  // because it IS a table binding.
+  for (const keys of ['d', 'y', 'c', 'yy', 'cc', '"', '.']) {
+    expect(advertised, `which-key advertises ${keys}`).toContain(keys);
+
+    // Fed one character at a time, the way a person types it: `yy` must
+    // survive `y` leaving the engine mid-operator rather than unmapped.
+    let state: IEngineState = INITIAL_ENGINE_STATE;
+    let status = 'unmapped';
+    for (const character of [...keys]) {
+      const result = engine.resolve({ state, key: buildKey(character), keymap });
+      state = result.state;
+      status = result.status;
+    }
+    expect(status, `the engine acts on ${keys}`).not.toBe('unmapped');
+  }
+});
