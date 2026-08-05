@@ -58,7 +58,7 @@ export interface IMessageAdapter {
   fetchHistory(opts: { peerId: string; limit: number }): Promise<IRawMessage[]>;
   send(opts: { peerId: string; text: string; replyToMessageId?: number }): Promise<IRawMessage>;
   edit(opts: { peerId: string; messageId: number; text: string }): Promise<IRawMessage>;
-  delete(opts: { peerId: string; messageId: number; forEveryone: boolean }): Promise<void>;
+  delete(opts: { peerId: string; messageIds: number[]; forEveryone: boolean }): Promise<void>;
   markRead(opts: { peerId: string; maxId: number }): Promise<void>;
   subscribeToNewMessages(opts: { onMessage: (live: ILiveMessage) => void }): () => void;
   subscribeToReadReceipts(opts: { onReadReceipt: (receipt: IReadReceipt) => void }): () => void;
@@ -289,28 +289,57 @@ export class MessageService {
    * CONFIRM is dispatched, before this ever runs, so nothing here depends on
    * whether the network call has resolved yet.
    */
-  delete = async (opts: { peerId: string; messageId: number }): Promise<void> => {
-    const { peerId, messageId } = opts;
-    const target = this._store.getState().messages.find(message => message.id === messageId);
-    const forEveryone = target?.out === 1;
+  delete = async (opts: { peerId: string; messageIds: number[] }): Promise<void> => {
+    const { peerId, messageIds } = opts;
+    if (messageIds.length === 0) {
+      return;
+    }
 
-    try {
-      await this._adapter.delete({ peerId, messageId, forEveryone });
-    } catch (error) {
-      this._logger.for(this.delete.name).error('Delete failed | Reason: %s', error);
-      this._store.setState({ patch: { statusMessage: `Delete failed: ${toError(error).message}` } });
+    // `revoke` is one flag per API call, but whether a delete can reach the
+    // other side is a fact about each message. A range covering both your
+    // messages and theirs cannot be sent under either flag honestly, so it
+    // goes as two calls -- at most two round trips, never one per message.
+    const messages = this._store.getState().messages;
+    const own = messageIds.filter(id => messages.find(message => message.id === id)?.out === 1);
+    const theirs = messageIds.filter(id => !own.includes(id));
+
+    const deleted: number[] = [];
+    let failure: string | null = null;
+
+    for (const batch of [{ ids: own, forEveryone: true }, { ids: theirs, forEveryone: false }]) {
+      if (batch.ids.length === 0) {
+        continue;
+      }
+      try {
+        await this._adapter.delete({ peerId, messageIds: batch.ids, forEveryone: batch.forEveryone });
+        deleted.push(...batch.ids);
+      } catch (error) {
+        // Recorded rather than rethrown: if your own messages went and theirs
+        // did not, the cache still has to lose the ones that actually went, or
+        // the view shows messages the server no longer has.
+        this._logger.for(this.delete.name).error('Delete failed | Reason: %s', error);
+        failure = toError(error).message;
+      }
+    }
+
+    if (deleted.length === 0) {
+      this._store.setState({ patch: { statusMessage: `Delete failed: ${failure}` } });
       return;
     }
 
     try {
-      this._database.deleteMessage({ peerId, id: messageId });
+      for (const id of deleted) {
+        this._database.deleteMessage({ peerId, id });
+      }
       this._store.setState({
         patch: {
           messages: this.forDisplay({
             rows: this._database.listMessages({ peerId, limit: this._historyLimit ?? REPUBLISH_LIMIT }),
           }),
           activePeerId: peerId,
-          statusMessage: forEveryone ? 'Deleted for everyone' : 'Deleted for you',
+          statusMessage: this.describeDeletion({
+            deleted, requested: messageIds.length, own: own.length, failure,
+          }),
         },
       });
     } catch (error) {
@@ -322,6 +351,34 @@ export class MessageService {
         patch: { statusMessage: `Deleted, but could not update the local cache: ${toError(error).message}` },
       });
     }
+  };
+
+  /**
+   * What the status line says after a delete. A partial success has to say so:
+   * "Deleted for everyone" after two of three went is the status line lying
+   * about the one action in tglow that cannot be undone.
+   */
+  private describeDeletion = (
+    opts: { deleted: number[]; requested: number; own: number; failure: string | null },
+  ): string => {
+    const { deleted, requested, own, failure } = opts;
+
+    if (failure !== null) {
+      return `Deleted ${deleted.length} of ${requested}: ${failure}`;
+    }
+    if (deleted.length === 1) {
+      // The wording M1b-1 shipped, kept for the overwhelmingly common case.
+      return own === 1 ? 'Deleted for everyone' : 'Deleted for you';
+    }
+    if (own === deleted.length) {
+      return `Deleted ${deleted.length} for everyone`;
+    }
+    if (own === 0) {
+      return `Deleted ${deleted.length} for you`;
+    }
+    // Mixed: some reached the other side and some did not, so neither phrase
+    // is true of the whole set and claiming either would overstate.
+    return `Deleted ${deleted.length} messages`;
   };
 
   /**

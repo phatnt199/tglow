@@ -68,24 +68,63 @@ test('operator.apply delete asks for confirmation, the same way delete.request d
     state,
     action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 2 },
   });
-  expect(patch.pendingConfirmation).toEqual({ kind: 'delete', messageId: state.messages[2]!.id });
+  expect(patch.pendingConfirmation?.kind).toBe('delete');
   expect(patch.statusMessage).toBeTruthy();
 });
 
-// The range's own extent is not consulted for delete: only the message at
-// the cursor is ever named in the confirmation. Acting on the full range
-// would mean confirming and deleting more than one message from a single
-// y/n answer -- a bigger, deliberately deferred feature (a pendingConfirmation
-// shape that names several messages, and a loop in App's CONFIRM handling),
-// not a side effect doubling itself asks for. This is what keeps `3dd`
-// honest: it confirms, but confirming deletes one message, not three.
-test('operator.apply delete over a multi-message range still only confirms the one at the cursor', () => {
+// Through M1b-2 this deliberately confirmed one message however wide the
+// range, so `3dd` asked about one and deleted one. The range is honoured now:
+// the confirmation names every message it is about to delete, and answering it
+// once deletes all of them.
+test('operator.apply delete over a multi-message range confirms the whole range', () => {
   const state = buildState({ messageCursor: 0 });
   const patch = applyAction({
     state,
     action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 2 },
   });
-  expect(patch.pendingConfirmation).toEqual({ kind: 'delete', messageId: state.messages[0]!.id });
+  expect(patch.pendingConfirmation).toEqual({
+    kind: 'delete',
+    messageIds: state.messages.slice(0, 3).map(message => message.id),
+  });
+});
+
+// Counting is what the prompt is for: answering "Delete this message?" and
+// losing three would be the worst version of this feature.
+test('the confirmation says how many messages it is about to delete', () => {
+  const state = buildState({ messageCursor: 0 });
+  const patch = applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 2 },
+  });
+  expect(patch.statusMessage).toBe('Delete 3 messages? (y/n)');
+});
+
+// A single message keeps the wording it has always had -- "Delete 1 message?"
+// reads like a machine, and this is the overwhelmingly common case.
+test('a single-message delete still asks the singular question', () => {
+  const state = buildState({ messageCursor: 0 });
+  const patch = applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0 },
+  });
+  expect(patch.statusMessage).toBe('Delete this message? (y/n)');
+  expect(patch.pendingConfirmation).toEqual({ kind: 'delete', messageIds: [state.messages[0]!.id] });
+});
+
+// `3dd` on the second-to-last message asks for three and can only have two.
+// vim deletes what is there rather than refusing, and the prompt has to say
+// two, or it is lying about what y will do.
+test('a range running past the last message is clamped, and the prompt counts what is really there', () => {
+  const state = buildState({ messageCursor: 2 });
+  const patch = applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 9 },
+  });
+  expect(patch.pendingConfirmation).toEqual({
+    kind: 'delete',
+    messageIds: state.messages.slice(2).map(message => message.id),
+  });
+  expect(patch.statusMessage).toBe('Delete 2 messages? (y/n)');
 });
 
 // M1b-2 Task 5, decision 1: unlike Task 4's deliberate no-op, delete now
@@ -98,9 +137,22 @@ test('operator.apply delete also writes the targeted message into the default re
   const state = buildState({ messageCursor: 2 });
   const patch = applyAction({
     state,
-    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 2 },
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0 },
   });
   expect(patch.registers).toEqual({ '"': state.messages[2]!.text });
+});
+
+// The register takes the whole range, joined the way yank joins one -- vim's
+// `3dd` puts three lines in the unnamed register, not the first of them.
+test('a ranged delete registers every message it deletes, joined like a ranged yank', () => {
+  const state = buildState({ messageCursor: 0 });
+  const patch = applyAction({
+    state,
+    action: { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 2 },
+  });
+  expect(patch.registers).toEqual({
+    '"': state.messages.slice(0, 3).map(message => message.text).join('\n'),
+  });
 });
 
 test('operator.apply delete writes into the named register when one is pending, not just the default', () => {
@@ -390,7 +442,7 @@ test('edit.cancel restores the composer to what it held before the edit began', 
 test('delete.request asks for confirmation on the message under the cursor', () => {
   const state = buildState({ messageCursor: 2 });
   const patch = applyAction({ state, action: { type: ActionTypes.DELETE_REQUEST } });
-  expect(patch.pendingConfirmation).toEqual({ kind: 'delete', messageId: state.messages[2]!.id });
+  expect(patch.pendingConfirmation).toEqual({ kind: 'delete', messageIds: [state.messages[2]!.id] });
   expect(patch.statusMessage).toBeTruthy();
 });
 
@@ -402,7 +454,7 @@ test('delete.request with no messages is harmless', () => {
 
 test('confirmation.confirm clears the pending confirmation and the prompt', () => {
   const state = buildState({
-    pendingConfirmation: { kind: 'delete', messageId: 3 },
+    pendingConfirmation: { kind: 'delete', messageIds: [3] },
     statusMessage: 'Delete this message? (y/n)',
   });
   const patch = applyAction({ state, action: { type: ActionTypes.CONFIRM } });
@@ -414,7 +466,7 @@ test('confirmation.confirm clears the pending confirmation and the prompt', () =
 // (App calling onDelete) tells the two apart, and that lives in app.tsx, not here.
 test('confirmation.cancel clears the pending confirmation and the prompt', () => {
   const state = buildState({
-    pendingConfirmation: { kind: 'delete', messageId: 3 },
+    pendingConfirmation: { kind: 'delete', messageIds: [3] },
     statusMessage: 'Delete this message? (y/n)',
   });
   const patch = applyAction({ state, action: { type: ActionTypes.CANCEL_CONFIRMATION } });

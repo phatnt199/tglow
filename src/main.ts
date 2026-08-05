@@ -217,10 +217,10 @@ const main = async (): Promise<void> => {
         // Same reasoning as onSend/onEdit above: activePeerId is App-level
         // state read off the same store closure rather than threaded through
         // IAppProps.onDelete's own signature.
-        onDelete: async (opts: { messageId: number }): Promise<void> => {
+        onDelete: async (opts: { messageIds: number[] }): Promise<void> => {
           const { activePeerId } = store.getState();
           if (activePeerId) {
-            await messageService.delete({ peerId: activePeerId, messageId: opts.messageId });
+            await messageService.delete({ peerId: activePeerId, messageIds: opts.messageIds });
           }
         },
         onQuit: quit,

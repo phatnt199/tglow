@@ -64,7 +64,7 @@ export interface IAppProps {
   resolveSenderName: (opts: { fromId: string | null }) => string;
   onSend: (text: string) => Promise<void>;
   onEdit: (opts: { messageId: number; text: string }) => Promise<void>;
-  onDelete: (opts: { messageId: number }) => Promise<void>;
+  onDelete: (opts: { messageIds: number[] }) => Promise<void>;
   onQuit: () => void;
   onOpenChat: (opts: { peerId: string }) => Promise<void>;
   /**
@@ -520,10 +520,13 @@ export const App = (props: IAppProps) => {
         return;
       }
 
-      const { messageId } = current.pendingConfirmation;
+      const { messageIds } = current.pendingConfirmation;
       store.setState({ patch: applyAction({ state: current, action: confirmationAction }) });
       if (confirmationAction.type === ActionTypes.CONFIRM) {
-        void onDelete({ messageId }).catch(error => { logRejection({ method: 'onDelete', error }); });
+        // One call carrying every id, not a loop of single deletes: Telegram's
+        // own deleteMessages takes an array, so a ranged delete is one round
+        // trip, one republish and one status message rather than N of each.
+        void onDelete({ messageIds }).catch(error => { logRejection({ method: 'onDelete', error }); });
       }
       return;
     }

@@ -79,7 +79,7 @@ export interface IApplicationState {
    * the reply/edit escapes above, and swallows every key except y, n and
    * escape while it is set.
    */
-  pendingConfirmation: { kind: 'delete'; messageId: number } | null;
+  pendingConfirmation: { kind: 'delete'; messageIds: number[] } | null;
   /**
    * Ids of messages whose spoilers `zs` has revealed. Not persisted: reopening
    * a chat rebuilds the store from scratch, so a spoiler revealed yesterday is

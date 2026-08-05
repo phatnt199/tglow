@@ -20,6 +20,28 @@ const clamp = (opts: { value: number; maximum: number }): number => {
 };
 
 /**
+ * The one place the delete question is worded, so `dd` and a ranged `3dd`
+ * cannot drift apart -- the same reason OPERATOR_APPLY routes through
+ * DELETE_REQUEST rather than building its own patch.
+ *
+ * The count is in the prompt because the prompt is the only thing standing
+ * between a keystroke and the app's one irreversible, networked action.
+ * Answering "Delete this message?" and losing three would be the worst
+ * possible version of this feature. A single message keeps the wording it has
+ * always had: "Delete 1 message?" reads like a machine, and one is the
+ * overwhelmingly common case.
+ */
+const buildDeleteConfirmation = (opts: { messages: IMessageRow[] }): Partial<IApplicationState> => {
+  const { messages } = opts;
+  return {
+    pendingConfirmation: { kind: 'delete', messageIds: messages.map(message => message.id) },
+    statusMessage: messages.length === 1
+      ? 'Delete this message? (y/n)'
+      : `Delete ${messages.length} messages? (y/n)`,
+  };
+};
+
+/**
  * Maps a committed search's message ids back to their *current* position in
  * `messages`, sorted ascending -- `messages`' own oldest-first order, the
  * same order the message pane renders top to bottom. Not memoized at commit
@@ -81,11 +103,17 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
         // CONFIRM handling -- a bigger feature than doubling itself asks
         // for, not a side effect of it.
         case Operators.DELETE: {
-          const message = state.messages[state.messageCursor];
-          const requested = applyAction({ state, action: { type: ActionTypes.DELETE_REQUEST } });
-          if (!message) {
-            return requested;
+          // The range, clamped exactly as YANK clamps its own: `3dd` on the
+          // second-to-last message asks for three and can only have two, and
+          // vim deletes what is there rather than refusing. The prompt counts
+          // what it really found, so it cannot promise a third.
+          const start = clamp({ value: state.messageCursor + action.from, maximum: state.messages.length - 1 });
+          const end = clamp({ value: state.messageCursor + action.to, maximum: state.messages.length - 1 });
+          const targeted = state.messages.slice(start, end + 1);
+          if (targeted.length === 0) {
+            return {};
           }
+          const requested = buildDeleteConfirmation({ messages: targeted });
           // M1b-2 Task 5, decision 1: unlike Task 4's deliberate no-op,
           // delete now also writes the targeted message into a register --
           // real vim's own unnamed register captures a delete exactly as it
@@ -100,8 +128,13 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
           // real vim has no confirmation step to cancel in the first place,
           // so this is a new question tglow's own confirmation raises, not
           // one vim already answers, and a local copy costs nothing to keep.
+          // The whole range, joined the way a ranged yank joins one: vim's
+          // `3dd` puts three lines in the unnamed register, not the first.
           const name = state.engine.register ?? UNNAMED_REGISTER;
-          return { ...requested, registers: { ...state.registers, [name]: message.text } };
+          return {
+            ...requested,
+            registers: { ...state.registers, [name]: targeted.map(message => message.text).join('\n') },
+          };
         }
 
         // cc: vim's change is delete-then-insert; the message equivalent
@@ -315,10 +348,7 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
       if (!message) {
         return {};
       }
-      return {
-        pendingConfirmation: { kind: 'delete', messageId: message.id },
-        statusMessage: 'Delete this message? (y/n)',
-      };
+      return buildDeleteConfirmation({ messages: [message] });
     }
 
     // CONFIRM and CANCEL_CONFIRMATION both end the question the same way --

@@ -222,8 +222,11 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
   // megagroups, which delete for everyone unconditionally regardless of what
   // is passed. Passing the flag explicitly either way, rather than relying
   // on that default, is what MessageService.delete's own forEveryone decides.
-  delete: async (deleteOpts: { peerId: string; messageId: number; forEveryone: boolean }): Promise<void> => {
-    await opts.client.deleteMessages(deleteOpts.peerId, [deleteOpts.messageId], { revoke: deleteOpts.forEveryone });
+  delete: async (deleteOpts: { peerId: string; messageIds: number[]; forEveryone: boolean }): Promise<void> => {
+    // deleteMessages has always taken an array (messages.d.ts declares
+    // `messageIds: MessageIDLike[]`); until ranged delete existed this only
+    // ever passed one. A `3dd` is one round trip, not three.
+    await opts.client.deleteMessages(deleteOpts.peerId, deleteOpts.messageIds, { revoke: deleteOpts.forEveryone });
   },
 
   // GramJS's own signature (client.markAsRead, declared at

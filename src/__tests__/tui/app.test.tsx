@@ -103,7 +103,7 @@ const mount = async (opts: {
   messages?: IMessageRow[];
   onSend?: (text: string) => Promise<void>;
   onEdit?: (edit: { messageId: number; text: string }) => Promise<void>;
-  onDelete?: (deletion: { messageId: number }) => Promise<void>;
+  onDelete?: (deletion: { messageIds: number[] }) => Promise<void>;
   onOpenChat?: (chat: { peerId: string }) => Promise<void>;
   /**
    * Appended to the real 28-binding keymap rather than replacing it, so
@@ -213,8 +213,8 @@ const mount = async (opts: {
   // composer text to protect, so nothing here needs the "still what I sent?"
   // guard -- App itself clears pendingConfirmation the instant y is pressed
   // (action-reducer.ts's CONFIRM case), before this ever runs.
-  const deleted: Array<{ messageId: number }> = [];
-  const onDelete = opts.onDelete ?? (async (deletion: { messageId: number }): Promise<void> => {
+  const deleted: Array<{ messageIds: number[] }> = [];
+  const onDelete = opts.onDelete ?? (async (deletion: { messageIds: number[] }): Promise<void> => {
     deleted.push(deletion);
   });
 
@@ -669,6 +669,47 @@ test('3dd asks for confirmation instead of deleting three messages outright', as
   expect(renderer.captureCharFrame()).toContain('Delete');
 });
 
+// The other half, and the one the feature actually turns on: through M1b-2 the
+// test above was the whole story, and answering y deleted a single message.
+// Driven end to end through real key presses rather than the reducer alone --
+// the count has to survive the engine, the operator, App's CONFIRM handler and
+// onDelete's signature, and any one of those dropping it looks identical from
+// the reducer's side.
+test('3dd then y deletes three messages, and says three before it does', async () => {
+  const { renderer, store, deleted } = await mount();
+  await act(async () => {
+    renderer.mockInput.pressKey('3');
+    renderer.mockInput.pressKey('d');
+    renderer.mockInput.pressKey('d');
+  });
+  await renderer.flush();
+
+  expect(store.getState().pendingConfirmation).toEqual({ kind: 'delete', messageIds: [1, 2, 3] });
+  expect(renderer.captureCharFrame()).toContain('Delete 3 messages?');
+
+  await act(async () => { renderer.mockInput.pressKey('y'); });
+  await renderer.flush();
+
+  expect(deleted).toEqual([{ messageIds: [1, 2, 3] }]);
+});
+
+// Answering n after asking for three must delete none of them -- a count is
+// not a route around the question (M1b-1's guarantee), in either direction.
+test('3dd then n deletes nothing at all', async () => {
+  const { renderer, store, deleted } = await mount();
+  await act(async () => {
+    renderer.mockInput.pressKey('3');
+    renderer.mockInput.pressKey('d');
+    renderer.mockInput.pressKey('d');
+  });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('n'); });
+  await renderer.flush();
+
+  expect(deleted).toEqual([]);
+  expect(store.getState().pendingConfirmation).toBeNull();
+});
+
 // The Minor from M1b-1's final review, driven through real key presses: dd
 // used to be `context: '*'`, so pressing it while focused on the chat list
 // deleted a message in the messages pane the cursor was not even in.
@@ -899,11 +940,11 @@ test('. repeating a delete still asks for confirmation -- it does not delete out
   await renderer.flush();
   await act(async () => { renderer.mockInput.pressKey('y'); });
   await renderer.flush();
-  expect(deleted).toEqual([{ messageId: 1 }]);
+  expect(deleted).toEqual([{ messageIds: [1] }]);
 
   await act(async () => { renderer.mockInput.pressKey('.'); });
   await renderer.flush();
-  expect(deleted).toEqual([{ messageId: 1 }]); // not yet a second delete
+  expect(deleted).toEqual([{ messageIds: [1] }]); // not yet a second delete
   expect(store.getState().pendingConfirmation).not.toBeNull();
   expect(renderer.captureCharFrame()).toContain('Delete');
 
@@ -922,7 +963,7 @@ test('. after dd repeats on the message now under the cursor, not the original o
   const { renderer, store, deleted } = await mount();
   await act(async () => { renderer.mockInput.pressKey('d'); renderer.mockInput.pressKey('d'); });
   await renderer.flush();
-  expect(store.getState().pendingConfirmation).toEqual({ kind: 'delete', messageId: 1 });
+  expect(store.getState().pendingConfirmation).toEqual({ kind: 'delete', messageIds: [1] });
   await act(async () => { renderer.mockInput.pressKey('y'); });
   await renderer.flush();
 
@@ -932,11 +973,11 @@ test('. after dd repeats on the message now under the cursor, not the original o
 
   await act(async () => { renderer.mockInput.pressKey('.'); });
   await renderer.flush();
-  expect(store.getState().pendingConfirmation).toEqual({ kind: 'delete', messageId: 2 });
+  expect(store.getState().pendingConfirmation).toEqual({ kind: 'delete', messageIds: [2] });
 
   await act(async () => { renderer.mockInput.pressKey('y'); });
   await renderer.flush();
-  expect(deleted).toEqual([{ messageId: 1 }, { messageId: 2 }]);
+  expect(deleted).toEqual([{ messageIds: [1] }, { messageIds: [2] }]);
 });
 
 // Requirement 5 (task-7-brief.md's own open question) -- decision: a
@@ -961,7 +1002,7 @@ test('. after a cancelled (n) delete still repeats it -- and still asks again', 
 
   await act(async () => { renderer.mockInput.pressKey('.'); });
   await renderer.flush();
-  expect(store.getState().pendingConfirmation).toEqual({ kind: 'delete', messageId: 1 });
+  expect(store.getState().pendingConfirmation).toEqual({ kind: 'delete', messageIds: [1] });
   expect(deleted).toEqual([]);
 });
 
@@ -1016,7 +1057,7 @@ test('. does nothing while focused on the chat list', async () => {
   await act(async () => { renderer.mockInput.pressKey('.'); });
   await renderer.flush();
   expect(store.getState().pendingConfirmation).toBeNull();
-  expect(deleted).toEqual([{ messageId: 1 }]);
+  expect(deleted).toEqual([{ messageIds: [1] }]);
 });
 
 // `.` must still reach the composer as a literal character in INSERT mode --

@@ -78,7 +78,7 @@ test('send, edit and delete leave the integrity warning alone', async () => {
 
   await service.send({ peerId: 'u1', text: 'hello' });
   await service.edit({ peerId: 'u1', messageId: 1, text: 'hello again' });
-  await service.delete({ peerId: 'u1', messageId: 1 });
+  await service.delete({ peerId: 'u1', messageIds: [1] });
 
   expect(store.getState().integrityWarning).toBe('some history may be missing');
   database.close();
@@ -292,26 +292,26 @@ test('a failed edit keeps the text in the composer', async () => {
 // trusted from a caller, so the confirmation and the deletion can never
 // disagree about whose message this is.
 test('deleting your own message asks the adapter to delete it for everyone', async () => {
-  const deletes: Array<{ peerId: string; messageId: number; forEveryone: boolean }> = [];
+  const deletes: Array<{ peerId: string; messageIds: number[]; forEveryone: boolean }> = [];
   const harness = buildService(buildAdapter({ delete: async opts => { deletes.push(opts); } }));
   harness.database.insertMessages({
     messages: [{ peerId: 'u1', id: 5, fromId: 'me', date: 100, text: 'oops', out: 1, entities: [], replyToMessageId: null }],
   });
   harness.store.setState({ patch: { messages: harness.database.listMessages({ peerId: 'u1', limit: 10 }) } });
-  await harness.service.delete({ peerId: 'u1', messageId: 5 });
-  expect(deletes).toEqual([{ peerId: 'u1', messageId: 5, forEveryone: true }]);
+  await harness.service.delete({ peerId: 'u1', messageIds: [5] });
+  expect(deletes).toEqual([{ peerId: 'u1', messageIds: [5], forEveryone: true }]);
   harness.database.close();
 });
 
 test("deleting someone else's message deletes only for you", async () => {
-  const deletes: Array<{ peerId: string; messageId: number; forEveryone: boolean }> = [];
+  const deletes: Array<{ peerId: string; messageIds: number[]; forEveryone: boolean }> = [];
   const harness = buildService(buildAdapter({ delete: async opts => { deletes.push(opts); } }));
   harness.database.insertMessages({
     messages: [{ peerId: 'u1', id: 5, fromId: 'u1', date: 100, text: 'hi', out: 0, entities: [], replyToMessageId: null }],
   });
   harness.store.setState({ patch: { messages: harness.database.listMessages({ peerId: 'u1', limit: 10 }) } });
-  await harness.service.delete({ peerId: 'u1', messageId: 5 });
-  expect(deletes).toEqual([{ peerId: 'u1', messageId: 5, forEveryone: false }]);
+  await harness.service.delete({ peerId: 'u1', messageIds: [5] });
+  expect(deletes).toEqual([{ peerId: 'u1', messageIds: [5], forEveryone: false }]);
   harness.database.close();
 });
 
@@ -327,7 +327,7 @@ test('a successful delete marks the cached row deleted rather than removing it',
     ],
   });
   harness.store.setState({ patch: { messages: harness.database.listMessages({ peerId: 'u1', limit: 10 }) } });
-  await harness.service.delete({ peerId: 'u1', messageId: 5 });
+  await harness.service.delete({ peerId: 'u1', messageIds: [5] });
   expect(harness.database.listMessages({ peerId: 'u1', limit: 10 }).map(row => row.text)).toEqual(['kept']);
   harness.database.close();
 });
@@ -338,7 +338,7 @@ test('a successful delete for everyone says so on the status line', async () => 
     messages: [{ peerId: 'u1', id: 5, fromId: 'me', date: 100, text: 'oops', out: 1, entities: [], replyToMessageId: null }],
   });
   harness.store.setState({ patch: { messages: harness.database.listMessages({ peerId: 'u1', limit: 10 }) } });
-  await harness.service.delete({ peerId: 'u1', messageId: 5 });
+  await harness.service.delete({ peerId: 'u1', messageIds: [5] });
   expect(harness.store.getState().statusMessage).toContain('everyone');
   harness.database.close();
 });
@@ -349,7 +349,7 @@ test('a successful delete for yourself only says so on the status line', async (
     messages: [{ peerId: 'u1', id: 5, fromId: 'u1', date: 100, text: 'hi', out: 0, entities: [], replyToMessageId: null }],
   });
   harness.store.setState({ patch: { messages: harness.database.listMessages({ peerId: 'u1', limit: 10 }) } });
-  await harness.service.delete({ peerId: 'u1', messageId: 5 });
+  await harness.service.delete({ peerId: 'u1', messageIds: [5] });
   const status = harness.store.getState().statusMessage;
   expect(status).not.toContain('everyone');
   expect(status).toBeTruthy();
@@ -364,7 +364,7 @@ test('a failed delete reports failure and leaves the message cached', async () =
     messages: [{ peerId: 'u1', id: 5, fromId: 'me', date: 100, text: 'oops', out: 1, entities: [], replyToMessageId: null }],
   });
   harness.store.setState({ patch: { messages: harness.database.listMessages({ peerId: 'u1', limit: 10 }) } });
-  await harness.service.delete({ peerId: 'u1', messageId: 5 });
+  await harness.service.delete({ peerId: 'u1', messageIds: [5] });
   expect(harness.store.getState().statusMessage).toContain('MESSAGE_DELETE_FORBIDDEN');
   expect(harness.database.listMessages({ peerId: 'u1', limit: 10 }).map(row => row.text)).toEqual(['oops']);
   harness.database.close();
@@ -484,5 +484,129 @@ test('a message arriving after a chat is marked read counts as a fresh unread, n
 
   expect(harness.database.listDialogs().find(dialog => dialog.peerId === 'u1')?.unreadCount).toBe(1);
   expect(harness.store.getState().dialogs.find(dialog => dialog.peerId === 'u1')?.unreadCount).toBe(1);
+  harness.database.close();
+});
+
+// ── ranged delete (3dd) ───────────────────────────────────────────────────
+//
+// Through M1b-2 a range confirmed and deleted one message. These cover the
+// three things that made ranged delete worth deferring twice: batching,
+// the revoke flag being per-call while ownership is per-message, and what
+// the status line says when only part of it went.
+
+const buildRow = (id: number, out: 0 | 1) =>
+  ({ peerId: 'u1', id, fromId: out === 1 ? 'me' : 'u1', date: id * 100, text: `m${id}`, out, entities: [], replyToMessageId: null });
+
+const seed = (harness: ReturnType<typeof buildService>, rows: ReturnType<typeof buildRow>[]): void => {
+  harness.database.insertMessages({ messages: rows });
+  harness.store.setState({ patch: { messages: harness.database.listMessages({ peerId: 'u1', limit: 10 }) } });
+};
+
+// One round trip, not three: Telegram's deleteMessages takes an array, and a
+// loop would also mean three republishes and three status messages.
+test('a ranged delete of your own messages is one adapter call carrying every id', async () => {
+  const deletes: Array<{ peerId: string; messageIds: number[]; forEveryone: boolean }> = [];
+  const harness = buildService(buildAdapter({ delete: async opts => { deletes.push(opts); } }));
+  seed(harness, [buildRow(5, 1), buildRow(6, 1), buildRow(7, 1)]);
+
+  await harness.service.delete({ peerId: 'u1', messageIds: [5, 6, 7] });
+
+  expect(deletes).toEqual([{ peerId: 'u1', messageIds: [5, 6, 7], forEveryone: true }]);
+  harness.database.close();
+});
+
+// revoke is one flag per call, but whether a delete can reach the other side
+// is a fact about each message. Sending a mixed range under either flag would
+// be wrong for half of it.
+test('a range covering both your messages and theirs splits into two calls, one per revoke flag', async () => {
+  const deletes: Array<{ peerId: string; messageIds: number[]; forEveryone: boolean }> = [];
+  const harness = buildService(buildAdapter({ delete: async opts => { deletes.push(opts); } }));
+  seed(harness, [buildRow(5, 1), buildRow(6, 0), buildRow(7, 1)]);
+
+  await harness.service.delete({ peerId: 'u1', messageIds: [5, 6, 7] });
+
+  expect(deletes).toEqual([
+    { peerId: 'u1', messageIds: [5, 7], forEveryone: true },
+    { peerId: 'u1', messageIds: [6], forEveryone: false },
+  ]);
+  harness.database.close();
+});
+
+test('every message in a successful range leaves the visible history', async () => {
+  const harness = buildService(buildAdapter({ delete: async () => {} }));
+  seed(harness, [buildRow(5, 1), buildRow(6, 1), buildRow(7, 1), buildRow(8, 1)]);
+
+  await harness.service.delete({ peerId: 'u1', messageIds: [5, 6, 7] });
+
+  expect(harness.database.listMessages({ peerId: 'u1', limit: 10 }).map(row => row.text)).toEqual(['m8']);
+  harness.database.close();
+});
+
+test('a ranged delete for everyone counts what it deleted', async () => {
+  const harness = buildService(buildAdapter({ delete: async () => {} }));
+  seed(harness, [buildRow(5, 1), buildRow(6, 1), buildRow(7, 1)]);
+
+  await harness.service.delete({ peerId: 'u1', messageIds: [5, 6, 7] });
+
+  expect(harness.store.getState().statusMessage).toBe('Deleted 3 for everyone');
+  harness.database.close();
+});
+
+// Neither "for everyone" nor "for you" is true of a mixed set, and claiming
+// either would overstate what actually reached the other side.
+test('a mixed range claims neither for-everyone nor for-you', async () => {
+  const harness = buildService(buildAdapter({ delete: async () => {} }));
+  seed(harness, [buildRow(5, 1), buildRow(6, 0)]);
+
+  await harness.service.delete({ peerId: 'u1', messageIds: [5, 6] });
+
+  expect(harness.store.getState().statusMessage).toBe('Deleted 2 messages');
+  harness.database.close();
+});
+
+// The half-failure the feature was deferred over. Your own messages go, theirs
+// is refused: the cache must lose exactly what left the server, and the status
+// line must not say the whole range went.
+test('when one batch fails the other still lands, and the status line says how many really went', async () => {
+  const harness = buildService(buildAdapter({
+    delete: async opts => {
+      if (!opts.forEveryone) {
+        throw new Error('MESSAGE_DELETE_FORBIDDEN');
+      }
+    },
+  }));
+  seed(harness, [buildRow(5, 1), buildRow(6, 0), buildRow(7, 1)]);
+
+  await harness.service.delete({ peerId: 'u1', messageIds: [5, 6, 7] });
+
+  expect(harness.database.listMessages({ peerId: 'u1', limit: 10 }).map(row => row.text)).toEqual(['m6']);
+  expect(harness.store.getState().statusMessage).toBe('Deleted 2 of 3: MESSAGE_DELETE_FORBIDDEN');
+  harness.database.close();
+});
+
+test('when the whole range fails nothing leaves the cache', async () => {
+  const harness = buildService(buildAdapter({
+    delete: async () => { throw new Error('offline'); },
+  }));
+  seed(harness, [buildRow(5, 1), buildRow(6, 1)]);
+
+  await harness.service.delete({ peerId: 'u1', messageIds: [5, 6] });
+
+  // listMessages is newest-first -- forDisplay is what reverses it for the
+  // view -- so this reads m6, m5 rather than the order they were seeded in.
+  expect(harness.database.listMessages({ peerId: 'u1', limit: 10 }).map(row => row.text)).toEqual(['m6', 'm5']);
+  expect(harness.store.getState().statusMessage).toContain('offline');
+  harness.database.close();
+});
+
+test('an empty id list touches neither the network nor the cache', async () => {
+  let calls = 0;
+  const harness = buildService(buildAdapter({ delete: async () => { calls += 1; } }));
+  seed(harness, [buildRow(5, 1)]);
+
+  await harness.service.delete({ peerId: 'u1', messageIds: [] });
+
+  expect(calls).toBe(0);
+  expect(harness.database.listMessages({ peerId: 'u1', limit: 10 })).toHaveLength(1);
   harness.database.close();
 });

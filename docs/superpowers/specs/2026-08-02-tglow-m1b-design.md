@@ -46,14 +46,18 @@ Nothing may be marked done until every row is accounted for.
 > **What the operators row is missing.** Marked ⚠️ rather than ✅ deliberately:
 > the same overstatement the `pts` row above was corrected for. Operators
 > compose with motions and counts (`d3j`, `y}`), registers work including `"+`
-> through OSC 52, and `.` repeats — but three gaps were carried through the
-> M1b-2 reviews and are still open:
+> through OSC 52, and `.` repeats. Of the three gaps carried through the M1b-2
+> reviews, one is now closed and two remain:
 >
-> - **`3dd` deletes one message, not three.** The count is dropped rather than
->   misreported: the confirmation says "Delete this message?" and one message is
->   what goes. Ranged batch-delete needs a plural confirmation and a partial
->   failure story (what the status line says when the second of three fails),
->   which is why two reviews carried it rather than half-building it.
+> - ~~**`3dd` deletes one message, not three.**~~ **Delivered.** The range is
+>   honoured end to end: the confirmation names every message it will delete and
+>   counts them ("Delete 3 messages?"), the register takes the whole range
+>   joined the way a ranged yank joins one, and it goes as a single
+>   `deleteMessages` call rather than one per message. `revoke` is one flag per
+>   call while ownership is per message, so a range covering both your messages
+>   and theirs splits into two calls — and if only one lands, the cache loses
+>   exactly what left the server and the status line says "Deleted 2 of 3"
+>   rather than claiming the range went.
 > - **`.` always writes the unnamed register,** ignoring a preceding `"x`.
 > - **A fresh count on `.` discards the original motion's direction** — `3.`
 >   after `dk` deletes downward.
