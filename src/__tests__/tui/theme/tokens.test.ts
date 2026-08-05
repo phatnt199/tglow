@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 import { PALETTES, type IPalette } from '../../../tui/theme/palettes.ts';
 import { buildTokens } from '../../../tui/theme/tokens.ts';
@@ -34,7 +34,15 @@ test('every palette has all seventeen devglow keys', () => {
 // the .lua files once by eye; this parser reads the same files again, on
 // every run, mechanically -- the two never share a transcription step.
 // ---------------------------------------------------------------------------
+// An absolute path to a checkout that only exists on the author's machine.
+// README promises `bun test` needs no network and no account; it must not also
+// silently require a second repository, so these skip when devglow is absent
+// rather than failing thirteen tests for anyone who clones tglow. The check
+// above ("all seventeen keys, every one a hex colour") runs everywhere and is
+// what a contributor gets; this cross-check is the author's own guard against
+// a transcription slip, and it still runs on every one of their test runs.
 const DEVGLOW_PALETTES_DIRECTORY = '/home/tanphat199/Workspace/save/tanphat199/devglow/lua/devglow/palettes';
+const hasDevglowCheckout = existsSync(DEVGLOW_PALETTES_DIRECTORY);
 
 const PALETTE_NAMES = [
   'sage', 'ember', 'amber', 'ash', 'blush', 'dusk', 'mocha', 'moss',
@@ -54,7 +62,7 @@ test('PALETTES ships exactly the twelve devglow palettes', () => {
 });
 
 for (const name of PALETTE_NAMES) {
-  test(`${name} matches devglow/lua/devglow/palettes/${name}.lua, key for key`, () => {
+  test.skipIf(!hasDevglowCheckout)(`${name} matches devglow/lua/devglow/palettes/${name}.lua, key for key`, () => {
     const source = readFileSync(`${DEVGLOW_PALETTES_DIRECTORY}/${name}.lua`, 'utf-8');
     const palette = PALETTES[name]!;
     for (const key of PALETTE_KEYS) {

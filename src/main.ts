@@ -28,7 +28,7 @@ import {
 } from './core/index.ts';
 import { KeyNormalizerService, KeymapService, VimEngineService } from './keys/index.ts';
 import { App } from './tui/app.tsx';
-import { buildTokens } from './tui/theme/index.ts';
+import { buildTokens, loadTheme, DEFAULT_PALETTE_NAME, ThemeSources } from './tui/theme/index.ts';
 
 const HISTORY_LIMIT = 200;
 
@@ -42,6 +42,14 @@ const main = async (): Promise<void> => {
     process.stderr.write(`${isApplicationError(error) ? error.message : String(error)}\n`);
     process.exit(1);
   }
+
+  // Resolved before the renderer exists, so the first frame already carries
+  // the right colours. A theme that does not resolve reports itself further
+  // down, once there is a store to report into.
+  const theme = loadTheme({
+    name: configuration.palette,
+    userThemeDirectory: configuration.themeDirectory,
+  });
 
   // Before anything can log: winston would otherwise claim stdout and corrupt
   // the alternate screen on the first logged error.
@@ -140,6 +148,15 @@ const main = async (): Promise<void> => {
   // that already reflect a full loadHistory rather than racing it from zero.
   const stopReceivingUpdates = updateService.start();
 
+  // Silently drawing sage when the user asked for something else is the
+  // confusing failure: they edit the theme file, see no change, and cannot
+  // tell whether tglow read it. Reported through integrityWarning rather than
+  // statusMessage for the same reason catchUp's warnings are -- only the
+  // user's own <C-l> clears it, so the first loadHistory cannot erase it.
+  if (theme.source === ThemeSources.FALLBACK) {
+    store.setState({ patch: { integrityWarning: `Theme: ${theme.reason} -- drawing ${DEFAULT_PALETTE_NAME}` } });
+  }
+
   // Ctrl-C is a binding, not an exit: the renderer's own handler tears itself
   // down and leaves the database and the client open, and in INSERT it would
   // fire on a keystroke that is meant to reach the composer. quit() below is
@@ -166,7 +183,7 @@ const main = async (): Promise<void> => {
         keyNormalizer: container.get<KeyNormalizerService>({ key: BindingKeys.KEY_NORMALIZER }),
         messageSearchService,
         timeoutMilliseconds: configuration.timeoutMilliseconds,
-        tokens: buildTokens({ paletteName: configuration.palette }),
+        tokens: buildTokens({ palette: theme.palette }),
         // Resolved from the store on every call, not from the dialog that
         // happened to be open at startup: closing over firstDialog labelled
         // every message in every other chat with the first chat's title.

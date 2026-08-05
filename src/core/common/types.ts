@@ -12,4 +12,11 @@ export interface IApplicationConfiguration {
   sessionPath: string;
   cachePath: string;
   logPath: string;
+  /**
+   * Where `palette` is looked up before the twelve built-ins, so a theme
+   * dropped in here shadows a compiled one of the same name. Alongside the
+   * config file rather than under the data directory: it is something you
+   * edit, like config.toml, not something tglow writes.
+   */
+  themeDirectory: string;
 }

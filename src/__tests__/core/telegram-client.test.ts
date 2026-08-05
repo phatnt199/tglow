@@ -17,6 +17,7 @@ const buildConfiguration = (): IApplicationConfiguration => {
     sessionPath: join(directory, 'session'),
     cachePath: join(directory, 'cache.sqlite'),
     logPath: join(directory, 'tglow.log'),
+    themeDirectory: join(directory, 'themes'),
   };
 };
 

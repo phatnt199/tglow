@@ -1,7 +1,7 @@
 import { test, expect } from 'bun:test';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { ConfigurationService } from '../../core/configuration.ts';
 
@@ -73,4 +73,21 @@ test('derived paths sit under the data directory', () => {
   expect(configuration.sessionPath).toContain('tglow');
   expect(configuration.cachePath).toContain('tglow');
   expect(configuration.logPath).toContain('tglow');
+});
+
+// Beside the config file rather than under the data directory: themes are
+// hand-edited input like config.toml itself, not state tglow writes. Deriving
+// it from the config file's own directory is what keeps a config loaded from
+// somewhere else -- a test, a second profile -- reading its themes from beside
+// itself instead of reaching back into ~/.config.
+test('the theme directory sits beside the config file that named it', () => {
+  const filePath = writeConfiguration('api_id = 1\napi_hash = "x"\n');
+  expect(service.load({ filePath }).themeDirectory).toBe(join(dirname(filePath), 'themes'));
+});
+
+test('the theme directory does not move when a palette is chosen', () => {
+  const filePath = writeConfiguration('api_id = 1\napi_hash = "x"\npalette = "mine"\n');
+  const configuration = service.load({ filePath });
+  expect(configuration.palette).toBe('mine');
+  expect(configuration.themeDirectory).toBe(join(dirname(filePath), 'themes'));
 });

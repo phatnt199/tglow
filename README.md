@@ -50,6 +50,57 @@ Everything tglow stores lives under `~/.local/share/tglow/`: the session, the
 message cache and the log. Deleting that directory logs you out and forgets the
 cache; it does not touch anything on Telegram.
 
+## Themes
+
+tglow ships the twelve [devglow](https://github.com/phatnt199/devglow) palettes:
+`sage` (the default), `ember`, `amber`, `ash`, `blush`, `dusk`, `mocha`, `moss`,
+`nocturne`, `plum`, `tide` and `vesper`. Choose one in `config.toml`:
+
+```toml
+palette = "nocturne"
+```
+
+### Writing your own
+
+Drop a `.toml` into `~/.config/tglow/themes/` and name it in `palette`. A file
+there **shadows a built-in of the same name**, so `themes/sage.toml` overrides
+the shipped sage — the same way a colorscheme in `~/.config/nvim/colors` wins
+over one from a plugin. That is how you adjust a palette without rebuilding.
+
+All seventeen keys are required, each a six-digit `#RRGGBB`. A file that is
+missing a key, carries a value that is not a colour, or cannot be parsed is
+**not applied**: tglow draws sage instead and says why on the status line.
+It never refuses to start over a theme file — a typo in one is a typo, not a
+reason to lose access to your messages. Press `<C-l>` to dismiss the notice.
+
+`~/.config/tglow/themes/midnight.toml`, with sage's own values as a worked
+example:
+
+```toml
+FOREGROUND = "#E6E6E6"   # body text
+BACKGROUND = "#080808"   # the window itself
+RED        = "#AF5F5F"   # errors, and the mode block while confirming
+GREEN      = "#87AFAF"   # inline code
+BLUE       = "#7590AF"
+ORANGE     = "#D59572"
+YELLOW     = "#E5B567"
+PINK       = "#D68C8C"   # VISUAL mode
+GOLD       = "#EBC17A"   # INSERT mode, unread counts
+TEAL       = "#7DB9B6"   # NORMAL mode, your own messages, the active chat
+SKY        = "#7EAAC7"   # links
+WINE       = "#924653"
+DARK_00    = "#111111"
+DARK_01    = "#181818"
+DARK_02    = "#282828"   # rules and borders
+DARK_03    = "#383838"   # the cursor line
+DARK_04    = "#797979"   # timestamps, gutter, anything dimmed
+```
+
+The comments name where each role is actually drawn. The six without one —
+`BLUE`, `ORANGE`, `YELLOW`, `WINE`, `DARK_00` and `DARK_01` — are still
+required, so a theme stays a complete devglow palette and keeps working when a
+later version starts using them, but nothing renders in them today.
+
 ## Run from source
 
 ```sh
