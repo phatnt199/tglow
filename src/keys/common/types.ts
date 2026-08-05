@@ -25,7 +25,18 @@ export type TOverlay = 'whichkey' | 'chatpicker' | 'search';
 export type TAction =
   | { type: typeof ActionTypes.CURSOR_MOVE; unit: TCursorUnit; delta: number }
   | { type: typeof ActionTypes.CURSOR_EDGE; unit: TCursorUnit; edge: TCursorEdge }
-  | { type: typeof ActionTypes.OPERATOR_APPLY; operator: TOperator; unit: TCursorUnit; from: number; to: number }
+  /**
+   * `register` travels on the action rather than being read off ambient engine
+   * state, because `.` has to replay it. nvim: `"add` then `.` leaves register
+   * a holding the *second* line, so the repeat wrote to a as well -- the
+   * register is part of the change, not of whatever was typed just before it.
+   * Null means "none named"; the reducer supplies its own default.
+   */
+  | {
+    type: typeof ActionTypes.OPERATOR_APPLY;
+    operator: TOperator; unit: TCursorUnit; from: number; to: number;
+    register?: string | null;
+  }
   | { type: typeof ActionTypes.REGISTER_SET; name: string }
   | { type: typeof ActionTypes.MODE_SET; mode: TVimMode }
   | { type: typeof ActionTypes.FOCUS_SET; context: TVimContext }
@@ -92,7 +103,22 @@ export interface IEngineState {
    * timing Task 5's register write already relies on ("a cancelled dd still
    * copies the message").
    */
-  lastChange: TAction[] | null;
+  lastChange: {
+    actions: TAction[];
+    /**
+     * What one unit of a fresh count is worth when `.` re-scales this change,
+     * and the only thing from/to alone cannot recover: `2dd` and `dj` both
+     * record `from 0, to 1`, and nvim scales them differently.
+     *
+     *   0  the doubled form (`dd`) -- count is a message total, so `3.` spans
+     *      three, matching `3dd`
+     *  +1  a downward motion (`dj`, `d2j`) -- count multiplies the motion, so
+     *      `3.` spans the cursor plus three, matching `3dj`
+     *  -1  an upward motion (`dk`) -- the same, running the other way, which
+     *      is what stopped `3.` after `dk` from deleting downward
+     */
+    step: number;
+  } | null;
 }
 
 export interface IKeyBinding {

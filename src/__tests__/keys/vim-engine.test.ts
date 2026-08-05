@@ -28,6 +28,12 @@ const keymap: IKeyBinding[] = [
     context: '*', mode: VimModes.NORMAL, keys: 'j', description: 'down',
     action: count => [{ type: ActionTypes.CURSOR_MOVE, unit: 'message', delta: count }],
   },
+  // The upward mirror of j, so an operator can be given a backward motion --
+  // dk is the case where a repeat's direction is even observable.
+  {
+    context: '*', mode: VimModes.NORMAL, keys: 'k', description: 'up',
+    action: count => [{ type: ActionTypes.CURSOR_MOVE, unit: 'message', delta: -count }],
+  },
   {
     context: '*', mode: VimModes.NORMAL, keys: 'gg', description: 'top',
     action: () => [{ type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'first' }],
@@ -400,7 +406,7 @@ test('dj applies delete over one message downward', () => {
   const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('d'), keymap });
   const applied = engine.resolve({ state: pending.state, key: buildKey('j'), keymap });
   expect(applied.actions).toEqual([
-    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 1 },
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 1, register: null },
   ]);
   expect(applied.state.operator).toBeNull();
 });
@@ -509,7 +515,7 @@ test('dd (doubled) targets one whole message from the cursor', () => {
   const applied = engine.resolve({ state: pending.state, key: buildKey('d'), keymap });
   expect(applied.status).toBe('resolved');
   expect(applied.actions).toEqual([
-    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0 },
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0, register: null },
   ]);
   expect(applied.state.operator).toBeNull();
 });
@@ -519,7 +525,7 @@ test('yy (doubled) targets one whole message from the cursor', () => {
   const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('y'), keymap });
   const applied = engine.resolve({ state: pending.state, key: buildKey('y'), keymap });
   expect(applied.actions).toEqual([
-    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0 },
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0, register: null },
   ]);
 });
 
@@ -528,7 +534,7 @@ test('cc (doubled) targets one whole message from the cursor', () => {
   const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('c'), keymap });
   const applied = engine.resolve({ state: pending.state, key: buildKey('c'), keymap });
   expect(applied.actions).toEqual([
-    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.CHANGE, unit: 'message', from: 0, to: 0 },
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.CHANGE, unit: 'message', from: 0, to: 0, register: null },
   ]);
 });
 
@@ -539,7 +545,7 @@ test('3dd targets three whole messages -- a count applies to the doubled form th
   state = engine.resolve({ state, key: buildKey('d'), keymap }).state;
   const applied = engine.resolve({ state, key: buildKey('d'), keymap });
   expect(applied.actions).toEqual([
-    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 2 },
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 2, register: null },
   ]);
 });
 
@@ -555,7 +561,7 @@ test('2dd means two messages, not four', () => {
   state = engine.resolve({ state, key: buildKey('d'), keymap }).state;
   const applied = engine.resolve({ state, key: buildKey('d'), keymap });
   expect(applied.actions).toEqual([
-    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 1 },
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 1, register: null },
   ]);
 });
 
@@ -645,7 +651,7 @@ test('"a survives through operator-pending and is consumed once yy actually reso
 
   const applied = engine.resolve({ state: pendingYank.state, key: buildKey('y'), keymap });
   expect(applied.actions).toEqual([
-    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0 },
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0, register: 'a' },
   ]);
   expect(applied.state.register).toBeNull();
 });
@@ -718,7 +724,7 @@ test('a count typed before the register still reaches the operator once named', 
   state = engine.resolve({ state, key: buildKey('y'), keymap }).state;
   const applied = engine.resolve({ state, key: buildKey('y'), keymap });
   expect(applied.actions).toEqual([
-    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 2 },
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 2, register: 'a' },
   ]);
 });
 
@@ -740,18 +746,26 @@ test('an operator applying via the doubled form (dd) records lastChange', () => 
   const engine = buildEngine();
   const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('d'), keymap });
   const applied = engine.resolve({ state: pending.state, key: buildKey('d'), keymap });
-  expect(applied.state.lastChange).toEqual([
-    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0 },
-  ]);
+  expect(applied.state.lastChange).toEqual({
+    // step 0: the doubled form's count is a message total.
+    step: 0,
+    actions: [
+      { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0, register: null },
+    ],
+  });
 });
 
 test('an operator applying via a motion (dj) also records lastChange', () => {
   const engine = buildEngine();
   const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('d'), keymap });
   const applied = engine.resolve({ state: pending.state, key: buildKey('j'), keymap });
-  expect(applied.state.lastChange).toEqual([
-    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 1 },
-  ]);
+  expect(applied.state.lastChange).toEqual({
+    // step +1: a downward motion, so a fresh count multiplies the motion.
+    step: 1,
+    actions: [
+      { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 1, register: null },
+    ],
+  });
 });
 
 test('. with no prior change resolves with no actions, silently', () => {
@@ -768,7 +782,7 @@ test('. after dd (doubled) re-emits the same delete', () => {
   const repeated = engine.resolve({ state, key: buildKey('.'), keymap });
   expect(repeated.status).toBe('resolved');
   expect(repeated.actions).toEqual([
-    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0 },
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0, register: null },
   ]);
 });
 
@@ -783,7 +797,7 @@ test('3. replaces the recorded count rather than multiplying it', () => {
   state = engine.resolve({ state, key: buildKey('3'), keymap }).state;
   const repeated = engine.resolve({ state, key: buildKey('.'), keymap });
   expect(repeated.actions).toEqual([
-    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 2 },
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 2, register: null },
   ]);
 });
 
@@ -798,7 +812,7 @@ test('a bare . after 3. keeps repeating with three, not the original count', () 
   state = engine.resolve({ state, key: buildKey('.'), keymap }).state;
   const again = engine.resolve({ state, key: buildKey('.'), keymap });
   expect(again.actions).toEqual([
-    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 2 },
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 2, register: null },
   ]);
 });
 
@@ -819,7 +833,7 @@ test('a cancelled operator attempt does not overwrite an existing lastChange', (
   expect(state.lastChange).toEqual(recorded);
 
   const repeated = engine.resolve({ state, key: buildKey('.'), keymap });
-  expect(repeated.actions).toEqual(recorded);
+  expect(repeated.actions).toEqual(recorded.actions);
 });
 
 test('a failed operator attempt with no prior change leaves lastChange null', () => {
@@ -853,4 +867,106 @@ test('. in insert mode is not consumed as repeat', () => {
   const insert: IEngineState = { ...state, mode: VimModes.INSERT };
   const result = engine.resolve({ state: insert, key: buildKey('.'), keymap });
   expect(result.status).toBe('unmapped');
+});
+
+// ── `.` fidelity against real vim ─────────────────────────────────────────
+//
+// Both behaviours below were checked against nvim rather than reasoned about,
+// because vim's `.` is full of near-misses. The probes, on a buffer of l1..l12
+// with the cursor on line 6:
+//
+//   6Gdd   then 3.  -> three lines go      (count lines)
+//   6G2dd  then 3.  -> three lines go      (count replaces 2, does not multiply)
+//   6Gdj   then 3.  -> four lines go       (count + 1, downward)
+//   6Gd2j  then 3.  -> four lines go       (the motion is kept, its count replaced)
+//   6Gdk   then 3.  -> four lines go, UPWARD
+//
+// So a fresh count re-scales against what the original motion stepped by, and
+// `dd` is the one shape where count means "this many messages".
+
+test('. repeats into the register the original change named, not the unnamed one', () => {
+  const engine = buildEngine();
+  let state = INITIAL_ENGINE_STATE;
+  for (const character of ['"', 'a', 'd', 'd']) {
+    state = engine.resolve({ state, key: buildKey(character), keymap }).state;
+  }
+  const repeated = engine.resolve({ state, key: buildKey('.'), keymap });
+  expect(repeated.actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0, register: 'a' },
+  ]);
+});
+
+test('a change with no register named repeats with none, leaving the reducer its default', () => {
+  const engine = buildEngine();
+  let state = INITIAL_ENGINE_STATE;
+  state = engine.resolve({ state, key: buildKey('d'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('d'), keymap }).state;
+  const repeated = engine.resolve({ state, key: buildKey('.'), keymap });
+  expect((repeated.actions[0] as { register?: string | null }).register).toBeNull();
+});
+
+// A register named for the repeat itself wins over the recorded one -- "b.
+// is a new specification, not a replay of the old.
+test('a register typed before . overrides the recorded one', () => {
+  const engine = buildEngine();
+  let state = INITIAL_ENGINE_STATE;
+  for (const character of ['"', 'a', 'd', 'd', '"', 'b']) {
+    state = engine.resolve({ state, key: buildKey(character), keymap }).state;
+  }
+  const repeated = engine.resolve({ state, key: buildKey('.'), keymap });
+  expect((repeated.actions[0] as { register?: string | null }).register).toBe('b');
+});
+
+// nvim: 6Gdk then 3. deletes four lines upward. tglow deleted three downward.
+test('3. after dk repeats upward, the direction the motion actually ran', () => {
+  const engine = buildEngine();
+  let state = INITIAL_ENGINE_STATE;
+  state = engine.resolve({ state, key: buildKey('d'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('k'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('3'), keymap }).state;
+  const repeated = engine.resolve({ state, key: buildKey('.'), keymap });
+  expect(repeated.actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: -3, to: 0, register: null },
+  ]);
+});
+
+// The downward mirror: 6Gdj then 3. takes four lines, not three -- a motion's
+// count is a multiplier on the motion, where dd's count is a line total.
+test('3. after dj spans the cursor plus three, mirroring the upward case', () => {
+  const engine = buildEngine();
+  let state = INITIAL_ENGINE_STATE;
+  state = engine.resolve({ state, key: buildKey('d'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('j'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('3'), keymap }).state;
+  const repeated = engine.resolve({ state, key: buildKey('.'), keymap });
+  expect(repeated.actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 3, register: null },
+  ]);
+});
+
+// dd keeps its own meaning: count is a message total, so 3. is three, not four.
+test('3. after dd still spans exactly three, not the cursor plus three', () => {
+  const engine = buildEngine();
+  let state = INITIAL_ENGINE_STATE;
+  state = engine.resolve({ state, key: buildKey('d'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('d'), keymap }).state;
+  state = engine.resolve({ state, key: buildKey('3'), keymap }).state;
+  const repeated = engine.resolve({ state, key: buildKey('.'), keymap });
+  expect(repeated.actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 2, register: null },
+  ]);
+});
+
+// d2j then 3. is 3dj, not 6dj: the motion survives, its count is replaced.
+test('a counted motion keeps its motion and replaces its count on repeat', () => {
+  const engine = buildEngine();
+  let state = INITIAL_ENGINE_STATE;
+  for (const character of ['d', '2', 'j']) {
+    state = engine.resolve({ state, key: buildKey(character), keymap }).state;
+  }
+  state = engine.resolve({ state, key: buildKey('3'), keymap }).state;
+  const repeated = engine.resolve({ state, key: buildKey('.'), keymap });
+  expect(repeated.actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 3, register: null },
+  ]);
 });

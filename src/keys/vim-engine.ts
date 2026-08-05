@@ -96,10 +96,12 @@ export class VimEngineService {
    * points so they cannot drift on what "an operator applied" means, the same
    * reason isMessagesNormalMode is shared rather than copied per Task 5.
    */
-  private recordChange = (opts: { state: IEngineState; actions: TAction[] }): IEngineState => {
-    const { state, actions } = opts;
+  private recordChange = (opts: { state: IEngineState; actions: TAction[]; step?: number }): IEngineState => {
+    const { state, actions, step } = opts;
     const applied = actions.some(action => action.type === ActionTypes.OPERATOR_APPLY);
-    return applied ? { ...state, lastChange: actions } : state;
+    // Defaults to 0 -- the doubled form's own meaning -- for the keymap-driven
+    // commit point (dd via applyStateActions), which names no motion.
+    return applied ? { ...state, lastChange: { actions, step: step ?? 0 } } : state;
   };
 
   private applyStateActions = (opts: { state: IEngineState; binding: IKeyBinding; count: number }): {
@@ -107,7 +109,16 @@ export class VimEngineService {
     actions: IResolveResult['actions'];
   } => {
     const { binding, count } = opts;
-    const actions = binding.action(count);
+    // A binding's own action() knows nothing about registers, so the pending
+    // name is stamped on here. Without it `dd` -- which is a real keymap
+    // binding, not the intrinsic doubled form the engine's own branch handles
+    // -- would record a lastChange carrying no register, and `"add` then `.`
+    // would fall back to the unnamed one. The original `"add` still worked
+    // either way, because the reducer can read the name off ambient engine
+    // state; only the repeat, which has nothing typed before it, could not.
+    const actions = binding.action(count).map(action => (
+      action.type === ActionTypes.OPERATOR_APPLY ? { ...action, register: opts.state.register } : action
+    ));
     // Resolving any binding consumes whatever sequence was being assembled
     // toward it -- pending/count already worked this way; register (M1b-2
     // Task 5) joins them for the same reason: a name survives only through
@@ -270,11 +281,16 @@ export class VimEngineService {
     // reset lands (app.tsx's commitResolution), so clearing it here does not
     // race the read.
     if (OPERATOR_TRIGGERS[token] === operator) {
-      const actions: TAction[] = [{ type: ActionTypes.OPERATOR_APPLY, operator, unit: 'message', from: 0, to: count - 1 }];
+      const actions: TAction[] = [{
+        type: ActionTypes.OPERATOR_APPLY, operator, unit: 'message', from: 0, to: count - 1,
+        register: state.register,
+      }];
       return {
+        // step 0: dd's count is a message total, so `3.` spans three.
         state: this.recordChange({
           state: { ...state, operator: null, operatorCount: null, pending: [], count: null, register: null },
           actions,
+          step: 0,
         }),
         actions,
         status: 'resolved',
@@ -298,11 +314,17 @@ export class VimEngineService {
     // through the cursor rather than the cursor down to nothing.
     const from = Math.min(0, motion.delta);
     const to = Math.max(0, motion.delta);
-    const actions: TAction[] = [{ type: ActionTypes.OPERATOR_APPLY, operator, unit: motion.unit, from, to }];
+    const actions: TAction[] = [{
+      type: ActionTypes.OPERATOR_APPLY, operator, unit: motion.unit, from, to,
+      register: state.register,
+    }];
     return {
+      // The motion's direction, not its magnitude: d2j and dj both step +1, so
+      // `3.` after either is 3dj. The count is replaced, the motion kept.
       state: this.recordChange({
         state: { ...state, operator: null, operatorCount: null, pending: [], count: null, register: null },
         actions,
+        step: Math.sign(motion.delta),
       }),
       actions,
       status: 'resolved',
@@ -321,12 +343,22 @@ export class VimEngineService {
    * Only from/to change: a motion's own direction (dk's upward range, say)
    * is not reconstructed, deliberately -- see task-7-report.md.
    */
-  private substituteCount = (opts: { actions: TAction[]; count: number }): TAction[] => {
-    const { actions, count } = opts;
+  private substituteCount = (opts: { actions: TAction[]; count: number; step: number }): TAction[] => {
+    const { actions, count, step } = opts;
     return actions.map(action => {
       if (action.type !== ActionTypes.OPERATOR_APPLY) {
         return action;
       }
+      // Upward: the range runs from `count` above the cursor down to it, so
+      // `3.` after dk spans four messages the way nvim's own 3dk does.
+      if (step < 0) {
+        return { ...action, from: -count, to: 0 };
+      }
+      // Downward: the cursor plus `count` more, mirroring the above.
+      if (step > 0) {
+        return { ...action, from: 0, to: count };
+      }
+      // The doubled form: count is the message total itself.
       return { ...action, from: 0, to: count - 1 };
     });
   };
@@ -355,11 +387,23 @@ export class VimEngineService {
       return { state: resetState, actions: [], status: 'resolved' };
     }
 
-    const actions = state.count === null
-      ? state.lastChange
-      : this.substituteCount({ actions: state.lastChange, count: state.count });
+    const { actions: recorded, step } = state.lastChange;
+    const counted = state.count === null
+      ? recorded
+      : this.substituteCount({ actions: recorded, count: state.count, step });
 
-    return { state: { ...resetState, lastChange: actions }, actions, status: 'resolved' };
+    // A register named for the repeat itself wins: `"b.` is a new
+    // specification, not a replay of the old one. With none typed, the
+    // recorded name rides along on the action -- nvim replays it, so `"add`
+    // then `.` writes to a again rather than falling back to the unnamed
+    // register.
+    const actions = state.register === null
+      ? counted
+      : counted.map(action => (
+        action.type === ActionTypes.OPERATOR_APPLY ? { ...action, register: state.register } : action
+      ));
+
+    return { state: { ...resetState, lastChange: { actions, step } }, actions, status: 'resolved' };
   };
 
   resolve = (opts: { state: IEngineState; key: IKey; keymap: IKeyBinding[] }): IResolveResult => {

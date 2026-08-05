@@ -37,32 +37,48 @@ Nothing may be marked done until every row is accounted for.
 | **`pts` gap recovery — private chats and basic groups** | | **✅** | |
 | **`pts` gap recovery — channels and supergroups** | | ❌ outstanding | |
 | **`pts` gap recovery — non-message updates** | | ❌ outstanding | |
-| **vim operators, registers, `.` repeat** | | | **⚠️ mostly** |
+| **vim operators, registers, `.` repeat** | | | **✅** |
 | **`<C-p>` fuzzy chat jump** | | | **✅** |
 | **`/` incremental search over cached history** | | | **✅** |
 | **remaining 10 devglow palettes** | | | **✅** |
 | **user-defined themes** (§4.4 says "a later milestone") | | | **✅ early** |
 
-> **What the operators row is missing.** Marked ⚠️ rather than ✅ deliberately:
-> the same overstatement the `pts` row above was corrected for. Operators
-> compose with motions and counts (`d3j`, `y}`), registers work including `"+`
-> through OSC 52, and `.` repeats. Of the three gaps carried through the M1b-2
-> reviews, one is now closed and two remain:
+> **The operators row, and the three gaps that once qualified it.** It was ⚠️
+> through most of M1b-2 — the same overstatement the `pts` row above was
+> corrected for — because three defects were carried through the reviews. All
+> three are now closed:
 >
-> - ~~**`3dd` deletes one message, not three.**~~ **Delivered.** The range is
->   honoured end to end: the confirmation names every message it will delete and
->   counts them ("Delete 3 messages?"), the register takes the whole range
->   joined the way a ranged yank joins one, and it goes as a single
->   `deleteMessages` call rather than one per message. `revoke` is one flag per
->   call while ownership is per message, so a range covering both your messages
->   and theirs splits into two calls — and if only one lands, the cache loses
->   exactly what left the server and the status line says "Deleted 2 of 3"
->   rather than claiming the range went.
-> - **`.` always writes the unnamed register,** ignoring a preceding `"x`.
-> - **A fresh count on `.` discards the original motion's direction** — `3.`
->   after `dk` deletes downward.
+> - **`3dd` deleted one message, not three.** The range is honoured end to end
+>   now: the confirmation names every message it will delete and counts them
+>   ("Delete 3 messages?"), the register takes the whole range joined the way a
+>   ranged yank joins one, and it goes as a single `deleteMessages` call rather
+>   than one per message. `revoke` is one flag per call while ownership is per
+>   message, so a range covering both your messages and theirs splits into two
+>   calls — and if only one lands, the cache loses exactly what left the server
+>   and the status line says "Deleted 2 of 3" rather than claiming the range went.
+> - **`.` always wrote the unnamed register,** ignoring a preceding `"x`. The
+>   register travels on the OPERATOR_APPLY action now rather than being read off
+>   ambient engine state, which is what lets a replay carry it: by the time `.`
+>   resolves, nothing has been typed before it. `"b.` still wins over the
+>   recorded name — that is a new specification, not a replay.
+> - **A fresh count on `.` discarded the original motion's direction.** The
+>   recorded change now carries the motion's per-count step, which is the one
+>   thing `from`/`to` cannot recover: `2dd` and `dj` both record `from 0, to 1`,
+>   and nvim scales them differently.
 >
-> `<C-p>`, `/` and the palettes carry no such qualification.
+> **Checked against nvim, not reasoned about.** On a buffer of `l1..l12` with
+> the cursor on line 6:
+>
+> | typed | then | lines removed |
+> | --- | --- | --- |
+> | `dd` | `3.` | 3 (count is a message total) |
+> | `2dd` | `3.` | 3 (the count replaces 2, it does not multiply) |
+> | `dj` | `3.` | 4 (count multiplies the motion) |
+> | `d2j` | `3.` | 4 (the motion survives, its count is replaced) |
+> | `dk` | `3.` | 4, **upward** |
+>
+> and `"add` then `.` leaves register `a` holding the *second* line, proving the
+> repeat wrote to `a` rather than falling back to the unnamed register.
 
 M1b-1 is the message layer — what you hit reading and answering. M1b-2 is the
 editor layer. **This document specs both; only M1b-1 is planned now.**

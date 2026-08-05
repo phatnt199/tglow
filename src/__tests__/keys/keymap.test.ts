@@ -177,7 +177,7 @@ test('dd asks to delete the message under the cursor', () => {
   // the reducer's OPERATOR_APPLY case still asks for confirmation before
   // deleting anything (action-reducer.ts, action-reducer.test.ts).
   expect(engine.resolve({ state: pending.state, key: buildKey('d'), keymap }).actions).toEqual([
-    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0 },
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0, register: null },
   ]);
 });
 
@@ -193,7 +193,7 @@ test('3dd asks to delete three messages, in one OPERATOR_APPLY', () => {
   const pending = engine.resolve({ state, key: buildKey('d'), keymap });
   expect(pending.status).toBe('ambiguous');
   expect(engine.resolve({ state: pending.state, key: buildKey('d'), keymap }).actions).toEqual([
-    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 2 },
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 2, register: null },
   ]);
 });
 
@@ -226,7 +226,7 @@ test('yy against the real keymap yanks the message under the cursor', () => {
   expect(pending.status).toBe('pending');
   expect(pending.state.operator).toBe(Operators.YANK);
   expect(engine.resolve({ state: pending.state, key: buildKey('y'), keymap }).actions).toEqual([
-    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0 },
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0, register: null },
   ]);
 });
 
@@ -236,7 +236,7 @@ test('cc against the real keymap targets the message under the cursor for change
   const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('c'), keymap });
   expect(pending.state.operator).toBe(Operators.CHANGE);
   expect(engine.resolve({ state: pending.state, key: buildKey('c'), keymap }).actions).toEqual([
-    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.CHANGE, unit: 'message', from: 0, to: 0 },
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.CHANGE, unit: 'message', from: 0, to: 0, register: null },
   ]);
 });
 
@@ -267,7 +267,7 @@ test('"ayy against the real keymap names register a, then yanks the message unde
   state = engine.resolve({ state, key: buildKey('y'), keymap }).state;
   const applied = engine.resolve({ state, key: buildKey('y'), keymap });
   expect(applied.actions).toEqual([
-    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0 },
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.YANK, unit: 'message', from: 0, to: 0, register: 'a' },
   ]);
 });
 
@@ -313,7 +313,7 @@ test('d then a real motion resolves immediately as an operator application, not 
   const applied = engine.resolve({ state: pending.state, key: buildKey('j'), keymap });
   expect(applied.status).toBe('resolved');
   expect(applied.actions).toEqual([
-    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 1 },
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 1, register: null },
   ]);
 });
 
@@ -336,13 +336,13 @@ test('. against the real keymap repeats dd', () => {
   expect(pending.status).toBe('ambiguous');
   const applied = engine.resolve({ state: pending.state, key: buildKey('d'), keymap });
   expect(applied.actions).toEqual([
-    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0 },
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0, register: null },
   ]);
 
   const repeated = engine.resolve({ state: applied.state, key: buildKey('.'), keymap });
   expect(repeated.status).toBe('resolved');
   expect(repeated.actions).toEqual([
-    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0 },
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0, register: null },
   ]);
 });
 
@@ -680,4 +680,42 @@ test('every intrinsic key which-key advertises is one the engine actually acts o
     }
     expect(status, `the engine acts on ${keys}`).not.toBe('unmapped');
   }
+});
+
+// dd is a real keymap binding, not the intrinsic doubled form the engine's own
+// branch handles -- so it records lastChange through applyStateActions, a
+// different code path with a different chance of dropping the register. The
+// vim-engine tests cannot see this: their keymap has no dd, so `"add` there
+// goes through the intrinsic branch instead and passes either way. This is the
+// path a real key press actually takes.
+test('"add against the real keymap records the register, so . replays into it', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+  let state = INITIAL_ENGINE_STATE;
+  for (const character of ['"', 'a', 'd', 'd']) {
+    state = engine.resolve({ state, key: buildKey(character), keymap }).state;
+  }
+
+  const repeated = engine.resolve({ state, key: buildKey('.'), keymap });
+
+  expect(repeated.actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: 0, to: 0, register: 'a' },
+  ]);
+});
+
+// nvim: 6Gdk then 3. deletes four lines upward. Driven against the real keymap
+// because that is where k is actually bound to a negative delta.
+test('3. after dk against the real keymap repeats upward', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+  let state = INITIAL_ENGINE_STATE;
+  for (const character of ['d', 'k', '3']) {
+    state = engine.resolve({ state, key: buildKey(character), keymap }).state;
+  }
+
+  const repeated = engine.resolve({ state, key: buildKey('.'), keymap });
+
+  expect(repeated.actions).toEqual([
+    { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: -3, to: 0, register: null },
+  ]);
 });

@@ -130,7 +130,13 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
           // one vim already answers, and a local copy costs nothing to keep.
           // The whole range, joined the way a ranged yank joins one: vim's
           // `3dd` puts three lines in the unnamed register, not the first.
-          const name = state.engine.register ?? UNNAMED_REGISTER;
+          //
+          // The action's own register wins over ambient engine state, which is
+          // what makes `.` replay the name the original change used: by the
+          // time a repeat resolves, nothing has been typed before it, so
+          // state.engine.register is null. Falls back to the engine for the
+          // keymap-driven `dd`, whose action carries no register at all.
+          const name = action.register ?? state.engine.register ?? UNNAMED_REGISTER;
           return {
             ...requested,
             registers: { ...state.registers, [name]: targeted.map(message => message.text).join('\n') },
@@ -160,7 +166,7 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
             return {};
           }
           const label = targeted.length === 1 ? '1 message' : `${targeted.length} messages`;
-          const name = state.engine.register ?? UNNAMED_REGISTER;
+          const name = action.register ?? state.engine.register ?? UNNAMED_REGISTER;
           return {
             registers: { ...state.registers, [name]: targeted.map(message => message.text).join('\n') },
             statusMessage: `Yanked ${label}`,
