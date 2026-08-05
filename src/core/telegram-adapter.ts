@@ -7,7 +7,7 @@ import type { NewMessageEvent } from 'teleproto/events';
 import { EntityKinds, type ITelegramEntity, type TEntityKind } from './common/index.ts';
 import type { IDialogAdapter, IRawDialog } from './dialog-service.ts';
 import type { IDifferenceAdapter, IDifferenceResult } from './difference-service.ts';
-import type { ILiveMessage, IMessageAdapter, IRawMessage, IReadReceipt } from './message-service.ts';
+import { ReadDirections, type ILiveMessage, type IMessageAdapter, type IRawMessage, type IReadReceipt } from './message-service.ts';
 import type { IUpdateState } from './update-state.ts';
 
 const DIALOG_FETCH_LIMIT = 100;
@@ -298,6 +298,8 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
         subscribeOpts.onReadReceipt({
           peerId: utils.getPeerId(update.peer, false),
           maxId: update.maxId,
+          direction: ReadDirections.OUTBOX,
+          stillUnreadCount: null,
         });
         return;
       }
@@ -306,6 +308,32 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
         subscribeOpts.onReadReceipt({
           peerId: String(update.channelId),
           maxId: update.maxId,
+          direction: ReadDirections.OUTBOX,
+          stillUnreadCount: null,
+        });
+        return;
+      }
+
+      // The inbox pair: this account read the chat somewhere else. Both carry
+      // the server's own stillUnreadCount, which is what the badge becomes --
+      // tglow cannot compute it locally, since it does not know how many of
+      // the messages below maxId it had counted in the first place.
+      if (update instanceof Api.UpdateReadHistoryInbox) {
+        subscribeOpts.onReadReceipt({
+          peerId: utils.getPeerId(update.peer, false),
+          maxId: update.maxId,
+          direction: ReadDirections.INBOX,
+          stillUnreadCount: update.stillUnreadCount,
+        });
+        return;
+      }
+
+      if (update instanceof Api.UpdateReadChannelInbox) {
+        subscribeOpts.onReadReceipt({
+          peerId: String(update.channelId),
+          maxId: update.maxId,
+          direction: ReadDirections.INBOX,
+          stillUnreadCount: update.stillUnreadCount,
         });
       }
     };

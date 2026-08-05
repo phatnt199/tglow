@@ -4,7 +4,7 @@ import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
 import { BindingKeys } from '../common/index.ts';
 import type { ApplicationStoreService, IApplicationState } from './application-store.ts';
 import type { DatabaseService, IMessageRow } from './cache/index.ts';
-import type { ILiveMessage, IMessageAdapter, IRawMessage, IReadReceipt } from './message-service.ts';
+import { ReadDirections, type ILiveMessage, type IMessageAdapter, type IRawMessage, type IReadReceipt } from './message-service.ts';
 import { advanceUpdateState } from './update-state.ts';
 
 // Mirrors MessageService's SEND_REFRESH_LIMIT and main.ts's HISTORY_LIMIT: the
@@ -191,6 +191,20 @@ export class UpdateService {
    */
   private readReceipt = (receipt: IReadReceipt): void => {
     try {
+      if (receipt.direction === ReadDirections.INBOX) {
+        // Read somewhere else -- the phone, the desktop app. Nothing about the
+        // messages changed; the badge did, and a badge still advertising
+        // messages the user already read on their phone is the whole reason
+        // this exists.
+        this._database.advanceReadInboxMaxId({
+          peerId: receipt.peerId,
+          maxId: receipt.maxId,
+          unreadCount: receipt.stillUnreadCount ?? 0,
+        });
+        this._store.setState({ patch: { dialogs: this._database.listDialogs() } });
+        return;
+      }
+
       this._database.advanceReadOutboxMaxId({ peerId: receipt.peerId, maxId: receipt.maxId });
       // The ticks read from the dialog row (app.tsx passes activeDialog's
       // readOutboxMaxId into MessageView), so republishing the dialog list is

@@ -221,6 +221,24 @@ export class DatabaseService {
       .run();
   };
 
+  /**
+   * The inbox mirror of advanceReadOutboxMaxId, and the reason tglow's badge
+   * follows a chat read on another device. Monotonic in SQL for the same
+   * reason: read updates carry no ordering guarantee.
+   *
+   * unreadCount is written from the server's own stillUnreadCount rather than
+   * computed. tglow cannot derive it -- it does not know how many of the
+   * messages at or below maxId it had ever counted -- and the one number
+   * Telegram sends is authoritative for every device.
+   */
+  advanceReadInboxMaxId = (opts: { peerId: string; maxId: number; unreadCount: number }): void => {
+    this.require('advanceReadInboxMaxId')
+      .update(dialogs)
+      .set({ readInboxMaxId: opts.maxId, unreadCount: opts.unreadCount })
+      .where(and(eq(dialogs.peerId, opts.peerId), lt(dialogs.readInboxMaxId, opts.maxId)))
+      .run();
+  };
+
   listDialogs = (): IDialogRow[] => {
     return this.require('listDialogs')
       .select({

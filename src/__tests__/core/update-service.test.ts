@@ -4,7 +4,7 @@ import { Api } from 'teleproto';
 
 import { ApplicationStoreService } from '../../core/application-store.ts';
 import { DatabaseService, type IMessageRow } from '../../core/cache/index.ts';
-import type { ILiveMessage, IMessageAdapter, IRawMessage, IReadReceipt } from '../../core/message-service.ts';
+import { ReadDirections, type ILiveMessage, type IMessageAdapter, type IRawMessage, type IReadReceipt } from '../../core/message-service.ts';
 import { buildMessageAdapter } from '../../core/telegram-adapter.ts';
 import { MessageOrigins, UpdateService } from '../../core/update-service.ts';
 
@@ -337,7 +337,7 @@ test('a read receipt advances the chat readOutboxMaxId, so the ticks turn read',
   database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 9, readOutboxMaxId: 3 });
   service.start();
 
-  emitReadReceipt({ peerId: 'u1', maxId: 9 });
+  emitReadReceipt({ peerId: 'u1', maxId: 9, direction: ReadDirections.OUTBOX, stillUnreadCount: null });
 
   expect(database.listDialogs().find(dialog => dialog.peerId === 'u1')?.readOutboxMaxId).toBe(9);
   database.close();
@@ -352,7 +352,7 @@ test('a read receipt republishes the dialogs, which is what redraws the ticks', 
   store.setState({ patch: { dialogs: database.listDialogs() } });
   service.start();
 
-  emitReadReceipt({ peerId: 'u1', maxId: 9 });
+  emitReadReceipt({ peerId: 'u1', maxId: 9, direction: ReadDirections.OUTBOX, stillUnreadCount: null });
 
   expect(store.getState().dialogs.find(dialog => dialog.peerId === 'u1')?.readOutboxMaxId).toBe(9);
   database.close();
@@ -366,7 +366,7 @@ test('a receipt with a lower maxId than one already applied does not walk the ti
   database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 9, readOutboxMaxId: 9 });
   service.start();
 
-  emitReadReceipt({ peerId: 'u1', maxId: 4 });
+  emitReadReceipt({ peerId: 'u1', maxId: 4, direction: ReadDirections.OUTBOX, stillUnreadCount: null });
 
   expect(database.listDialogs().find(dialog => dialog.peerId === 'u1')?.readOutboxMaxId).toBe(9);
   database.close();
@@ -380,7 +380,7 @@ test('a receipt for a chat with no dialog row is a no-op, not a phantom chat', (
   const { service, database } = buildService(adapter);
   service.start();
 
-  emitReadReceipt({ peerId: 'u2', maxId: 5 });
+  emitReadReceipt({ peerId: 'u2', maxId: 5, direction: ReadDirections.OUTBOX, stillUnreadCount: null });
 
   expect(database.listDialogs()).toEqual([]);
   database.close();
@@ -410,7 +410,9 @@ test('a private-chat read receipt derives the unmarked peer id from its Peer', (
     peer: new Api.PeerUser({ userId: BigInt(4242) as any }), maxId: 17, pts: 5, ptsCount: 1,
   }));
 
-  expect(received).toEqual([{ peerId: '4242', maxId: 17 }]);
+  expect(received).toEqual([
+    { peerId: '4242', maxId: 17, direction: ReadDirections.OUTBOX, stillUnreadCount: null },
+  ]);
 });
 
 test('a channel read receipt reads its bare channelId, which is already unmarked', () => {
@@ -420,12 +422,16 @@ test('a channel read receipt reads its bare channelId, which is already unmarked
 
   fire(new Api.UpdateReadChannelOutbox({ channelId: BigInt(777) as any, maxId: 30 }));
 
-  expect(received).toEqual([{ peerId: '777', maxId: 30 }]);
+  expect(received).toEqual([
+    { peerId: '777', maxId: 30, direction: ReadDirections.OUTBOX, stillUnreadCount: null },
+  ]);
 });
 
-// The inbox pair says what THIS account has read elsewhere. Treating one as an
-// outbox receipt would mark your own messages seen because you read theirs.
-test('an inbox read update is ignored -- it is not a receipt for your own messages', () => {
+// The inbox pair says what THIS account read elsewhere -- the phone, the
+// desktop app. It reaches the subscriber, but tagged as its own direction:
+// treating one as an outbox receipt would mark your own messages seen because
+// you read theirs.
+test('an inbox read update arrives tagged inbox, carrying the server-side unread count', () => {
   const { client, fire } = buildSubscribedClient();
   const received: IReadReceipt[] = [];
   buildMessageAdapter({ client }).subscribeToReadReceipts({ onReadReceipt: receipt => { received.push(receipt); } });
@@ -434,5 +440,90 @@ test('an inbox read update is ignored -- it is not a receipt for your own messag
     peer: new Api.PeerUser({ userId: BigInt(4242) as any }), maxId: 17, stillUnreadCount: 2, pts: 5, ptsCount: 1,
   }));
 
-  expect(received).toEqual([]);
+  expect(received).toEqual([
+    { peerId: '4242', maxId: 17, direction: ReadDirections.INBOX, stillUnreadCount: 2 },
+  ]);
+});
+
+test('a channel inbox read reads its bare channelId, like its outbox twin', () => {
+  const { client, fire } = buildSubscribedClient();
+  const received: IReadReceipt[] = [];
+  buildMessageAdapter({ client }).subscribeToReadReceipts({ onReadReceipt: receipt => { received.push(receipt); } });
+
+  fire(new Api.UpdateReadChannelInbox({ channelId: BigInt(777) as any, maxId: 30, stillUnreadCount: 5, pts: 2 }));
+
+  expect(received).toEqual([
+    { peerId: '777', maxId: 30, direction: ReadDirections.INBOX, stillUnreadCount: 5 },
+  ]);
+});
+
+// The point of the whole inbox direction: read the chat on your phone, and the
+// badge in tglow stops advertising messages you have already seen.
+test('reading a chat elsewhere clears its unread badge here', () => {
+  const { adapter, emitReadReceipt } = buildAdapter();
+  const { service, database, store } = buildService(adapter);
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 7, lastMessageAt: 100, topMessageId: 9, readOutboxMaxId: 0 });
+  store.setState({ patch: { dialogs: database.listDialogs() } });
+  service.start();
+
+  emitReadReceipt({ peerId: 'u1', maxId: 9, direction: ReadDirections.INBOX, stillUnreadCount: 0 });
+
+  expect(database.listDialogs().find(dialog => dialog.peerId === 'u1')?.unreadCount).toBe(0);
+  expect(store.getState().dialogs.find(dialog => dialog.peerId === 'u1')?.unreadCount).toBe(0);
+  database.close();
+});
+
+// Partly read elsewhere: the server's own figure is taken rather than zeroed,
+// because tglow cannot know how many of the messages below maxId it counted.
+test('a partial read elsewhere takes the server count rather than clearing the badge', () => {
+  const { adapter, emitReadReceipt } = buildAdapter();
+  const { service, database } = buildService(adapter);
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 7, lastMessageAt: 100, topMessageId: 9, readOutboxMaxId: 0 });
+  service.start();
+
+  emitReadReceipt({ peerId: 'u1', maxId: 5, direction: ReadDirections.INBOX, stillUnreadCount: 3 });
+
+  expect(database.listDialogs().find(dialog => dialog.peerId === 'u1')?.unreadCount).toBe(3);
+  database.close();
+});
+
+// An inbox read says nothing about whether THEY have seen YOUR messages.
+test('an inbox read leaves the outbox ticks alone', () => {
+  const { adapter, emitReadReceipt } = buildAdapter();
+  const { service, database } = buildService(adapter);
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 7, lastMessageAt: 100, topMessageId: 9, readOutboxMaxId: 4 });
+  service.start();
+
+  emitReadReceipt({ peerId: 'u1', maxId: 9, direction: ReadDirections.INBOX, stillUnreadCount: 0 });
+
+  expect(database.listDialogs().find(dialog => dialog.peerId === 'u1')?.readOutboxMaxId).toBe(4);
+  database.close();
+});
+
+// And the mirror: a receipt for your own messages must not silently clear a
+// badge counting theirs.
+test('an outbox receipt leaves the unread badge alone', () => {
+  const { adapter, emitReadReceipt } = buildAdapter();
+  const { service, database } = buildService(adapter);
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 7, lastMessageAt: 100, topMessageId: 9, readOutboxMaxId: 0 });
+  service.start();
+
+  emitReadReceipt({ peerId: 'u1', maxId: 9, direction: ReadDirections.OUTBOX, stillUnreadCount: null });
+
+  expect(database.listDialogs().find(dialog => dialog.peerId === 'u1')?.unreadCount).toBe(7);
+  database.close();
+});
+
+// Out-of-order inbox reads must not re-raise a badge that already cleared.
+test('an inbox read older than one already applied does not resurrect the badge', () => {
+  const { adapter, emitReadReceipt } = buildAdapter();
+  const { service, database } = buildService(adapter);
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 7, lastMessageAt: 100, topMessageId: 9, readOutboxMaxId: 0 });
+  service.start();
+
+  emitReadReceipt({ peerId: 'u1', maxId: 9, direction: ReadDirections.INBOX, stillUnreadCount: 0 });
+  emitReadReceipt({ peerId: 'u1', maxId: 4, direction: ReadDirections.INBOX, stillUnreadCount: 5 });
+
+  expect(database.listDialogs().find(dialog => dialog.peerId === 'u1')?.unreadCount).toBe(0);
+  database.close();
 });

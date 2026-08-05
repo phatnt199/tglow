@@ -40,18 +40,36 @@ export interface ILiveMessage {
   pts: number | null;
 }
 
-/**
- * The other side read this chat up to and including `maxId`. Every own message
- * at or below it has been seen, which is exactly what MessageView's second tick
- * means -- see resolveTick in tui/panes/message-view.tsx.
- *
- * Only the outbox direction is modelled: the inbox equivalent says what *this*
- * account has read elsewhere, which tglow already tracks through its own
- * markRead and unread count.
- */
+export class ReadDirections {
+  /**
+   * The other side read this chat up to `maxId`. Every own message at or below
+   * it has been seen -- exactly what MessageView's second tick means (see
+   * resolveTick in tui/panes/message-view.tsx).
+   */
+  static readonly OUTBOX = 'outbox';
+  /**
+   * *This* account read the chat up to `maxId`, somewhere else -- the phone,
+   * the desktop app, another terminal. Nothing about the messages changed; what
+   * changed is how many of them are still unread, so tglow's badge has to
+   * follow or it keeps advertising messages the user has already read.
+   */
+  static readonly INBOX = 'inbox';
+}
+
+export type TReadDirection = (typeof ReadDirections)[Exclude<keyof typeof ReadDirections, 'prototype'>];
+
 export interface IReadReceipt {
   peerId: string;
   maxId: number;
+  direction: TReadDirection;
+  /**
+   * The server's own count of what is still unread, carried only by an inbox
+   * update (`UpdateReadHistoryInbox.stillUnreadCount`). Authoritative, and
+   * better than subtracting locally: tglow cannot know how many of the
+   * messages below `maxId` it had actually counted. Null on the outbox
+   * direction, which says nothing about unread state.
+   */
+  stillUnreadCount: number | null;
 }
 
 export interface IMessageAdapter {
