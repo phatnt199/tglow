@@ -86,12 +86,15 @@ export interface IAppProps {
 
 const SIDEBAR_WIDTH = 22;
 /**
- * The composer's prompt, then the status line. Two, not three: the composer's
- * own rule went when M2's frame gained a bottom edge to sit above it, and this
- * has to move in lockstep with composer.tsx or the panes lose a row to
- * something that no longer draws in it.
+ * The composer now lives inside the right pane, beneath the conversation it
+ * writes into, rather than spanning the window under both panes. These are its
+ * rows, taken out of the message view -- and they must stay in lockstep with
+ * what composer.tsx actually renders, or the right column is given more rows of
+ * children than it has room for and they overdraw each other.
  */
-const CHROME_HEIGHT = 2;
+const COMPOSER_RULE_HEIGHT = 1;
+const COMPOSER_PROMPT_HEIGHT = 1;
+const COMPOSER_RULE = '─';
 /** The status line is always exactly one row, whichever chrome sits above it. */
 const STATUS_LINE_HEIGHT = 1;
 /** Composer grows by exactly this many rows while a reply is pending -- see the comment on chromeHeight below. */
@@ -905,19 +908,35 @@ export const App = (props: IAppProps) => {
   // either of those two, its own row count (SEARCH_OVERLAY_HEIGHT) is a
   // constant, not something to compute from state first, since it never
   // grows a results list of its own.
+  // Below the frame there is now only the status line, plus whichever overlay
+  // is open. The composer moved inside the right pane, so it no longer takes
+  // rows from here -- it takes them from the message view instead, further
+  // down. An overlay still replaces it outright: Composer is not rendered at
+  // all while one is open.
+  const isOverlayOpen = isChatPickerOpen || isWhichKeyOpen || isSearchOpen;
   const chromeHeight = isChatPickerOpen
     ? resolveChatPickerHeight({ resultCount: chatPickerResults.length }) + STATUS_LINE_HEIGHT
     : isWhichKeyOpen
       ? resolveWhichKeyHeight({ bindingCount: whichKeyBindings.length, width }) + STATUS_LINE_HEIGHT
       : isSearchOpen
         ? SEARCH_OVERLAY_HEIGHT + STATUS_LINE_HEIGHT
-        : CHROME_HEIGHT + (replyingTo !== null ? REPLY_PREVIEW_HEIGHT : 0) + (isEditing ? EDIT_INDICATOR_HEIGHT : 0);
+        : STATUS_LINE_HEIGHT;
   // The frame's two edge rows come out of the pane height, and its three
   // columns out of the pane widths. Getting either wrong is how a wrapped line
   // ends up drawn over its own border -- M1a's interleaved-text report in a
   // new place, which is why pane-frame.ts owns the arithmetic and is tested on
   // its own.
   const paneHeight = Math.max(1, height - chromeHeight - FRAME_VERTICAL_COST);
+  // The composer's own rows, now taken out of the right pane rather than out
+  // of the window. Its rule counts too, and this must stay in lockstep with
+  // what Composer actually renders -- the same invariant its own doc comment
+  // has always carried, just measured against a different container.
+  const composerHeight = isOverlayOpen
+    ? 0
+    : COMPOSER_RULE_HEIGHT + COMPOSER_PROMPT_HEIGHT
+      + (replyingTo !== null ? REPLY_PREVIEW_HEIGHT : 0)
+      + (isEditing ? EDIT_INDICATOR_HEIGHT : 0);
+  const messageHeight = Math.max(1, paneHeight - composerHeight);
   const paneWidths = resolvePaneWidths({ width, sidebarWidth: SIDEBAR_WIDTH, minimumPane: MINIMUM_PANE_WIDTH });
   const chatListFocused = state.engine.context === VimContexts.CHAT_LIST;
   // The focused pane's frame, not both: which pane has focus was previously
@@ -948,17 +967,46 @@ export const App = (props: IAppProps) => {
 
         <FrameColumn height={paneHeight} colour={frameColour} />
 
-        <MessageView
-          messages={state.messages}
-          cursor={state.messageCursor}
-          focused={state.engine.context === VimContexts.MESSAGES}
-          tokens={tokens}
-          width={paneWidths.messages}
-          height={paneHeight}
-          resolveSenderName={resolveSenderName}
-          revealedSpoilers={state.revealedSpoilers}
-          readOutboxMaxId={activeDialog?.readOutboxMaxId ?? 0}
-        />
+        {/* The right column: conversation, a rule, then the composer beneath
+            it. The composer belongs to the chat it writes into, so it stops
+            where the chat does rather than running under the chat list -- the
+            shape every graphical Telegram client uses, and the one the owner
+            asked for. The chat list keeps its full height beside it.
+
+            Each column of the row renders its own rows independently, so this
+            nests without disturbing the frame: the chat list still draws
+            paneHeight rows on the left while these draw paneHeight rows on the
+            right. */}
+        <box flexDirection="column" width={paneWidths.messages} height={paneHeight} flexShrink={0}>
+          <MessageView
+            messages={state.messages}
+            cursor={state.messageCursor}
+            focused={state.engine.context === VimContexts.MESSAGES}
+            tokens={tokens}
+            width={paneWidths.messages}
+            height={messageHeight}
+            resolveSenderName={resolveSenderName}
+            revealedSpoilers={state.revealedSpoilers}
+            readOutboxMaxId={activeDialog?.readOutboxMaxId ?? 0}
+          />
+
+          {isOverlayOpen ? null : (
+            <>
+              <text height={1} flexShrink={0} fg={tokens.border}>
+                {COMPOSER_RULE.repeat(Math.max(0, paneWidths.messages))}
+              </text>
+              <Composer
+                text={state.composerText}
+                mode={state.engine.mode}
+                focused={state.engine.context === VimContexts.COMPOSER}
+                tokens={tokens}
+                width={paneWidths.messages}
+                replyingTo={replyingTo}
+                editing={isEditing}
+              />
+            </>
+          )}
+        </box>
 
         <FrameColumn height={paneHeight} colour={frameColour} />
       </box>
@@ -989,17 +1037,7 @@ export const App = (props: IAppProps) => {
           tokens={tokens}
           width={width}
         />
-      ) : (
-        <Composer
-          text={state.composerText}
-          mode={state.engine.mode}
-          focused={state.engine.context === VimContexts.COMPOSER}
-          tokens={tokens}
-          width={width}
-          replyingTo={replyingTo}
-          editing={isEditing}
-        />
-      )}
+      ) : null}
 
       <StatusLine
         mode={state.engine.mode}
