@@ -45,6 +45,17 @@ export interface IDialogRow {
   topMessageId: number | null;
   /** See IDialogInput.readOutboxMaxId. */
   readOutboxMaxId: number;
+  /**
+   * The text of the chat's newest cached message, for the preview line every
+   * graphical Telegram client shows under a chat's name.
+   *
+   * Null when the cache has nothing for that chat -- a dialog fetched by
+   * `DialogService.sync()` whose history has never been opened, which is most
+   * of the list on a first run. The view shows nothing rather than a
+   * placeholder: an empty second line reads as "not loaded", where "No
+   * messages" would be a claim tglow cannot make.
+   */
+  preview: string | null;
 }
 
 export interface IMessageRow {
@@ -249,6 +260,22 @@ export class DatabaseService {
         lastMessageAt: dialogs.lastMessageAt,
         topMessageId: dialogs.topMessageId,
         readOutboxMaxId: dialogs.readOutboxMaxId,
+        // A correlated subquery rather than a join to `messages`: joining would
+        // multiply each dialog by its message count and need a GROUP BY to
+        // collapse again, and the newest row is not necessarily topMessageId --
+        // that column tracks what the server last reported, which a message
+        // arriving live can already be ahead of.
+        //
+        // `deleted` is filtered here for the same reason listMessages filters
+        // it: a deleted message stays cached (removing it would leave a hole in
+        // the id range history paging reasons about) and must not go on
+        // previewing itself in the sidebar.
+        preview: sql<string | null>`(
+          SELECT ${messages.text} FROM ${messages}
+          WHERE ${messages.peerId} = ${dialogs.peerId} AND ${messages.deleted} = 0
+          ORDER BY ${messages.date} DESC, ${messages.id} DESC
+          LIMIT 1
+        )`,
       })
       .from(dialogs)
       .innerJoin(peers, eq(peers.id, dialogs.peerId))

@@ -365,3 +365,74 @@ test('searchMessages matches a real Vietnamese string', () => {
   expect(database.searchMessages({ peerId: 'u1', query: 'khỏe', limit: 10 }).map(row => row.id)).toEqual([1]);
   database.close();
 });
+
+// ── the sidebar preview line ──────────────────────────────────────────────
+
+test('a dialog carries the text of its newest cached message', () => {
+  const database = new DatabaseService();
+  database.open({ filePath: ':memory:' });
+  database.upsertPeer({ id: 'u1', type: 'user', accessHash: 'h', title: 'Alice', username: null });
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 300, topMessageId: 2, readOutboxMaxId: 0 });
+  database.insertMessages({
+    messages: [
+      { peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'older one', out: 0, entities: [], replyToMessageId: null },
+      { peerId: 'u1', id: 2, fromId: 'u1', date: 200, text: 'the newest message', out: 0, entities: [], replyToMessageId: null },
+    ],
+  });
+
+  expect(database.listDialogs()[0]!.preview).toBe('the newest message');
+  database.close();
+});
+
+// A deleted message stays cached -- removing it would leave a hole in the id
+// range history paging reasons about -- so it has to be filtered here, or it
+// goes on previewing itself in the sidebar after the user deleted it.
+test('a deleted message stops previewing itself, falling back to the one before', () => {
+  const database = new DatabaseService();
+  database.open({ filePath: ':memory:' });
+  database.upsertPeer({ id: 'u1', type: 'user', accessHash: 'h', title: 'Alice', username: null });
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 300, topMessageId: 2, readOutboxMaxId: 0 });
+  database.insertMessages({
+    messages: [
+      { peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'older one', out: 0, entities: [], replyToMessageId: null },
+      { peerId: 'u1', id: 2, fromId: 'u1', date: 200, text: 'the newest message', out: 0, entities: [], replyToMessageId: null },
+    ],
+  });
+
+  database.deleteMessage({ peerId: 'u1', id: 2 });
+
+  expect(database.listDialogs()[0]!.preview).toBe('older one');
+  database.close();
+});
+
+// Most of the list on a first run: DialogService.sync() knows every chat, and
+// the cache has history for none of them until one is opened.
+test('a chat with no cached history has no preview rather than a placeholder', () => {
+  const database = new DatabaseService();
+  database.open({ filePath: ':memory:' });
+  database.upsertPeer({ id: 'u1', type: 'user', accessHash: 'h', title: 'Alice', username: null });
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 300, topMessageId: 2, readOutboxMaxId: 0 });
+
+  expect(database.listDialogs()[0]!.preview).toBeNull();
+  database.close();
+});
+
+// One row per dialog, whatever the message count. A join to `messages` would
+// multiply each dialog by its history instead of collapsing to one preview.
+test('a chat with many messages still yields exactly one row', () => {
+  const database = new DatabaseService();
+  database.open({ filePath: ':memory:' });
+  database.upsertPeer({ id: 'u1', type: 'user', accessHash: 'h', title: 'Alice', username: null });
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 300, topMessageId: 5, readOutboxMaxId: 0 });
+  database.insertMessages({
+    messages: Array.from({ length: 25 }, (unused, index) => ({
+      peerId: 'u1', id: index + 1, fromId: 'u1', date: (index + 1) * 10,
+      text: `m${index + 1}`, out: 0 as const, entities: [], replyToMessageId: null,
+    })),
+  });
+
+  const rows = database.listDialogs();
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.preview).toBe('m25');
+  database.close();
+});

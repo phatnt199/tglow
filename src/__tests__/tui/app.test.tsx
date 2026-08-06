@@ -43,7 +43,7 @@ const WIDE_TERMINAL_WIDTH = 100;
 const WIDE_TERMINAL_HEIGHT = 24;
 
 const dialogs: IDialogRow[] = [
-  { peerId: 'u1', title: 'Alice', pinned: 0, unreadCount: 2, lastMessageAt: 300, topMessageId: 3, readOutboxMaxId: 0 },
+  { peerId: 'u1', title: 'Alice', pinned: 0, unreadCount: 2, lastMessageAt: 300, topMessageId: 3, readOutboxMaxId: 0, preview: null },
 ];
 const messages: IMessageRow[] = [1, 2, 3, 4].map(id => ({
   peerId: 'u1', id, fromId: 'u1', date: id * 100, text: `msg${id}`, out: 0, entities: [], replyToMessageId: null,
@@ -1793,10 +1793,10 @@ test('the which-key popup lists the engine-intrinsic operator, register and repe
 // abstract. 'u1' stays first and stays Alice so activePeerId (set by mount's
 // own store.setState above) still points at a real dialog.
 const pickerDialogs: IDialogRow[] = [
-  { peerId: 'u1', title: 'Alice', pinned: 0, unreadCount: 2, lastMessageAt: 400, topMessageId: 3, readOutboxMaxId: 0 },
-  { peerId: 'u2', title: 'Nguyễn Tấn Phát', pinned: 0, unreadCount: 0, lastMessageAt: 300, topMessageId: 1, readOutboxMaxId: 0 },
-  { peerId: 'u3', title: 'Em Việt Tú', pinned: 0, unreadCount: 0, lastMessageAt: 200, topMessageId: 1, readOutboxMaxId: 0 },
-  { peerId: 'u4', title: 'Nga Trần', pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 1, readOutboxMaxId: 0 },
+  { peerId: 'u1', title: 'Alice', pinned: 0, unreadCount: 2, lastMessageAt: 400, topMessageId: 3, readOutboxMaxId: 0, preview: null },
+  { peerId: 'u2', title: 'Nguyễn Tấn Phát', pinned: 0, unreadCount: 0, lastMessageAt: 300, topMessageId: 1, readOutboxMaxId: 0, preview: null },
+  { peerId: 'u3', title: 'Em Việt Tú', pinned: 0, unreadCount: 0, lastMessageAt: 200, topMessageId: 1, readOutboxMaxId: 0, preview: null },
+  { peerId: 'u4', title: 'Nga Trần', pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 1, readOutboxMaxId: 0, preview: null },
 ];
 
 test('<C-p> opens the chat picker', async () => {
