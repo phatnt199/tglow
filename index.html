@@ -194,7 +194,7 @@ footer{margin-top:4.5rem;padding-bottom:2rem;color:var(--dim);font-size:.82rem}
       <p class="links" style="margin-top:1.9rem">
         <a href="https://github.com/phatnt199/tglow">Source on GitHub</a>
         <span class="sep" aria-hidden="true">·</span>
-        <a href="https://github.com/phatnt199/tglow/releases/latest">Download v0.2.0</a>
+        <a href="https://github.com/phatnt199/tglow/releases/latest">Download v0.3.0</a>
         <span class="sep" aria-hidden="true">·</span>
         <span class="muted">Linux x64</span>
       </p>
@@ -204,7 +204,7 @@ footer{margin-top:4.5rem;padding-bottom:2rem;color:var(--dim);font-size:.82rem}
                           <span class="them">a look</span>
 <span class="n">    2</span> <span class="t">09:15</span> <span class="who">me        </span> <span class="tick">✓</span>  <span class="me">reading it now</span>
 <span class="n">    1</span> <span class="t">09:16</span> <span class="who">Tấn Phát  </span>    <span class="them">run it with <span class="cd">`bun run build`</span> before you push</span>
-<span class="cur"><span class="n">    4</span> <span class="t">09:22</span> <span class="who">me        </span> <span class="tick">✓</span>  <span class="me"><span class="bd">shipped</span> — v0.2.0 is out</span></span>
+<span class="cur"><span class="n">    4</span> <span class="t">09:22</span> <span class="who">me        </span> <span class="tick">✓</span>  <span class="me"><span class="bd">shipped</span> — v0.3.0 is out</span></span>
       </div>
       <p class="caption">Real output. The gutter counts distance from the cursor, so <kbd>3j</kbd> is obvious before you type it.</p>
     </div>
@@ -290,6 +290,16 @@ footer{margin-top:4.5rem;padding-bottom:2rem;color:var(--dim);font-size:.82rem}
           <h3>One binary</h3>
           <p>No runtime to install, no node_modules. Database migrations are compiled in, so a fresh machine needs only the executable.</p>
         </div>
+
+        <div class="item">
+          <h3>Read state that keeps up</h3>
+          <p>A tick becomes two the moment they read you. Read a chat on your phone and the badge here stops counting it — following Telegram's own figure, so a partial read shows what is genuinely left.</p>
+        </div>
+
+        <div class="item">
+          <h3>Your colours, not its own</h3>
+          <p>Twelve <a href="https://github.com/phatnt199/devglow">devglow</a> palettes ship. Drop a <code>.toml</code> in <code>~/.config/tglow/themes/</code> for your own, and a file there overrides a built-in of the same name. A theme with a typo in it is never applied half-way — tglow says so and draws sage.</p>
+        </div>
       </div>
     </div>
   </section>
@@ -336,7 +346,7 @@ printf 'api_id = 0\napi_hash = ""\n' &gt; ~/.config/tglow/config.toml</div>
       <ul class="not">
         <li>No media. Photos, stickers and voice notes are not displayed — the renderer for them exists and is proven, but is not wired up.</li>
         <li>No reactions, typing indicators or online status.</li>
-        <li>Two themes. The other ten devglow palettes, and colorschemes you can write yourself, are next.</li>
+        <li>Themes are chosen in the config file. Switching one while tglow is running needs a command mode it does not have yet.</li>
         <li>Recovery after being offline covers private chats. Channels and supergroups are not backfilled yet.</li>
         <li>Linux x64 only.</li>
       </ul>
