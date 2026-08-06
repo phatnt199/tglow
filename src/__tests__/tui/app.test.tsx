@@ -29,7 +29,7 @@ const tokens = buildTokens({ paletteName: 'sage' });
 const TERMINAL_WIDTH = 70;
 const TERMINAL_HEIGHT = 14;
 const SIDEBAR_WIDTH = 22;
-const CHROME_HEIGHT = 3;
+const CHROME_HEIGHT = 2;
 
 // Wide enough that the which-key popup's own column-major layout
 // (resolveWhichKeyHeight, which-key.tsx) never has to clip a row off the
@@ -292,28 +292,53 @@ test('j moves the cursor — engine to store to render', async () => {
   expect(cursorRows(renderer)).toEqual([rowContaining(renderer, 'msg2')]);
 });
 
-// The seam between two bordered boxes drew a doubled `┐┌`, and the owner's own
-// fillchars call for a single rule instead. The composer's box went the same
-// way, which is also what freed the row the panes now use.
-test('the panes are separated by one rule, with no boxes anywhere', async () => {
+// M1a drew a bare rule and no boxes, because boxing each pane separately put a
+// doubled `┐┌` where two of them met. M2 boxes them at the owner's choice, but
+// as ONE frame: the panes meet at a junction this application draws itself, so
+// the seam that motivated the old rule cannot come back.
+test('the panes sit inside one frame, meeting at a junction rather than a seam', async () => {
   const { renderer } = await mount();
   const rows = renderer.captureCharFrame().split('\n');
-  const body = rows.slice(0, TERMINAL_HEIGHT - CHROME_HEIGHT);
 
-  for (const row of body) {
-    expect({ row, rule: row[SIDEBAR_WIDTH] }).toEqual({ row, rule: '│' });
-  }
-  expect(rows[TERMINAL_HEIGHT - CHROME_HEIGHT]).toBe('─'.repeat(TERMINAL_WIDTH));
+  const top = rows[0]!;
+  expect(top.startsWith('┌')).toBe(true);
+  expect(top.endsWith('┐')).toBe(true);
+  expect(top).toContain('┬');
+  // Exactly one junction, and never the doubled corner of two adjacent boxes.
+  expect(top.split('┬')).toHaveLength(2);
+  expect(rows.join('\n')).not.toContain('┐┌');
+  expect(rows.join('\n')).not.toContain('┘└');
+});
 
-  const frame = renderer.captureCharFrame();
-  for (const glyph of ['┌', '┐', '└', '┘', '├', '┤', '┬', '┴']) {
-    expect({ glyph, present: frame.includes(glyph) }).toEqual({ glyph, present: false });
+// Every row of the frame has to be the same width, or the panes stop lining up
+// with the edges above and below them and start drawing over their own border.
+test('the frame junction sits in the same column on every row it spans', async () => {
+  const { renderer } = await mount();
+  const rows = renderer.captureCharFrame().split('\n');
+  const junction = rows[0]!.indexOf('┬');
+  expect(junction).toBeGreaterThan(0);
+
+  // The body rows between the two edges carry the vertical at that column.
+  const bottomIndex = rows.findIndex(row => row.startsWith('└'));
+  expect(bottomIndex).toBeGreaterThan(1);
+  for (const row of rows.slice(1, bottomIndex)) {
+    expect({ row, at: row[junction] }).toEqual({ row, at: '│' });
   }
+  expect(rows[bottomIndex]![junction]).toBe('┴');
+});
+
+test('the pane titles name the chat list and the open chat', async () => {
+  const { renderer } = await mount();
+  const top = renderer.captureCharFrame().split('\n')[0]!;
+  expect(top).toContain('Chats');
+  expect(top).toContain('Alice');
 });
 
 test('the open chat is marked in the sidebar independently of the cursor', async () => {
   const { renderer } = await mount();
-  expect(renderer.captureCharFrame().split('\n')[0]![0]).toBe('▎');
+  // Row 0 is the frame's top edge now, and the first column is its border, so
+  // the marker sits one row down and one column in.
+  expect(renderer.captureCharFrame().split('\n')[1]![1]).toBe('▎');
 });
 
 test('3j moves three messages', async () => {

@@ -1,0 +1,142 @@
+import { measureTextWidth, truncateToWidth } from './text-width.ts';
+
+/**
+ * The frame drawn around the two panes.
+ *
+ * One shared frame, not two boxes. M1a tried boxing each pane and got a
+ * doubled `┐┌` seam where they met -- the comment on RULE_WIDTH in app.tsx
+ * still records it. Here the junction is a `┬`/`┴` this module draws itself,
+ * so there is exactly one column of border between the panes and it is the
+ * same column the vertical rule already occupied.
+ *
+ * Drawn as strings rather than delegated to a box border for the same reason
+ * app.tsx draws its rule one `<text>` per row: full control over every cell,
+ * and no renderer-owned border that could disagree with the width arithmetic
+ * below.
+ */
+
+export const FRAME_LEFT = 1;
+export const FRAME_RIGHT = 1;
+/** The column between the panes -- the rule M1a already spent, now a frame junction. */
+export const FRAME_MIDDLE = 1;
+/** Top and bottom edges. */
+export const FRAME_TOP = 1;
+export const FRAME_BOTTOM = 1;
+
+/** Total columns the frame takes out of the window: two outer edges and the junction. */
+export const FRAME_HORIZONTAL_COST = FRAME_LEFT + FRAME_MIDDLE + FRAME_RIGHT;
+/** Total rows the frame takes: the two edges. */
+export const FRAME_VERTICAL_COST = FRAME_TOP + FRAME_BOTTOM;
+
+const HORIZONTAL = '─';
+const VERTICAL = '│';
+const TOP_LEFT = '┌';
+const TOP_RIGHT = '┐';
+const TOP_JUNCTION = '┬';
+const BOTTOM_LEFT = '└';
+const BOTTOM_RIGHT = '┘';
+const BOTTOM_JUNCTION = '┴';
+
+/** `┌─ Chats ──` -- one leading dash, a spaced title, then fill. */
+const TITLE_PREFIX = `${HORIZONTAL} `;
+const TITLE_SUFFIX = ' ';
+
+export interface IPaneWidths {
+  /** Columns available to the chat list, inside the frame. */
+  sidebar: number;
+  /** Columns available to the message view, inside the frame. */
+  messages: number;
+}
+
+/**
+ * How the window's width divides once the frame has taken its three columns.
+ *
+ * `sidebar` is what the caller asked for, clamped so that neither pane can be
+ * squeezed out of existence by a narrow window or a dragged divider. Below the
+ * point where both minimums fit, the sidebar gives way first: a message pane
+ * one column wide is useless, and the chat list is the pane you can navigate
+ * without.
+ */
+export const resolvePaneWidths = (opts: {
+  width: number;
+  sidebarWidth: number;
+  minimumPane: number;
+}): IPaneWidths => {
+  const { width, sidebarWidth, minimumPane } = opts;
+  const inner = Math.max(0, width - FRAME_HORIZONTAL_COST);
+
+  if (inner < minimumPane * 2) {
+    // The message pane is served first here, which is the whole point of the
+    // branch: honouring the requested sidebar instead would leave a window at
+    // 30 columns showing a 22-wide chat list and five columns of conversation.
+    const messages = Math.min(minimumPane, inner);
+    return { sidebar: Math.max(0, inner - messages), messages };
+  }
+
+  const sidebar = Math.min(Math.max(sidebarWidth, minimumPane), inner - minimumPane);
+  return { sidebar, messages: inner - sidebar };
+};
+
+/**
+ * A titled edge: `┌─ Chats ──────┬─ Alice ──────────┐`.
+ *
+ * A title too long for its pane is truncated rather than allowed to push the
+ * junction sideways. Every row of the frame must be exactly `width` cells or
+ * the panes below it stop lining up with the edge above them -- the arithmetic
+ * that, got wrong, produced M1a's interleaved-text report.
+ */
+const buildEdge = (opts: {
+  widths: IPaneWidths;
+  left: string;
+  right: string;
+  junction: string;
+  titles: { sidebar: string; messages: string } | null;
+}): string => {
+  const { widths, left, right, junction, titles } = opts;
+
+  const segment = (span: number, title: string | null): string => {
+    if (span <= 0) {
+      return '';
+    }
+    if (title === null || title === '') {
+      return HORIZONTAL.repeat(span);
+    }
+    // The dashes and spaces around the title, so a title only appears when
+    // there is room for it plus at least one more dash of edge.
+    const decoration = measureTextWidth({ text: TITLE_PREFIX + TITLE_SUFFIX });
+    if (span < decoration + 2) {
+      return HORIZONTAL.repeat(span);
+    }
+    const room = span - decoration - 1;
+    const shown = truncateToWidth({ text: title, width: room });
+    const used = decoration + measureTextWidth({ text: shown });
+    return `${TITLE_PREFIX}${shown}${TITLE_SUFFIX}${HORIZONTAL.repeat(Math.max(0, span - used))}`;
+  };
+
+  return [
+    left,
+    segment(widths.sidebar, titles?.sidebar ?? null),
+    junction,
+    segment(widths.messages, titles?.messages ?? null),
+    right,
+  ].join('');
+};
+
+export const buildTopEdge = (opts: {
+  widths: IPaneWidths;
+  titles: { sidebar: string; messages: string };
+}): string => {
+  return buildEdge({ ...opts, left: TOP_LEFT, right: TOP_RIGHT, junction: TOP_JUNCTION });
+};
+
+export const buildBottomEdge = (opts: { widths: IPaneWidths }): string => {
+  return buildEdge({
+    widths: opts.widths,
+    left: BOTTOM_LEFT,
+    right: BOTTOM_RIGHT,
+    junction: BOTTOM_JUNCTION,
+    titles: null,
+  });
+};
+
+export const FRAME_VERTICAL = VERTICAL;

@@ -35,6 +35,13 @@ import {
 import type { KeyNormalizerService, KeymapService, VimEngineService } from '../keys/index.ts';
 import { applyAction, resolveSearchMatchIndices } from './action-reducer.ts';
 import { ChatPicker, resolveChatPickerHeight, resolveWhichKeyHeight, SEARCH_OVERLAY_HEIGHT, SearchOverlay, WhichKey } from './overlays/index.ts';
+import {
+  FRAME_VERTICAL,
+  FRAME_VERTICAL_COST,
+  buildBottomEdge,
+  buildTopEdge,
+  resolvePaneWidths,
+} from './pane-frame.ts';
 import { ChatList, Composer, MessageView, StatusLine } from './panes/index.ts';
 import type { ITokens } from './theme/index.ts';
 
@@ -78,8 +85,13 @@ export interface IAppProps {
 }
 
 const SIDEBAR_WIDTH = 22;
-/** The composer's rule and prompt, then the status line. */
-const CHROME_HEIGHT = 3;
+/**
+ * The composer's prompt, then the status line. Two, not three: the composer's
+ * own rule went when M2's frame gained a bottom edge to sit above it, and this
+ * has to move in lockstep with composer.tsx or the panes lose a row to
+ * something that no longer draws in it.
+ */
+const CHROME_HEIGHT = 2;
 /** The status line is always exactly one row, whichever chrome sits above it. */
 const STATUS_LINE_HEIGHT = 1;
 /** Composer grows by exactly this many rows while a reply is pending -- see the comment on chromeHeight below. */
@@ -87,11 +99,24 @@ const REPLY_PREVIEW_HEIGHT = 1;
 /** Composer grows by exactly this many rows while an edit is in progress -- see the comment on chromeHeight below. */
 const EDIT_INDICATOR_HEIGHT = 1;
 /**
- * `fillchars = "vert:│"`: splits are a single rule, not a box. Boxing the
- * panes also put a doubled `┐┌` seam where two of them met.
+ * M1a drew splits as a single rule rather than a box, following
+ * `fillchars = "vert:│"` -- and because boxing each pane separately put a
+ * doubled `┐┌` seam where two of them met.
+ *
+ * M2 boxes them anyway, at the owner's choice, but as ONE shared frame: the
+ * column between the panes is a `┬`/`┴` junction that pane-frame.ts draws
+ * itself, so it is still exactly one column and the seam cannot come back.
  */
-const RULE_WIDTH = 1;
-const VERTICAL_RULE = '│';
+const MINIMUM_PANE_WIDTH = 16;
+
+/** One `<text>` per row, the same one-child-one-row rule the panes follow, so a frame column cannot be shrunk into its neighbours. */
+const FrameColumn = (props: { height: number; colour: string }) => (
+  <box flexDirection="column" width={1} height={props.height} flexShrink={0}>
+    {Array.from({ length: props.height }, (unused, row) => (
+      <text key={row} height={1} flexShrink={0} fg={props.colour}>{FRAME_VERTICAL}</text>
+    ))}
+  </box>
+);
 
 /**
  * The two keys an overlay owns outright while it is open, in the same
@@ -887,43 +912,60 @@ export const App = (props: IAppProps) => {
       : isSearchOpen
         ? SEARCH_OVERLAY_HEIGHT + STATUS_LINE_HEIGHT
         : CHROME_HEIGHT + (replyingTo !== null ? REPLY_PREVIEW_HEIGHT : 0) + (isEditing ? EDIT_INDICATOR_HEIGHT : 0);
-  const paneHeight = Math.max(1, height - chromeHeight);
-  const messageWidth = Math.max(1, width - SIDEBAR_WIDTH - RULE_WIDTH);
+  // The frame's two edge rows come out of the pane height, and its three
+  // columns out of the pane widths. Getting either wrong is how a wrapped line
+  // ends up drawn over its own border -- M1a's interleaved-text report in a
+  // new place, which is why pane-frame.ts owns the arithmetic and is tested on
+  // its own.
+  const paneHeight = Math.max(1, height - chromeHeight - FRAME_VERTICAL_COST);
+  const paneWidths = resolvePaneWidths({ width, sidebarWidth: SIDEBAR_WIDTH, minimumPane: MINIMUM_PANE_WIDTH });
+  const chatListFocused = state.engine.context === VimContexts.CHAT_LIST;
+  // The focused pane's frame, not both: which pane has focus was previously
+  // visible only through a cursor highlight, invisible in an empty pane.
+  const frameColour = chatListFocused ? tokens.borderActive : tokens.border;
 
   return (
     <box flexDirection="column" width={width} height={height} backgroundColor={tokens.background}>
+      <text height={1} flexShrink={0} fg={frameColour}>
+        {buildTopEdge({
+          widths: paneWidths,
+          titles: { sidebar: 'Chats', messages: activeDialog?.title ?? 'tglow' },
+        })}
+      </text>
+
       <box flexDirection="row" height={paneHeight}>
+        <FrameColumn height={paneHeight} colour={frameColour} />
+
         <ChatList
           dialogs={state.dialogs}
           cursor={state.chatCursor}
-          focused={state.engine.context === VimContexts.CHAT_LIST}
+          focused={chatListFocused}
           tokens={tokens}
-          width={SIDEBAR_WIDTH}
+          width={paneWidths.sidebar}
           height={paneHeight}
           activePeerId={state.activePeerId}
         />
 
-        {/* One `<text>` per row rather than a newline-joined string: the same
-            one-child-one-row rule the panes follow, so the rule cannot be
-            shrunk into its neighbours either. */}
-        <box flexDirection="column" width={RULE_WIDTH} height={paneHeight} flexShrink={0}>
-          {Array.from({ length: paneHeight }, (unused, row) => (
-            <text key={row} height={1} flexShrink={0} fg={tokens.border}>{VERTICAL_RULE}</text>
-          ))}
-        </box>
+        <FrameColumn height={paneHeight} colour={frameColour} />
 
         <MessageView
           messages={state.messages}
           cursor={state.messageCursor}
           focused={state.engine.context === VimContexts.MESSAGES}
           tokens={tokens}
-          width={messageWidth}
+          width={paneWidths.messages}
           height={paneHeight}
           resolveSenderName={resolveSenderName}
           revealedSpoilers={state.revealedSpoilers}
           readOutboxMaxId={activeDialog?.readOutboxMaxId ?? 0}
         />
+
+        <FrameColumn height={paneHeight} colour={frameColour} />
       </box>
+
+      <text height={1} flexShrink={0} fg={frameColour}>
+        {buildBottomEdge({ widths: paneWidths })}
+      </text>
 
       {isChatPickerOpen ? (
         <ChatPicker

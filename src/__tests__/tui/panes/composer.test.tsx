@@ -15,7 +15,7 @@ const render = async (overrides: Partial<IComposerProps> = {}): Promise<TestRend
   const props: IComposerProps = {
     text: '', mode: VimModes.NORMAL, focused: false, tokens, width: COMPOSER_WIDTH, replyingTo: null, editing: false, ...overrides,
   };
-  const renderer = await renderWithKeys(<Composer {...props} />, { width: props.width, height: 3 });
+  const renderer = await renderWithKeys(<Composer {...props} />, { width: props.width, height: 2 });
   await renderer.flush();
   return renderer;
 };
@@ -49,38 +49,33 @@ test('always shows the prompt marker', async () => {
 // The owner's neovim sets fillchars="vert:│": splits are a single rule, not a
 // box. Two bordered boxes meeting also drew a doubled `┐┌` seam, which is the
 // visible cost of boxing anything here at all.
-test('a single rule sits above the prompt, and no box anywhere', async () => {
+test('the prompt is the first row, and the composer draws no border of its own', async () => {
   const renderer = await render();
   const rows = readRows(renderer);
-  expect(rows[0]).toBe('─'.repeat(COMPOSER_WIDTH));
-  expect(rows[1]).toContain('❯');
+  expect(rows[0]).toContain('❯');
 
   const frame = renderer.captureCharFrame();
-  for (const glyph of ['┌', '┐', '└', '┘', '│', '├', '┤']) {
+  for (const glyph of ['┌', '┐', '└', '┘', '│', '├', '┤', '─']) {
     expect({ glyph, present: frame.includes(glyph) }).toEqual({ glyph, present: false });
   }
 });
 
-test('the rule is drawn in the border colour', async () => {
-  const renderer = await render();
-  const rule = renderer.captureSpans().lines[0]!.spans[0]!;
-  expect(rule.text.startsWith('─')).toBe(true);
-  expect(rgbToHex(rule.fg).toLowerCase()).toBe(tokens.border.toLowerCase());
-});
+// The rule this used to check is gone: M2's frame closes with a bottom edge
+// directly above the composer, and two horizontal lines stacked read as a
+// mistake rather than a separation. The composer draws no border of its own
+// now, which the test above asserts.
 
 // Two rows exactly. A composer that grows a third row when the text is long
 // eats a row from the message view without telling it, and the panes above
 // then have one more row of children than they have room for -- the same
 // overflow that made the message view overdraw itself.
-test('a line of text longer than the pane stays two rows and keeps the tail in view', async () => {
+test('a line of text longer than the pane stays one row and keeps the tail in view', async () => {
   const text = 'this message is a great deal longer than fifty columns of terminal will ever hold at once';
   const renderer = await render({ text, mode: VimModes.INSERT, focused: true });
   const rows = readRows(renderer);
-  expect(rows.length).toBe(3);
-  expect(rows[2]!.trim()).toBe('');
-  expect(rows[1]!).toContain('at once');
-  expect(rows[1]!.length).toBe(COMPOSER_WIDTH);
-  expect(rows[1]!).not.toContain('this message is');
+  expect(rows[0]!).toContain('at once');
+  expect(rows[0]!.length).toBe(COMPOSER_WIDTH);
+  expect(rows[0]!).not.toContain('this message is');
 });
 
 test('a wide-character message is measured in columns, not code points', async () => {
@@ -88,9 +83,7 @@ test('a wide-character message is measured in columns, not code points', async (
     text: '你好世界你好世界你好世界你好世界你好世界你好世界', mode: VimModes.INSERT, focused: true,
   });
   const rows = readRows(renderer);
-  expect(rows.length).toBe(3);
-  expect(rows[2]!.trim()).toBe('');
-  expect(renderer.captureSpans().lines[1]!.spans.reduce((total, span) => total + span.width, 0))
+  expect(renderer.captureSpans().lines[0]!.spans.reduce((total, span) => total + span.width, 0))
     .toBe(COMPOSER_WIDTH);
 });
 
@@ -99,8 +92,7 @@ test('a wide-character message is measured in columns, not code points', async (
 test('no reply row when not replying', async () => {
   const renderer = await render({ replyingTo: null });
   const rows = readRows(renderer);
-  expect(rows[0]).toBe('─'.repeat(COMPOSER_WIDTH));
-  expect(rows[1]).toContain('❯');
+  expect(rows[0]).toContain('❯');
 });
 
 test('shows a dimmed reply preview above the prompt when replying', async () => {
@@ -109,17 +101,16 @@ test('shows a dimmed reply preview above the prompt when replying', async () => 
       text="" mode={VimModes.NORMAL} focused={false} tokens={tokens} width={COMPOSER_WIDTH}
       replyingTo={{ senderName: 'Alice', text: 'sure, lets do it' }} editing={false}
     />,
-    { width: COMPOSER_WIDTH, height: 4 },
+    { width: COMPOSER_WIDTH, height: 3 },
   );
   await renderer.flush();
   const rows = readRows(renderer);
-  expect(rows[0]).toBe('─'.repeat(COMPOSER_WIDTH));
-  expect(rows[1]).toContain('Replying to Alice: sure, lets do it');
+  expect(rows[0]).toContain('Replying to Alice: sure, lets do it');
   // The prompt is pushed down to make room -- the row above it changes, not
   // the row itself.
-  expect(rows[2]).toContain('❯');
+  expect(rows[1]).toContain('❯');
 
-  const previewSpan = renderer.captureSpans().lines[1]!.spans[0]!;
+  const previewSpan = renderer.captureSpans().lines[0]!.spans[0]!;
   expect(rgbToHex(previewSpan.fg).toLowerCase()).toBe(tokens.dim.toLowerCase());
 });
 
@@ -130,18 +121,18 @@ test('the reply preview shows only the first line, truncated to the composer wid
       replyingTo={{ senderName: 'Alice', text: 'first line is already long enough to need truncating on its own\nsecond line' }}
       editing={false}
     />,
-    { width: COMPOSER_WIDTH, height: 4 },
+    { width: COMPOSER_WIDTH, height: 3 },
   );
   await renderer.flush();
   const rows = readRows(renderer);
-  expect(rows[1]).not.toContain('second line');
+  expect(rows[0]).not.toContain('second line');
   // Anchored on the literal prefix, not a bare `toContain('…')` -- the
   // prompt's own empty-composer hint ("press i to write…") already contains
   // an ellipsis, so that weaker assertion would pass even with this feature
   // entirely unimplemented and the row never inserted.
-  expect(rows[1]!.startsWith('Replying to Alice: first line')).toBe(true);
-  expect(rows[1]!.length).toBe(COMPOSER_WIDTH);
-  expect(rows[1]!.endsWith('…')).toBe(true);
+  expect(rows[0]!.startsWith('Replying to Alice: first line')).toBe(true);
+  expect(rows[0]!.length).toBe(COMPOSER_WIDTH);
+  expect(rows[0]!.endsWith('…')).toBe(true);
 });
 
 // Task 7: editing. No row appears at all when editing is false (every test
@@ -149,8 +140,7 @@ test('the reply preview shows only the first line, truncated to the composer wid
 test('no editing row when not editing', async () => {
   const renderer = await render({ editing: false });
   const rows = readRows(renderer);
-  expect(rows[0]).toBe('─'.repeat(COMPOSER_WIDTH));
-  expect(rows[1]).toContain('❯');
+  expect(rows[0]).toContain('❯');
 });
 
 test('shows a dimmed editing indicator above the prompt when editing', async () => {
@@ -159,17 +149,16 @@ test('shows a dimmed editing indicator above the prompt when editing', async () 
       text="fix the typo" mode={VimModes.INSERT} focused={true} tokens={tokens} width={COMPOSER_WIDTH}
       replyingTo={null} editing={true}
     />,
-    { width: COMPOSER_WIDTH, height: 4 },
+    { width: COMPOSER_WIDTH, height: 3 },
   );
   await renderer.flush();
   const rows = readRows(renderer);
-  expect(rows[0]).toBe('─'.repeat(COMPOSER_WIDTH));
-  expect(rows[1]).toContain('Editing message');
+  expect(rows[0]).toContain('Editing message');
   // The prompt is pushed down to make room -- the row above it changes, not
   // the row itself.
-  expect(rows[2]).toContain('fix the typo');
+  expect(rows[1]).toContain('fix the typo');
 
-  const indicatorSpan = renderer.captureSpans().lines[1]!.spans[0]!;
+  const indicatorSpan = renderer.captureSpans().lines[0]!.spans[0]!;
   expect(rgbToHex(indicatorSpan.fg).toLowerCase()).toBe(tokens.dim.toLowerCase());
 });
 
@@ -186,8 +175,7 @@ test('editing and a pending reply can show together, editing row on top', async 
   );
   await renderer.flush();
   const rows = readRows(renderer);
-  expect(rows[0]).toBe('─'.repeat(COMPOSER_WIDTH));
-  expect(rows[1]).toContain('Editing message');
-  expect(rows[2]).toContain('Replying to Alice: sure, lets do it');
-  expect(rows[3]).toContain('❯');
+  expect(rows[0]).toContain('Editing message');
+  expect(rows[1]).toContain('Replying to Alice: sure, lets do it');
+  expect(rows[2]).toContain('❯');
 });

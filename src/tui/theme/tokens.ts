@@ -5,6 +5,17 @@ export interface ITokens {
   background: string;
   foreground: string;
   border: string;
+  /**
+   * The frame around the pane that has focus. Until M2 the only sign of which
+   * pane was focused was its cursor highlight, which is invisible in an empty
+   * pane and easy to miss in a full one -- the owner reported not being able to
+   * tell the panes apart before `<C-w>h/l` was even bound.
+   *
+   * RED, following the owner's own superfile theme, whose
+   * `sidebar_border_active` is exactly this colour. It is also the second place
+   * sage's leading accent earns its keep, after the delete confirmation.
+   */
+  borderActive: string;
   dim: string;
   modeNormal: string;
   modeInsert: string;
@@ -36,6 +47,7 @@ export const buildTokens = (opts: { paletteName: string } | { palette: IPalette 
     background: palette.BACKGROUND,
     foreground: palette.FOREGROUND,
     border: palette.DARK_02,
+    borderActive: palette.RED,
     dim: palette.DARK_04,
     modeNormal: palette.TEAL,
     modeInsert: palette.GOLD,

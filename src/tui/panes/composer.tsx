@@ -41,9 +41,13 @@ const EDITING_LABEL = 'Editing message';
 const firstLineOf = (opts: { text: string }): string => opts.text.split(/\r\n|\r|\n/)[0] ?? '';
 
 /**
- * A rule and a prompt: two rows always, growing by one more for each of a
- * pending reply and an in-progress edit (both can show at once -- r then e in
- * the same session -- though no single binding produces that combination).
+ * A prompt: one row always, growing by one more for each of a pending reply
+ * and an in-progress edit (both can show at once -- r then e in the same
+ * session -- though no single binding produces that combination).
+ *
+ * The rule that used to sit above it is gone. M2's frame closes with its own
+ * bottom edge directly above this, and two horizontal lines stacked read as a
+ * mistake rather than a separation.
  * Letting the prompt wrap would take a row from the panes above without
  * telling them, and a column given more rows of children than it has shrinks
  * them until they overdraw each other -- see message-view.tsx's own rail for
@@ -74,7 +78,6 @@ export const Composer = (props: IComposerProps) => {
 
   return (
     <box flexDirection="column" width={width}>
-      <text height={1} flexShrink={0} fg={tokens.border}>{RULE.repeat(Math.max(0, width))}</text>
       {editingRow !== null ? (
         <text height={1} flexShrink={0}>
           <span fg={tokens.dim}>{padToWidth({ text: editingRow, width })}</span>
