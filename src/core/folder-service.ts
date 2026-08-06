@@ -125,7 +125,12 @@ export class FolderService {
       this._logger.for(this.sync.name).error('Could not fetch folders | Reason: %s', error);
     }
 
-    this._store.setState({ patch: { folders: this.listWithAllChats() } });
+    this._store.setState({
+      patch: {
+        folders: this.listWithAllChats(),
+        peerKinds: this._database.listPeerKinds(),
+      },
+    });
   };
 
   /**

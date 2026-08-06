@@ -23,6 +23,7 @@ import { writeToClipboard } from '../core/clipboard.ts';
 // Task 8) is called below, not just typed against, so it too has to come
 // from its concrete module rather than the core/ barrel.
 import { fuzzyMatch } from '../core/fuzzy-match.ts';
+import { resolveFolderMembership } from '../core/folder-service.ts';
 // Type-only: App receives a MessageSearchService instance through props
 // (constructed and DI-wired by main.ts) and only ever calls the instance
 // method .search() on it below -- there is no `new MessageSearchService(...)`
@@ -42,7 +43,7 @@ import {
   buildTopEdge,
   resolvePaneWidths,
 } from './pane-frame.ts';
-import { ChatList, Composer, MessageView, StatusLine } from './panes/index.ts';
+import { ChatList, Composer, FolderRail, MessageView, StatusLine } from './panes/index.ts';
 import type { ITokens } from './theme/index.ts';
 
 export interface IAppProps {
@@ -111,6 +112,8 @@ const EDIT_INDICATOR_HEIGHT = 1;
  * itself, so it is still exactly one column and the seam cannot come back.
  */
 const MINIMUM_PANE_WIDTH = 16;
+/** Wide enough for a folder name and its unread badge, narrow enough not to cost the conversation. */
+const FOLDER_RAIL_WIDTH = 12;
 
 /** One `<text>` per row, the same one-child-one-row rule the panes follow, so a frame column cannot be shrunk into its neighbours. */
 const FrameColumn = (props: { height: number; colour: string }) => (
@@ -937,7 +940,34 @@ export const App = (props: IAppProps) => {
       + (replyingTo !== null ? REPLY_PREVIEW_HEIGHT : 0)
       + (isEditing ? EDIT_INDICATOR_HEIGHT : 0);
   const messageHeight = Math.max(1, paneHeight - composerHeight);
-  const paneWidths = resolvePaneWidths({ width, sidebarWidth: SIDEBAR_WIDTH, minimumPane: MINIMUM_PANE_WIDTH });
+  // The rail is shown only when the account actually has folders. A rail
+  // holding nothing but the synthetic "All" is a column of wasted width, and
+  // the graphical clients hide it for the same reason.
+  const hasFolders = state.folders.length > 1;
+  const activeFolder = state.folders.find(folder => folder.id === state.activeFolderId)
+    ?? state.folders[0]
+    ?? null;
+  // The chat list shows the active folder's members, not every dialog. Falls
+  // back to the unfiltered list when no folder resolves at all, so a folder id
+  // left over from a folder the user has since deleted shows their chats rather
+  // than an empty sidebar.
+  const visibleDialogs = activeFolder === null
+    ? state.dialogs
+    : resolveFolderMembership({ folder: activeFolder, dialogs: state.dialogs, peerKinds: state.peerKinds });
+  // Each folder's own unread total, for the badge beside its name. Computed
+  // over every dialog rather than the visible ones -- the point of the badge is
+  // to tell you about the folders you are NOT looking at.
+  const unreadByFolder = new Map(state.folders.map(folder => [
+    folder.id,
+    resolveFolderMembership({ folder, dialogs: state.dialogs, peerKinds: state.peerKinds })
+      .reduce((total, dialog) => total + dialog.unreadCount, 0),
+  ]));
+  const paneWidths = resolvePaneWidths({
+    width,
+    sidebarWidth: SIDEBAR_WIDTH,
+    minimumPane: MINIMUM_PANE_WIDTH,
+    railWidth: hasFolders ? FOLDER_RAIL_WIDTH : 0,
+  });
   const chatListFocused = state.engine.context === VimContexts.CHAT_LIST;
   // The focused pane's frame, not both: which pane has focus was previously
   // visible only through a cursor highlight, invisible in an empty pane.
@@ -948,15 +978,29 @@ export const App = (props: IAppProps) => {
       <text height={1} flexShrink={0} fg={frameColour}>
         {buildTopEdge({
           widths: paneWidths,
-          titles: { sidebar: 'Chats', messages: activeDialog?.title ?? 'tglow' },
+          titles: { rail: 'Folders', sidebar: 'Chats', messages: activeDialog?.title ?? 'tglow' },
         })}
       </text>
 
       <box flexDirection="row" height={paneHeight}>
         <FrameColumn height={paneHeight} colour={frameColour} />
 
+        {paneWidths.rail > 0 ? (
+          <>
+            <FolderRail
+              folders={state.folders}
+              activeFolderId={state.activeFolderId}
+              unreadByFolder={unreadByFolder}
+              tokens={tokens}
+              width={paneWidths.rail}
+              height={paneHeight}
+            />
+            <FrameColumn height={paneHeight} colour={frameColour} />
+          </>
+        ) : null}
+
         <ChatList
-          dialogs={state.dialogs}
+          dialogs={visibleDialogs}
           cursor={state.chatCursor}
           focused={chatListFocused}
           tokens={tokens}

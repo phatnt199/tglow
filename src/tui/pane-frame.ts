@@ -17,14 +17,24 @@ import { measureTextWidth, truncateToWidth } from './text-width.ts';
 
 export const FRAME_LEFT = 1;
 export const FRAME_RIGHT = 1;
-/** The column between the panes -- the rule M1a already spent, now a frame junction. */
+/** The column between two panes -- the rule M1a already spent, now a frame junction. */
 export const FRAME_MIDDLE = 1;
 /** Top and bottom edges. */
 export const FRAME_TOP = 1;
 export const FRAME_BOTTOM = 1;
 
-/** Total columns the frame takes out of the window: two outer edges and the junction. */
-export const FRAME_HORIZONTAL_COST = FRAME_LEFT + FRAME_MIDDLE + FRAME_RIGHT;
+/**
+ * Columns the frame takes for a given number of panes: the two outer edges,
+ * plus a junction between each adjacent pair. Two panes cost three columns;
+ * adding the folder rail makes it four.
+ */
+export const frameHorizontalCost = (opts: { paneCount: number }): number => {
+  const junctions = Math.max(0, opts.paneCount - 1);
+  return FRAME_LEFT + junctions * FRAME_MIDDLE + FRAME_RIGHT;
+};
+
+/** The two-pane cost, kept as a constant for the callers that never show a rail. */
+export const FRAME_HORIZONTAL_COST = frameHorizontalCost({ paneCount: 2 });
 /** Total rows the frame takes: the two edges. */
 export const FRAME_VERTICAL_COST = FRAME_TOP + FRAME_BOTTOM;
 
@@ -42,11 +52,23 @@ const TITLE_PREFIX = `${HORIZONTAL} `;
 const TITLE_SUFFIX = ' ';
 
 export interface IPaneWidths {
+  /**
+   * Columns for the folder rail, or 0 when it is not shown -- which is the
+   * case for an account with no folders of its own, exactly as the graphical
+   * clients hide it. A zero-width rail costs no junction either.
+   */
+  rail: number;
   /** Columns available to the chat list, inside the frame. */
   sidebar: number;
   /** Columns available to the message view, inside the frame. */
   messages: number;
 }
+
+/** The panes actually drawn, left to right, skipping a rail that is not shown. */
+const visibleSegments = (opts: { widths: IPaneWidths }): number[] => {
+  const { widths } = opts;
+  return widths.rail > 0 ? [widths.rail, widths.sidebar, widths.messages] : [widths.sidebar, widths.messages];
+};
 
 /**
  * How the window's width divides once the frame has taken its three columns.
@@ -61,20 +83,31 @@ export const resolvePaneWidths = (opts: {
   width: number;
   sidebarWidth: number;
   minimumPane: number;
+  /** 0, or omitted, hides the folder rail entirely -- junction included. */
+  railWidth?: number;
 }): IPaneWidths => {
   const { width, sidebarWidth, minimumPane } = opts;
-  const inner = Math.max(0, width - FRAME_HORIZONTAL_COST);
+  const requestedRail = Math.max(0, opts.railWidth ?? 0);
+
+  // The rail is the first thing dropped when the window cannot hold
+  // everything: it is a shortcut, where the chat list and the conversation are
+  // the application. Dropping it returns its junction too.
+  const withRail = requestedRail > 0
+    && width - frameHorizontalCost({ paneCount: 3 }) - requestedRail >= minimumPane * 2;
+  const rail = withRail ? requestedRail : 0;
+
+  const inner = Math.max(0, width - frameHorizontalCost({ paneCount: rail > 0 ? 3 : 2 }) - rail);
 
   if (inner < minimumPane * 2) {
     // The message pane is served first here, which is the whole point of the
     // branch: honouring the requested sidebar instead would leave a window at
     // 30 columns showing a 22-wide chat list and five columns of conversation.
     const messages = Math.min(minimumPane, inner);
-    return { sidebar: Math.max(0, inner - messages), messages };
+    return { rail, sidebar: Math.max(0, inner - messages), messages };
   }
 
   const sidebar = Math.min(Math.max(sidebarWidth, minimumPane), inner - minimumPane);
-  return { sidebar, messages: inner - sidebar };
+  return { rail, sidebar, messages: inner - sidebar };
 };
 
 /**
@@ -90,7 +123,7 @@ const buildEdge = (opts: {
   left: string;
   right: string;
   junction: string;
-  titles: { sidebar: string; messages: string } | null;
+  titles: { rail: string; sidebar: string; messages: string } | null;
 }): string => {
   const { widths, left, right, junction, titles } = opts;
 
@@ -113,18 +146,25 @@ const buildEdge = (opts: {
     return `${TITLE_PREFIX}${shown}${TITLE_SUFFIX}${HORIZONTAL.repeat(Math.max(0, span - used))}`;
   };
 
-  return [
-    left,
-    segment(widths.sidebar, titles?.sidebar ?? null),
-    junction,
-    segment(widths.messages, titles?.messages ?? null),
-    right,
-  ].join('');
+  const spans = widths.rail > 0
+    ? [
+      { width: widths.rail, title: titles?.rail ?? null },
+      { width: widths.sidebar, title: titles?.sidebar ?? null },
+      { width: widths.messages, title: titles?.messages ?? null },
+    ]
+    : [
+      { width: widths.sidebar, title: titles?.sidebar ?? null },
+      { width: widths.messages, title: titles?.messages ?? null },
+    ];
+
+  return left
+    + spans.map(span => segment(span.width, span.title)).join(junction)
+    + right;
 };
 
 export const buildTopEdge = (opts: {
   widths: IPaneWidths;
-  titles: { sidebar: string; messages: string };
+  titles: { rail: string; sidebar: string; messages: string };
 }): string => {
   return buildEdge({ ...opts, left: TOP_LEFT, right: TOP_RIGHT, junction: TOP_JUNCTION });
 };

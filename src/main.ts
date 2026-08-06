@@ -17,6 +17,7 @@ import {
   DatabaseService,
   DialogService,
   DifferenceService,
+  FolderService,
   MessageSearchService,
   MessageService,
   SessionStoreService,
@@ -120,6 +121,10 @@ const main = async (): Promise<void> => {
 
   store.setState({ patch: { connection: 'connected' } });
   await dialogService.sync();
+
+  // After the dialogs, because folder membership is resolved against them and
+  // a rail published first would show every folder holding nothing.
+  await container.get<FolderService>({ key: BindingKeys.FOLDER_SERVICE }).sync();
 
   // After dialogService.sync(), because a recovered message can only be
   // cached once its chat has a peers row, and sync() is what writes those.

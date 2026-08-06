@@ -77,6 +77,8 @@ export class ActionTypes {
   static readonly LINK_SHOW = 'link.show';
   static readonly WARNING_DISMISS = 'warning.dismiss';
   static readonly SEARCH_CYCLE = 'search.cycle';
+  /** Moves the sidebar to the next or previous chat folder. */
+  static readonly FOLDER_CYCLE = 'folder.cycle';
 }
 
 const SUPPORTED_MODES: readonly string[] = [

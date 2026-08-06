@@ -2,6 +2,7 @@ import { test, expect } from 'bun:test';
 
 import {
   FRAME_HORIZONTAL_COST,
+  frameHorizontalCost,
   buildBottomEdge,
   buildTopEdge,
   resolvePaneWidths,
@@ -17,7 +18,7 @@ const widthsFor = (width: number, sidebarWidth = 22): ReturnType<typeof resolveP
 test('every frame row is exactly the window width', () => {
   for (const width of [40, 60, 80, 120, 200]) {
     const widths = widthsFor(width);
-    const titles = { sidebar: 'Chats', messages: 'Alice' };
+    const titles = { rail: 'Folders', sidebar: 'Chats', messages: 'Alice' };
     expect(measureTextWidth({ text: buildTopEdge({ widths, titles }) }), `top @${width}`).toBe(width);
     expect(measureTextWidth({ text: buildBottomEdge({ widths }) }), `bottom @${width}`).toBe(width);
   }
@@ -31,7 +32,7 @@ test('the panes and the frame together account for every column', () => {
 });
 
 test('the titles appear in the top edge', () => {
-  const edge = buildTopEdge({ widths: widthsFor(80), titles: { sidebar: 'Chats', messages: 'Alice' } });
+  const edge = buildTopEdge({ widths: widthsFor(80), titles: { rail: 'Folders', sidebar: 'Chats', messages: 'Alice' } });
   expect(edge).toContain('─ Chats ');
   expect(edge).toContain('─ Alice ');
   expect(edge.startsWith('┌')).toBe(true);
@@ -41,7 +42,7 @@ test('the titles appear in the top edge', () => {
 // One junction, not a `┐┌` seam -- M1a boxed each pane separately and got the
 // doubled corner, which is why RULE_WIDTH's comment says splits are a rule.
 test('the panes meet at a single junction, never a doubled corner', () => {
-  const top = buildTopEdge({ widths: widthsFor(80), titles: { sidebar: 'Chats', messages: 'Alice' } });
+  const top = buildTopEdge({ widths: widthsFor(80), titles: { rail: 'Folders', sidebar: 'Chats', messages: 'Alice' } });
   expect(top).toContain('┬');
   expect(top).not.toContain('┐┌');
   expect(top.split('┬')).toHaveLength(2);
@@ -57,7 +58,7 @@ test('a title too long for its pane is truncated, not allowed to widen it', () =
   const widths = widthsFor(60);
   const edge = buildTopEdge({
     widths,
-    titles: { sidebar: 'Chats', messages: 'a chat whose title runs on far past the pane it belongs to' },
+    titles: { rail: 'Folders', sidebar: 'Chats', messages: 'a chat whose title runs on far past the pane it belongs to' },
   });
   expect(measureTextWidth({ text: edge })).toBe(60);
   expect(edge.endsWith('┐')).toBe(true);
@@ -68,7 +69,7 @@ test('a title too long for its pane is truncated, not allowed to widen it', () =
 test('a wide-character title still leaves the edge exactly the window width', () => {
   const widths = widthsFor(60);
   for (const title of ['Nguyễn Tấn Phát', '张伟同学', '🔥 Em Việt Tú']) {
-    const edge = buildTopEdge({ widths, titles: { sidebar: 'Chats', messages: title } });
+    const edge = buildTopEdge({ widths, titles: { rail: 'Folders', sidebar: 'Chats', messages: title } });
     expect(measureTextWidth({ text: edge }), title).toBe(60);
   }
 });
@@ -118,4 +119,55 @@ test('a window too narrow for both minimums still divides without going negative
       `total @${width}`,
     ).toBeLessThanOrEqual(Math.max(width, FRAME_HORIZONTAL_COST));
   }
+});
+
+// ── the folder rail as a third pane ───────────────────────────────────────
+
+const withRail = (width: number, railWidth = 12): ReturnType<typeof resolvePaneWidths> =>
+  resolvePaneWidths({ width, sidebarWidth: 22, minimumPane: 16, railWidth });
+
+test('a rail adds a third pane and a second junction, still exactly the window width', () => {
+  for (const width of [60, 80, 120, 200]) {
+    const widths = withRail(width);
+    const edge = buildTopEdge({ widths, titles: { rail: 'Folders', sidebar: 'Chats', messages: 'Alice' } });
+    expect(measureTextWidth({ text: edge }), `top @${width}`).toBe(width);
+    expect(edge.split('┬'), `junctions @${width}`).toHaveLength(3);
+    expect(measureTextWidth({ text: buildBottomEdge({ widths }) }), `bottom @${width}`).toBe(width);
+  }
+});
+
+test('three panes and their frame account for every column', () => {
+  for (const width of [60, 80, 120]) {
+    const widths = withRail(width);
+    expect(
+      widths.rail + widths.sidebar + widths.messages + frameHorizontalCost({ paneCount: 3 }),
+      `@${width}`,
+    ).toBe(width);
+  }
+});
+
+// An account with no folders shows no rail, exactly as the graphical clients
+// do -- and a hidden rail must cost no junction either, or the edge gains a
+// stray divider with nothing on one side of it.
+test('a rail of zero width costs no column and no junction', () => {
+  const widths = withRail(80, 0);
+  expect(widths.rail).toBe(0);
+  const edge = buildTopEdge({ widths, titles: { rail: 'Folders', sidebar: 'Chats', messages: 'Alice' } });
+  expect(measureTextWidth({ text: edge })).toBe(80);
+  expect(edge.split('┬')).toHaveLength(2);
+});
+
+// The rail is a shortcut; the chat list and the conversation are the
+// application. When the window cannot hold all three, the rail is what goes.
+test('a window too narrow for three panes drops the rail rather than the conversation', () => {
+  const widths = withRail(40);
+  expect(widths.rail).toBe(0);
+  expect(widths.messages).toBeGreaterThanOrEqual(16);
+  expect(measureTextWidth({
+    text: buildTopEdge({ widths, titles: { rail: 'Folders', sidebar: 'Chats', messages: 'Alice' } }),
+  })).toBe(40);
+});
+
+test('a rail survives once the window is wide enough for all three', () => {
+  expect(withRail(80).rail).toBe(12);
 });

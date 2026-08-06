@@ -16,6 +16,12 @@ export interface IApplicationState {
   folders: IFolderRow[];
   /** Which folder the sidebar is showing. ALL_CHATS_FOLDER_ID means no filtering. */
   activeFolderId: number;
+  /**
+   * Peer type and bot-ness, which folder membership needs and IDialogRow does
+   * not carry. Published alongside the folders rather than looked up per
+   * render: App is a pure function of state and has no database of its own.
+   */
+  peerKinds: Map<string, { type: string; isBot: boolean }>;
   messages: IMessageRow[];
   activePeerId: string | null;
   chatCursor: number;
@@ -112,6 +118,7 @@ const INITIAL_STATE: IApplicationState = {
   dialogs: [],
   folders: [],
   activeFolderId: 0,
+  peerKinds: new Map(),
   messages: [],
   activePeerId: null,
   chatCursor: 0,

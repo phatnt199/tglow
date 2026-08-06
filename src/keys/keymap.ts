@@ -120,6 +120,17 @@ export class KeymapService {
       context: '*', mode: VimModes.NORMAL, keys: 'nf', description: 'Focus chat list',
       action: () => [{ type: ActionTypes.FOCUS_SET, context: VimContexts.CHAT_LIST }],
     },
+    // Folders. `]f`/`[f` follow vim's own bracket-pair convention for "next
+    // and previous thing of a kind" (]c, ]q, ]b), and exist so the rail is
+    // never mouse-only -- M2's governing rule.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: ']f', description: 'Next folder',
+      action: count => [{ type: ActionTypes.FOLDER_CYCLE, delta: count }],
+    },
+    {
+      context: '*', mode: VimModes.NORMAL, keys: '[f', description: 'Previous folder',
+      action: count => [{ type: ActionTypes.FOLDER_CYCLE, delta: -count }],
+    },
     // <C-w>h/l echo vim's own window-navigation keys. Unlike nf (into the
     // chat list only, one-way) these move in both directions and work from
     // any context, so they double as the way out of the chat list too.

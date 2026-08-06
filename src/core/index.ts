@@ -6,6 +6,7 @@ export * from './cache/index.ts';
 export * from './clipboard.ts';
 export * from './configuration.ts';
 export * from './dialog-service.ts';
+export * from './folder-service.ts';
 export * from './difference-service.ts';
 export * from './fuzzy-match.ts';
 export * from './logger-provider.ts';

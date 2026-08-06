@@ -56,7 +56,8 @@ export type TAction =
   | { type: typeof ActionTypes.CANCEL_CONFIRMATION }
   | { type: typeof ActionTypes.LINK_SHOW }
   | { type: typeof ActionTypes.WARNING_DISMISS }
-  | { type: typeof ActionTypes.SEARCH_CYCLE; direction: 'next' | 'previous' };
+  | { type: typeof ActionTypes.SEARCH_CYCLE; direction: 'next' | 'previous' }
+  | { type: typeof ActionTypes.FOLDER_CYCLE; delta: number };
 
 export interface IEngineState {
   mode: TVimMode;

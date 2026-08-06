@@ -292,6 +292,28 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
       return { messageCursor: previous ?? positions[positions.length - 1] };
     }
 
+    /**
+     * `]f`/`[f`. Wraps in both directions, the same way SEARCH_CYCLE does --
+     * a rail you can fall off the end of would need a "you are at the last
+     * folder" message nobody wants to read.
+     *
+     * The chat cursor goes back to the top. It indexes the *filtered* list, so
+     * leaving it where it was would point at a different chat than the one the
+     * user was looking at, or past the end of a smaller folder entirely.
+     */
+    case ActionTypes.FOLDER_CYCLE: {
+      if (state.folders.length === 0) {
+        return {};
+      }
+      const current = state.folders.findIndex(folder => folder.id === state.activeFolderId);
+      const from = current === -1 ? 0 : current;
+      const count = state.folders.length;
+      // `% count` twice with a `+ count` between: JavaScript's remainder keeps
+      // the sign of the dividend, so a plain modulo goes negative on `[f`.
+      const next = (((from + action.delta) % count) + count) % count;
+      return { activeFolderId: state.folders[next]!.id, chatCursor: 0 };
+    }
+
     // The only thing that clears integrityWarning. Nothing else may: the field
     // exists precisely because statusMessage is cleared as a matter of course
     // by loadHistory/send/edit/delete, which is how "some missed messages
