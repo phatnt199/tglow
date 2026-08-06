@@ -14,6 +14,8 @@ export class BindingKeys {
   static readonly DIFFERENCE_SERVICE = '@tglow/core/difference-service';
   static readonly DIALOG_ADAPTER = '@tglow/core/dialog-adapter';
   static readonly MESSAGE_ADAPTER = '@tglow/core/message-adapter';
+  static readonly FOLDER_ADAPTER = '@tglow/core/folder-adapter';
+  static readonly FOLDER_SERVICE = '@tglow/core/folder-service';
   static readonly DIFFERENCE_ADAPTER = '@tglow/core/difference-adapter';
 
   static readonly KEY_NORMALIZER = '@tglow/keys/key-normalizer';

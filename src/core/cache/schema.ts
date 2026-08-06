@@ -57,3 +57,41 @@ export const syncState = sqliteTable('sync_state', {
   key: text('key').primaryKey(),
   value: integer('value').notNull(),
 });
+
+/**
+ * Telegram's own chat folders (`messages.getDialogFilters`), which every
+ * graphical client shows as a rail down the left edge.
+ *
+ * A folder selects chats two ways at once: an explicit `includePeers` list, and
+ * category flags like "all groups" or "everything unread". Both are stored --
+ * the peer lists as JSON arrays of peer id, the flags as their own columns --
+ * because membership is recomputed locally on every render and a round trip per
+ * frame is not an option.
+ *
+ * `ord` is the position Telegram returned them in, kept because the order is
+ * the user's own arrangement and sorting by id would scramble it.
+ */
+export const dialogFilters = sqliteTable('dialog_filters', {
+  id: integer('id').primaryKey(),
+  title: text('title').notNull(),
+  emoticon: text('emoticon'),
+  ord: integer('ord').notNull(),
+  /** JSON arrays of peer id, in Telegram's own order. */
+  pinnedPeers: text('pinned_peers').notNull().default('[]'),
+  includePeers: text('include_peers').notNull().default('[]'),
+  excludePeers: text('exclude_peers').notNull().default('[]'),
+  /**
+   * The category flags. Only those tglow can honestly evaluate from what it
+   * caches are acted on -- see folder-service.ts, which says which and why.
+   * The rest are stored anyway so a later version can start honouring them
+   * without a second migration.
+   */
+  contacts: integer('contacts').notNull().default(0),
+  nonContacts: integer('non_contacts').notNull().default(0),
+  groups: integer('groups').notNull().default(0),
+  broadcasts: integer('broadcasts').notNull().default(0),
+  bots: integer('bots').notNull().default(0),
+  excludeMuted: integer('exclude_muted').notNull().default(0),
+  excludeRead: integer('exclude_read').notNull().default(0),
+  excludeArchived: integer('exclude_archived').notNull().default(0),
+});

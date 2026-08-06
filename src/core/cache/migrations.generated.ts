@@ -25,4 +25,12 @@ export const EMBEDDED_MIGRATIONS: IEmbeddedMigration[] = [
       "\nCREATE TABLE `sync_state` (\n\t`key` text PRIMARY KEY NOT NULL,\n\t`value` integer NOT NULL\n);\n",
     ],
   },
+  {
+    tag: "0001_pretty_ronan",
+    hash: "e1e148269c3fc63ca9b2fba937864603ccf8bedbc1bb1381688e1195711a22aa",
+    createdAt: 1786035919912,
+    sql: [
+      "CREATE TABLE `dialog_filters` (\n\t`id` integer PRIMARY KEY NOT NULL,\n\t`title` text NOT NULL,\n\t`emoticon` text,\n\t`ord` integer NOT NULL,\n\t`pinned_peers` text DEFAULT '[]' NOT NULL,\n\t`include_peers` text DEFAULT '[]' NOT NULL,\n\t`exclude_peers` text DEFAULT '[]' NOT NULL,\n\t`contacts` integer DEFAULT 0 NOT NULL,\n\t`non_contacts` integer DEFAULT 0 NOT NULL,\n\t`groups` integer DEFAULT 0 NOT NULL,\n\t`broadcasts` integer DEFAULT 0 NOT NULL,\n\t`bots` integer DEFAULT 0 NOT NULL,\n\t`exclude_muted` integer DEFAULT 0 NOT NULL,\n\t`exclude_read` integer DEFAULT 0 NOT NULL,\n\t`exclude_archived` integer DEFAULT 0 NOT NULL\n);\n",
+    ],
+  },
 ];

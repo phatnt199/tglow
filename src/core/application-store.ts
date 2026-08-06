@@ -1,13 +1,21 @@
 import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
 
 import { INITIAL_ENGINE_STATE, type IEngineState, type TOverlay } from '../keys/common/index.ts';
-import type { IDialogRow, IMessageRow } from './cache/index.ts';
+import type { IDialogRow, IFolderRow, IMessageRow } from './cache/index.ts';
 
 export type TConnectionState = 'offline' | 'connecting' | 'connected';
 
 export interface IApplicationState {
   engine: IEngineState;
   dialogs: IDialogRow[];
+  /**
+   * The account's chat folders, "All" first. Telegram does not send that one --
+   * it is the absence of a filter -- but every client shows it, and without it
+   * there is no way back to the unfiltered list.
+   */
+  folders: IFolderRow[];
+  /** Which folder the sidebar is showing. ALL_CHATS_FOLDER_ID means no filtering. */
+  activeFolderId: number;
   messages: IMessageRow[];
   activePeerId: string | null;
   chatCursor: number;
@@ -102,6 +110,8 @@ export interface IApplicationState {
 const INITIAL_STATE: IApplicationState = {
   engine: INITIAL_ENGINE_STATE,
   dialogs: [],
+  folders: [],
+  activeFolderId: 0,
   messages: [],
   activePeerId: null,
   chatCursor: 0,

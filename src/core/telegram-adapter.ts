@@ -8,6 +8,7 @@ import { EntityKinds, type ITelegramEntity, type TEntityKind } from './common/in
 import type { IDialogAdapter, IRawDialog } from './dialog-service.ts';
 import type { IDifferenceAdapter, IDifferenceResult } from './difference-service.ts';
 import { ReadDirections, type ILiveMessage, type IMessageAdapter, type IRawMessage, type IReadReceipt } from './message-service.ts';
+import type { IFolderAdapter, IRawFolder } from './folder-service.ts';
 import type { IUpdateState } from './update-state.ts';
 
 const DIALOG_FETCH_LIMIT = 100;
@@ -139,6 +140,27 @@ const toCommonPts = (opts: { update: { className: string } }): number | null => 
 const toUpdateState = (opts: { state: Api.updates.State }): IUpdateState => {
   const { state } = opts;
   return { pts: state.pts, qts: state.qts, date: state.date, seq: state.seq };
+};
+
+/**
+ * A folder's peer lists arrive as InputPeer unions, which carry the raw id on a
+ * different field per variant. `utils.getPeerId(peer, false)` resolves all of
+ * them to the same unmarked id `buildDialogAdapter` produces from an entity, so
+ * membership can be decided by string comparison against a cached dialog.
+ */
+const toFolderPeerIds = (opts: { peers: Api.TypeInputPeer[] }): string[] => {
+  return opts.peers
+    .map(peer => {
+      try {
+        return utils.getPeerId(peer, false);
+      } catch {
+        // InputPeerEmpty, InputPeerSelf and the from-message variants carry no
+        // id this can resolve. Dropping one costs that peer its place in the
+        // folder; throwing would cost the whole rail.
+        return null;
+      }
+    })
+    .filter((id): id is string => id !== null);
 };
 
 /**
@@ -405,5 +427,48 @@ export const buildDifferenceAdapter = (opts: { client: TelegramClient }): IDiffe
     }
 
     return { messages, state, isTooLong: false };
+  },
+});
+
+/**
+ * The account's chat folders.
+ *
+ * `messages.getDialogFilters` returns a `messages.DialogFilters` whose
+ * `filters` is a union: `DialogFilter` (an ordinary folder),
+ * `DialogFilterDefault` (the "All chats" entry, carrying no fields at all) and
+ * `DialogFilterChatlist` (a shared folder link). Only the first is turned into
+ * a row -- FolderService synthesises "All" itself, and a chatlist folder has no
+ * local membership rules to evaluate.
+ *
+ * `title` is a `TextWithEntities`, not a string: read from the constructed
+ * object rather than guessed, the same discipline send's replyTo and delete's
+ * messageIds followed.
+ */
+export const buildFolderAdapter = (opts: { client: TelegramClient }): IFolderAdapter => ({
+  fetchFolders: async (): Promise<IRawFolder[]> => {
+    const result = await opts.client.invoke(new Api.messages.GetDialogFilters());
+    const filters = (result as unknown as { filters?: Api.TypeDialogFilter[] }).filters ?? [];
+
+    return filters
+      .filter((filter): filter is Api.DialogFilter => filter instanceof Api.DialogFilter)
+      .map((filter, index) => ({
+        id: filter.id,
+        title: (filter.title as unknown as { text?: string }).text ?? String(filter.id),
+        emoticon: filter.emoticon ?? null,
+        // Telegram's own order, kept: the arrangement is the user's, and
+        // sorting by id would scramble it.
+        ord: index,
+        pinnedPeers: toFolderPeerIds({ peers: filter.pinnedPeers ?? [] }),
+        includePeers: toFolderPeerIds({ peers: filter.includePeers ?? [] }),
+        excludePeers: toFolderPeerIds({ peers: filter.excludePeers ?? [] }),
+        contacts: filter.contacts === true,
+        nonContacts: filter.nonContacts === true,
+        groups: filter.groups === true,
+        broadcasts: filter.broadcasts === true,
+        bots: filter.bots === true,
+        excludeMuted: filter.excludeMuted === true,
+        excludeRead: filter.excludeRead === true,
+        excludeArchived: filter.excludeArchived === true,
+      }));
   },
 });

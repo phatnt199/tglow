@@ -5,7 +5,7 @@ import { drizzle } from 'drizzle-orm/bun-sqlite';
 
 import type { ITelegramEntity } from '../common/index.ts';
 import { runMigrations } from './migrate.ts';
-import { dialogs, messages, peers, syncState } from './schema.ts';
+import { dialogFilters, dialogs, messages, peers, syncState } from './schema.ts';
 
 export interface IPeerInput {
   id: string;
@@ -57,6 +57,41 @@ export interface IDialogRow {
    */
   preview: string | null;
 }
+
+/** A Telegram chat folder, as stored and as read back. Booleans here, integers in SQLite. */
+export interface IFolderInput {
+  id: number;
+  title: string;
+  emoticon: string | null;
+  ord: number;
+  pinnedPeers: string[];
+  includePeers: string[];
+  excludePeers: string[];
+  contacts: boolean;
+  nonContacts: boolean;
+  groups: boolean;
+  broadcasts: boolean;
+  bots: boolean;
+  excludeMuted: boolean;
+  excludeRead: boolean;
+  excludeArchived: boolean;
+}
+
+export type IFolderRow = IFolderInput;
+
+/**
+ * A stored peer list back into an array. Unreadable JSON costs that folder its
+ * explicit members and nothing more -- throwing would cost the whole rail, and
+ * a folder is not worth failing to start over.
+ */
+const parsePeerList = (opts: { raw: string }): string[] => {
+  try {
+    const parsed: unknown = JSON.parse(opts.raw);
+    return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === 'string') : [];
+  } catch {
+    return [];
+  }
+};
 
 export interface IMessageRow {
   peerId: string;
@@ -230,6 +265,80 @@ export class DatabaseService {
       .set({ readOutboxMaxId: opts.maxId })
       .where(and(eq(dialogs.peerId, opts.peerId), lt(dialogs.readOutboxMaxId, opts.maxId)))
       .run();
+  };
+
+  /**
+   * Folders are replaced wholesale rather than upserted: Telegram sends the
+   * complete set every time, and a folder the user deleted has to disappear
+   * here too. Upserting would leave it in the rail forever, since nothing else
+   * would ever remove a row.
+   *
+   * In one transaction, so a failure part-way cannot leave the rail empty --
+   * the delete having run and the insert not.
+   */
+  replaceFolders = (opts: { folders: IFolderInput[] }): void => {
+    this.require('replaceFolders').transaction(transaction => {
+      transaction.delete(dialogFilters).run();
+      for (const folder of opts.folders) {
+        transaction
+          .insert(dialogFilters)
+          .values({
+            id: folder.id,
+            title: folder.title,
+            emoticon: folder.emoticon,
+            ord: folder.ord,
+            pinnedPeers: JSON.stringify(folder.pinnedPeers),
+            includePeers: JSON.stringify(folder.includePeers),
+            excludePeers: JSON.stringify(folder.excludePeers),
+            contacts: folder.contacts ? 1 : 0,
+            nonContacts: folder.nonContacts ? 1 : 0,
+            groups: folder.groups ? 1 : 0,
+            broadcasts: folder.broadcasts ? 1 : 0,
+            bots: folder.bots ? 1 : 0,
+            excludeMuted: folder.excludeMuted ? 1 : 0,
+            excludeRead: folder.excludeRead ? 1 : 0,
+            excludeArchived: folder.excludeArchived ? 1 : 0,
+          })
+          .run();
+      }
+    });
+  };
+
+  listFolders = (): IFolderRow[] => {
+    return this.require('listFolders')
+      .select()
+      .from(dialogFilters)
+      .orderBy(dialogFilters.ord)
+      .all()
+      .map(row => ({
+        id: row.id,
+        title: row.title,
+        emoticon: row.emoticon,
+        ord: row.ord,
+        // A folder whose JSON is unreadable becomes an empty list rather than
+        // throwing: it costs that folder its explicit members, where a throw
+        // would cost the whole rail.
+        pinnedPeers: parsePeerList({ raw: row.pinnedPeers }),
+        includePeers: parsePeerList({ raw: row.includePeers }),
+        excludePeers: parsePeerList({ raw: row.excludePeers }),
+        contacts: row.contacts === 1,
+        nonContacts: row.nonContacts === 1,
+        groups: row.groups === 1,
+        broadcasts: row.broadcasts === 1,
+        bots: row.bots === 1,
+        excludeMuted: row.excludeMuted === 1,
+        excludeRead: row.excludeRead === 1,
+        excludeArchived: row.excludeArchived === 1,
+      }));
+  };
+
+  /** Peer type and bot-ness for every cached peer, which folder membership needs and IDialogRow does not carry. */
+  listPeerKinds = (): Map<string, { type: string; isBot: boolean }> => {
+    const rows = this.require('listPeerKinds')
+      .select({ id: peers.id, type: peers.type, isBot: peers.isBot })
+      .from(peers)
+      .all();
+    return new Map(rows.map(row => [row.id, { type: row.type, isBot: row.isBot === 1 }]));
   };
 
   /**
