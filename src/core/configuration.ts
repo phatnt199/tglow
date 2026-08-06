@@ -110,6 +110,10 @@ export class ConfigurationService {
       // config file's own directory so a --config elsewhere keeps its themes
       // next to it rather than reaching back into ~/.config.
       themeDirectory: join(dirname(filePath), 'themes'),
+      // Only an explicit `mouse = false` turns it off. Anything else -- absent,
+      // misspelled, a number -- leaves it on, which is what the renderer
+      // already did before this key existed.
+      mouse: raw.mouse !== 'false' && raw.mouse !== 0,
     };
   };
 }

@@ -91,3 +91,22 @@ test('the theme directory does not move when a palette is chosen', () => {
   expect(configuration.palette).toBe('mine');
   expect(configuration.themeDirectory).toBe(join(dirname(filePath), 'themes'));
 });
+
+// Default true because that is what already happened: OpenTUI resolves
+// useMouse ?? true, so reporting was on from M1a while nothing handled an
+// event. The key exists to turn it OFF, for anyone who would rather keep their
+// terminal's own selection unconditionally.
+test('the mouse is on unless the config explicitly turns it off', () => {
+  expect(service.load({ filePath: writeConfiguration('api_id = 1\napi_hash = "x"\n') }).mouse).toBe(true);
+  expect(service.load({ filePath: writeConfiguration('api_id = 1\napi_hash = "x"\nmouse = true\n') }).mouse).toBe(true);
+});
+
+test('mouse = false hands the mouse back to the terminal', () => {
+  expect(service.load({ filePath: writeConfiguration('api_id = 1\napi_hash = "x"\nmouse = false\n') }).mouse).toBe(false);
+});
+
+// A typo must not silently disable the mouse -- the failure would be invisible,
+// since a mouse that does nothing looks exactly like one that is not supported.
+test('a value that is neither true nor false leaves the mouse on', () => {
+  expect(service.load({ filePath: writeConfiguration('api_id = 1\napi_hash = "x"\nmouse = yes\n') }).mouse).toBe(true);
+});

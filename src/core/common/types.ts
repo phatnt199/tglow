@@ -19,4 +19,16 @@ export interface IApplicationConfiguration {
    * edit, like config.toml, not something tglow writes.
    */
   themeDirectory: string;
+  /**
+   * Whether tglow holds the mouse. Default true, which is what already happens:
+   * OpenTUI resolves `useMouse ?? true`, so reporting has been on since M1a
+   * while nothing handled an event -- the terminal's own click-drag selection
+   * was already being intercepted with nothing offered in exchange.
+   *
+   * `mouse = false` hands it back completely, for anyone who would rather keep
+   * their terminal's selection unconditionally than click anything in tglow.
+   * Shift+drag already falls through to the terminal either way; that is the
+   * terminal's own behaviour, not something tglow implements.
+   */
+  mouse: boolean;
 }

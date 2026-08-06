@@ -161,7 +161,7 @@ const main = async (): Promise<void> => {
   // down and leaves the database and the client open, and in INSERT it would
   // fire on a keystroke that is meant to reach the composer. quit() below is
   // the only way out, so it always runs.
-  const renderer = await createCliRenderer({ exitOnCtrlC: false });
+  const renderer = await createCliRenderer({ exitOnCtrlC: false, useMouse: configuration.mouse });
   const root = createRoot(renderer);
 
   const quit = (): void => {
