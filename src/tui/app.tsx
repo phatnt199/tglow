@@ -24,6 +24,7 @@ import { writeToClipboard } from '../core/clipboard.ts';
 // from its concrete module rather than the core/ barrel.
 import { fuzzyMatch } from '../core/fuzzy-match.ts';
 import { resolveFolderMembership } from '../core/folder-service.ts';
+import { readTypingStatus } from '../core/typing-status.ts';
 // Type-only: App receives a MessageSearchService instance through props
 // (constructed and DI-wired by main.ts) and only ever calls the instance
 // method .search() on it below -- there is no `new MessageSearchService(...)`
@@ -968,6 +969,19 @@ export const App = (props: IAppProps) => {
     minimumPane: MINIMUM_PANE_WIDTH,
     railWidth: hasFolders ? FOLDER_RAIL_WIDTH : 0,
   });
+  // The open chat's frame title says what the other side is doing, when they
+  // are doing anything -- "Alice · typing…" -- which is where every graphical
+  // client puts it. Read with `now` rather than trusting the map, so a status
+  // whose timer never fired (a suspended laptop) is still not drawn.
+  const now = Date.now();
+  const activeTyping = state.activePeerId === null
+    ? null
+    : readTypingStatus({ typing: state.typingByPeer, peerId: state.activePeerId, now });
+  const activeChatTitle = activeDialog === undefined
+    ? 'tglow'
+    : activeTyping === null
+      ? activeDialog.title
+      : `${activeDialog.title} · ${activeTyping.phrase}`;
   const chatListFocused = state.engine.context === VimContexts.CHAT_LIST;
   // The focused pane's frame, not both: which pane has focus was previously
   // visible only through a cursor highlight, invisible in an empty pane.
@@ -978,7 +992,7 @@ export const App = (props: IAppProps) => {
       <text height={1} flexShrink={0} fg={frameColour}>
         {buildTopEdge({
           widths: paneWidths,
-          titles: { rail: 'Folders', sidebar: 'Chats', messages: activeDialog?.title ?? 'tglow' },
+          titles: { rail: 'Folders', sidebar: 'Chats', messages: activeChatTitle },
         })}
       </text>
 

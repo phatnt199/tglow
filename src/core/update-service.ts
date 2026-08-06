@@ -5,6 +5,7 @@ import { BindingKeys } from '../common/index.ts';
 import type { ApplicationStoreService, IApplicationState } from './application-store.ts';
 import type { DatabaseService, IMessageRow } from './cache/index.ts';
 import { ReadDirections, type ILiveMessage, type IMessageAdapter, type IRawMessage, type IReadReceipt } from './message-service.ts';
+import { TYPING_STATUS_TTL_MS, type ITypingStatus } from './typing-status.ts';
 import { advanceUpdateState } from './update-state.ts';
 
 // Mirrors MessageService's SEND_REFRESH_LIMIT and main.ts's HISTORY_LIMIT: the
@@ -31,6 +32,8 @@ export type TMessageOrigin = (typeof MessageOrigins)[Exclude<keyof typeof Messag
 
 export class UpdateService {
   private readonly _logger: ILogger = ApplicationLogger.get(UpdateService.name);
+  /** Per-peer expiry timers for typing statuses, replaced on every renewal. */
+  private readonly _typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(
     @inject({ key: BindingKeys.MESSAGE_ADAPTER }) private readonly _adapter: IMessageAdapter,
@@ -218,12 +221,76 @@ export class UpdateService {
     }
   };
 
+  /**
+   * "typing…", "choosing a sticker", "recording a voice message".
+   *
+   * Each status carries its own expiry and is also cleared by a timer, because
+   * Telegram sends no "still typing" heartbeat this could count on and no stop
+   * signal it could rely on arriving. A status left behind by someone who
+   * closed their app would otherwise sit there permanently -- a claim about the
+   * present that has quietly become false, which is worse than never showing
+   * one at all.
+   *
+   * The timer is keyed per peer and replaced on every renewal, so someone
+   * typing continuously stays "typing…" rather than flickering every six
+   * seconds as an older timer fires under a newer status.
+   */
+  private typing = (status: ITypingStatus): void => {
+    try {
+      const existing = this._typingTimers.get(status.peerId);
+      if (existing !== undefined) {
+        clearTimeout(existing);
+        this._typingTimers.delete(status.peerId);
+      }
+
+      const typingByPeer = new Map(this._store.getState().typingByPeer);
+
+      // A cancel is a stop signal, not an activity: it clears rather than
+      // announcing itself.
+      if (status.phrase === null) {
+        typingByPeer.delete(status.peerId);
+        this._store.setState({ patch: { typingByPeer } });
+        return;
+      }
+
+      typingByPeer.set(status.peerId, {
+        actorId: status.actorId,
+        phrase: status.phrase,
+        expiresAt: Date.now() + TYPING_STATUS_TTL_MS,
+      });
+      this._store.setState({ patch: { typingByPeer } });
+
+      const timer = setTimeout(() => {
+        this._typingTimers.delete(status.peerId);
+        const current = new Map(this._store.getState().typingByPeer);
+        // Only if nothing newer replaced it. Without this check a renewal that
+        // landed a moment ago would be cleared by the previous status's timer.
+        if ((current.get(status.peerId)?.expiresAt ?? 0) <= Date.now()) {
+          current.delete(status.peerId);
+          this._store.setState({ patch: { typingByPeer: current } });
+        }
+      }, TYPING_STATUS_TTL_MS);
+      // Never keep the process alive for a status nobody is waiting on.
+      timer.unref?.();
+      this._typingTimers.set(status.peerId, timer);
+    } catch (error) {
+      // Same reasoning as apply()'s catch: this runs on teleproto's event loop.
+      this._logger.for(this.typing.name).error('Could not apply the typing status | Reason: %s', error);
+    }
+  };
+
   start = (): (() => void) => {
     const stopMessages = this._adapter.subscribeToNewMessages({ onMessage: this.receive });
     const stopReceipts = this._adapter.subscribeToReadReceipts({ onReadReceipt: this.readReceipt });
+    const stopTyping = this._adapter.subscribeToTyping({ onTyping: this.typing });
     return (): void => {
       stopMessages();
       stopReceipts();
+      stopTyping();
+      for (const timer of this._typingTimers.values()) {
+        clearTimeout(timer);
+      }
+      this._typingTimers.clear();
     };
   };
 }

@@ -27,6 +27,7 @@ const buildAdapter = (overrides: Partial<IMessageAdapter> = {}): IMessageAdapter
   // is what exercises it -- but IMessageAdapter requires it, so a stub keeps this fake whole.
   subscribeToNewMessages: () => (): void => {},
   subscribeToReadReceipts: () => (): void => {},
+  subscribeToTyping: () => (): void => {},
   ...overrides,
 });
 

@@ -5,6 +5,7 @@ import { BindingKeys } from '../common/index.ts';
 import type { ApplicationStoreService, IApplicationState } from './application-store.ts';
 import type { DatabaseService, IMessageRow } from './cache/index.ts';
 import type { ITelegramEntity } from './common/index.ts';
+import type { ITypingStatus } from './typing-status.ts';
 
 const REPUBLISH_LIMIT = 200;
 // Telegram rate-limits ReadHistory the same as everything else; a cursor
@@ -80,6 +81,7 @@ export interface IMessageAdapter {
   markRead(opts: { peerId: string; maxId: number }): Promise<void>;
   subscribeToNewMessages(opts: { onMessage: (live: ILiveMessage) => void }): () => void;
   subscribeToReadReceipts(opts: { onReadReceipt: (receipt: IReadReceipt) => void }): () => void;
+  subscribeToTyping(opts: { onTyping: (status: ITypingStatus) => void }): () => void;
 }
 
 export class MessageService {

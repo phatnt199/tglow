@@ -61,6 +61,7 @@ const build = (
     // UpdateService.start() calls it, so a stub is the difference between this
     // suite running and throwing on the first build().
     subscribeToReadReceipts: (): (() => void) => (): void => {},
+    subscribeToTyping: (): (() => void) => (): void => {},
     // Stubs for the rest of IMessageAdapter. They exist so this fake can be
     // typed rather than cast: the previous `as IMessageAdapter` hid the fact
     // that UpdateService.start() had begun calling a member this object did

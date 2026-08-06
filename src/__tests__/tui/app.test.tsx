@@ -2252,3 +2252,30 @@ test('opening the search overlay shrinks the message pane so the status line sta
   expect(rows[TERMINAL_HEIGHT - 1]).toContain('NORMAL');
   expect(rows[TERMINAL_HEIGHT - 1]).toContain(`1/${store.getState().messages.length}`);
 });
+
+// "typing…" belongs in the chat header, where every graphical client puts it.
+test('the open chat header says what the other side is doing', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => {
+    store.setState({ patch: {
+      typingByPeer: new Map([['u1', { actorId: 'u1', phrase: 'choosing a sticker', expiresAt: Date.now() + 5_000 }]]),
+    } });
+  });
+  await renderer.flush();
+  expect(renderer.captureCharFrame().split('\n')[0]!).toContain('choosing a sticker');
+});
+
+// A status whose expiry has passed must not be drawn even if nothing cleared
+// it -- a suspended laptop is exactly the case where the timer fires late.
+test('an expired typing status is not drawn', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => {
+    store.setState({ patch: {
+      typingByPeer: new Map([['u1', { actorId: 'u1', phrase: 'typing…', expiresAt: Date.now() - 1 }]]),
+    } });
+  });
+  await renderer.flush();
+  const top = renderer.captureCharFrame().split('\n')[0]!;
+  expect(top).not.toContain('typing');
+  expect(top).toContain('Alice');
+});

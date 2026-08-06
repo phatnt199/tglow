@@ -2,6 +2,7 @@ import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
 
 import { INITIAL_ENGINE_STATE, type IEngineState, type TOverlay } from '../keys/common/index.ts';
 import type { IDialogRow, IFolderRow, IMessageRow } from './cache/index.ts';
+import type { IActiveTyping } from './typing-status.ts';
 
 export type TConnectionState = 'offline' | 'connecting' | 'connected';
 
@@ -22,6 +23,14 @@ export interface IApplicationState {
    * render: App is a pure function of state and has no database of its own.
    */
   peerKinds: Map<string, { type: string; isBot: boolean }>;
+  /**
+   * Who is typing, recording or choosing a sticker, per chat. Carries its own
+   * expiry: Telegram re-sends an action every few seconds while it continues,
+   * so one left behind by someone who closed their app must go stale rather
+   * than sit in the sidebar claiming something about the present that has
+   * quietly become false.
+   */
+  typingByPeer: Map<string, IActiveTyping>;
   messages: IMessageRow[];
   activePeerId: string | null;
   chatCursor: number;
@@ -119,6 +128,7 @@ const INITIAL_STATE: IApplicationState = {
   folders: [],
   activeFolderId: 0,
   peerKinds: new Map(),
+  typingByPeer: new Map(),
   messages: [],
   activePeerId: null,
   chatCursor: 0,

@@ -9,6 +9,7 @@ import type { IDialogAdapter, IRawDialog } from './dialog-service.ts';
 import type { IDifferenceAdapter, IDifferenceResult } from './difference-service.ts';
 import { ReadDirections, type ILiveMessage, type IMessageAdapter, type IRawMessage, type IReadReceipt } from './message-service.ts';
 import type { IFolderAdapter, IRawFolder } from './folder-service.ts';
+import { resolveTypingPhrase, type ITypingStatus } from './typing-status.ts';
 import type { IUpdateState } from './update-state.ts';
 
 const DIALOG_FETCH_LIMIT = 100;
@@ -356,6 +357,69 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
           maxId: update.maxId,
           direction: ReadDirections.INBOX,
           stillUnreadCount: update.stillUnreadCount,
+        });
+      }
+    };
+
+    opts.client.addEventHandler(handleUpdate, eventBuilder);
+    return (): void => {
+      opts.client.removeEventHandler(handleUpdate, eventBuilder);
+    };
+  },
+
+  // "typing…", "choosing a sticker", "recording a voice message". Three update
+  // classes, and the peer is derived differently from each -- read off
+  // constructed instances rather than guessed:
+  //
+  // - UpdateUserTyping    { userId, action }              a private chat: the
+  //   actor IS the chat, so peerId and actorId are the same id.
+  // - UpdateChatUserTyping    { chatId, fromId, action }  a basic group.
+  // - UpdateChannelUserTyping { channelId, fromId, action } a channel or
+  //   supergroup.
+  //
+  // The last two carry the chat and the actor separately, which is what lets a
+  // group say *who* is typing rather than just that someone is.
+  subscribeToTyping: (subscribeOpts: { onTyping: (status: ITypingStatus) => void }): (() => void) => {
+    const eventBuilder = new Raw({});
+
+    const resolveActor = (fromId: Api.TypePeer | undefined, fallback: string): string => {
+      if (!fromId) {
+        return fallback;
+      }
+      try {
+        return utils.getPeerId(fromId, false);
+      } catch {
+        return fallback;
+      }
+    };
+
+    const handleUpdate = (update: Api.TypeUpdate): void => {
+      if (update instanceof Api.UpdateUserTyping) {
+        const peerId = String(update.userId);
+        subscribeOpts.onTyping({
+          peerId,
+          actorId: peerId,
+          phrase: resolveTypingPhrase({ className: update.action.className }),
+        });
+        return;
+      }
+
+      if (update instanceof Api.UpdateChatUserTyping) {
+        const peerId = String(update.chatId);
+        subscribeOpts.onTyping({
+          peerId,
+          actorId: resolveActor(update.fromId, peerId),
+          phrase: resolveTypingPhrase({ className: update.action.className }),
+        });
+        return;
+      }
+
+      if (update instanceof Api.UpdateChannelUserTyping) {
+        const peerId = String(update.channelId);
+        subscribeOpts.onTyping({
+          peerId,
+          actorId: resolveActor(update.fromId, peerId),
+          phrase: resolveTypingPhrase({ className: update.action.className }),
         });
       }
     };

@@ -5,6 +5,7 @@ import { Api } from 'teleproto';
 import { ApplicationStoreService } from '../../core/application-store.ts';
 import { DatabaseService, type IMessageRow } from '../../core/cache/index.ts';
 import { ReadDirections, type ILiveMessage, type IMessageAdapter, type IRawMessage, type IReadReceipt } from '../../core/message-service.ts';
+import type { ITypingStatus } from '../../core/typing-status.ts';
 import { buildMessageAdapter } from '../../core/telegram-adapter.ts';
 import { MessageOrigins, UpdateService } from '../../core/update-service.ts';
 
@@ -26,6 +27,7 @@ const buildAdapter = (): {
 } => {
   let onMessage: ((live: ILiveMessage) => void) | null = null;
   let onReadReceipt: ((receipt: IReadReceipt) => void) | null = null;
+  let onTyping: ((status: ITypingStatus) => void) | null = null;
   const adapter: IMessageAdapter = {
     fetchHistory: async () => [],
     send: async opts => buildRawMessage({ peerId: opts.peerId, text: opts.text }),
@@ -47,6 +49,12 @@ const buildAdapter = (): {
       onReadReceipt = subscribeOpts.onReadReceipt;
       return (): void => {
         onReadReceipt = null;
+      };
+    },
+    subscribeToTyping: subscribeOpts => {
+      onTyping = subscribeOpts.onTyping;
+      return (): void => {
+        onTyping = null;
       };
     },
   };
