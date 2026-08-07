@@ -79,6 +79,8 @@ export class ActionTypes {
   static readonly SEARCH_CYCLE = 'search.cycle';
   /** Moves the sidebar to the next or previous chat folder. */
   static readonly FOLDER_CYCLE = 'folder.cycle';
+  /** Switches one of the conversation's rail fields on or off. */
+  static readonly DISPLAY_TOGGLE = 'display.toggle';
 }
 
 const SUPPORTED_MODES: readonly string[] = [

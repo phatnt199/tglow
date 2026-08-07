@@ -293,6 +293,17 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
     }
 
     /**
+     * `zn` and `zt`. Switching a rail field off gives its columns back to the
+     * conversation rather than blanking them in place, so this is as much a
+     * way to widen the text as to quieten the margin.
+     */
+    case ActionTypes.DISPLAY_TOGGLE: {
+      return action.field === 'gutter'
+        ? { showGutter: !state.showGutter }
+        : { showTime: !state.showTime };
+    }
+
+    /**
      * `]f`/`[f`. Wraps in both directions, the same way SEARCH_CYCLE does --
      * a rail you can fall off the end of would need a "you are at the last
      * folder" message nobody wants to read.

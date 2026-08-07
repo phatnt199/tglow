@@ -46,6 +46,16 @@ export interface IMessageViewProps {
   onMessagePress?: (opts: { index: number; button: number; x: number; y: number }) => void;
   /** A wheel over the pane. Positive scrolls toward newer messages. */
   onScroll?: (opts: { delta: number }) => void;
+  /**
+   * The relative-number gutter and the clock, each switchable. Both default
+   * on, which is what the pane has always drawn.
+   *
+   * A hidden field gives its columns back to the conversation rather than
+   * blanking them: leaving a hole where the time used to be would spend the
+   * width and show nothing for it.
+   */
+  showGutter?: boolean;
+  showTime?: boolean;
 }
 
 /** Reserved and always blank: the cursorline shows position, not an arrow. */
@@ -55,8 +65,19 @@ const TIME_WIDTH = 5;
 const SENDER_WIDTH = 10;
 /** Two columns: both ticks once read, one tick and a blank while only sent, or fully blank when the message is not the user's own. */
 const TICK_WIDTH = 2;
-/** marker, gutter, time, sender and tick, each followed by a single blank column. */
-const RAIL_WIDTH = MARKER_WIDTH + GUTTER_WIDTH + 1 + TIME_WIDTH + 1 + SENDER_WIDTH + 1 + TICK_WIDTH + 1;
+/**
+ * marker, gutter, time, sender and tick, each followed by a single blank
+ * column -- minus whichever of the gutter and the time are switched off.
+ *
+ * A hidden field gives its columns back to the conversation rather than
+ * blanking them in place. Leaving a five-column hole where the time used to be
+ * would be the worst of both: the width still spent, and nothing shown for it.
+ */
+const resolveRailWidth = (opts: { showGutter: boolean; showTime: boolean }): number =>
+  MARKER_WIDTH
+  + (opts.showGutter ? GUTTER_WIDTH + 1 : 0)
+  + (opts.showTime ? TIME_WIDTH + 1 : 0)
+  + SENDER_WIDTH + 1 + TICK_WIDTH + 1;
 /** Below this the rail is worth more than the sliver of text it would leave. */
 const MINIMUM_CONTENT_WIDTH = 8;
 /**
@@ -537,7 +558,7 @@ const buildRows = (opts: {
 export const MessageView = (props: IMessageViewProps) => {
   const {
     messages, cursor, focused, tokens, height, width, resolveSenderName, revealedSpoilers, readOutboxMaxId,
-    onMessagePress, onScroll,
+    onMessagePress, onScroll, showGutter = true, showTime = true,
   } = props;
 
   if (messages.length === 0) {
@@ -548,7 +569,7 @@ export const MessageView = (props: IMessageViewProps) => {
     );
   }
 
-  const contentWidth = Math.max(MINIMUM_CONTENT_WIDTH, width - RAIL_WIDTH);
+  const contentWidth = Math.max(MINIMUM_CONTENT_WIDTH, width - resolveRailWidth({ showGutter, showTime }));
   const rows = buildRows({ messages, cursor, contentWidth, resolveSenderName, revealedSpoilers, readOutboxMaxId });
 
   // A cursor pointing past the end of the history would otherwise anchor the
@@ -592,8 +613,12 @@ export const MessageView = (props: IMessageViewProps) => {
               onMessagePress?.({ index: row.messageIndex, button: event.button, x: event.x, y: event.y });
             }}
           >
-            <span fg={highlighted ? tokens.chatUnread : tokens.dim}>{`${MARKER}${row.gutter} `}</span>
-            <span fg={tokens.dim}>{`${row.time} ${row.sender} ${row.tick} `}</span>
+            <span fg={highlighted ? tokens.chatUnread : tokens.dim}>
+              {showGutter ? `${MARKER}${row.gutter} ` : MARKER}
+            </span>
+            <span fg={tokens.dim}>
+              {`${showTime ? `${row.time} ` : ''}${row.sender} ${row.tick} `}
+            </span>
             {row.kind === 'quote' ? (
               <span fg={tokens.dim}>{row.content[0]?.text ?? ''}</span>
             ) : (

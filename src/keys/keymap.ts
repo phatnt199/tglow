@@ -120,6 +120,18 @@ export class KeymapService {
       context: '*', mode: VimModes.NORMAL, keys: 'nf', description: 'Focus chat list',
       action: () => [{ type: ActionTypes.FOCUS_SET, context: VimContexts.CHAT_LIST }],
     },
+    // Display. `z` is vim's view prefix, and this project already uses it as
+    // one -- `zs` reveals a spoiler. `zn` and `zt` switch the conversation's
+    // gutter and clock, which also widens the text, since a hidden field gives
+    // its columns back rather than blanking them.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: 'zn', description: 'Toggle line numbers',
+      action: () => [{ type: ActionTypes.DISPLAY_TOGGLE, field: 'gutter' }],
+    },
+    {
+      context: '*', mode: VimModes.NORMAL, keys: 'zt', description: 'Toggle timestamps',
+      action: () => [{ type: ActionTypes.DISPLAY_TOGGLE, field: 'time' }],
+    },
     // Folders. `]f`/`[f` follow vim's own bracket-pair convention for "next
     // and previous thing of a kind" (]c, ]q, ]b), and exist so the rail is
     // never mouse-only -- M2's governing rule.

@@ -28,6 +28,18 @@ export interface IApplicationState {
    */
   sidebarWidth: number | null;
   /**
+   * The conversation's relative-number gutter and its clock, each switchable
+   * with `zn` and `zt`. vim's own `z` is the view prefix, and this project
+   * already treats it as one -- `zs` reveals a spoiler.
+   *
+   * Runtime state rather than configuration: these are the sort of thing you
+   * flip to read one wide message and flip back, not a preference to write
+   * down. A hidden field also gives its columns back to the conversation, so
+   * turning both off is a way to widen the text rather than only to quieten it.
+   */
+  showGutter: boolean;
+  showTime: boolean;
+  /**
    * The open right-click menu, or null. `target` is an index into whichever
    * list the menu was opened over -- messages for a message menu, the visible
    * dialogs for a chat menu -- resolved to an actual row only when an item is
@@ -151,6 +163,8 @@ const INITIAL_STATE: IApplicationState = {
   folders: [],
   activeFolderId: 0,
   sidebarWidth: null,
+  showGutter: true,
+  showTime: true,
   contextMenu: null,
   peerKinds: new Map(),
   typingByPeer: new Map(),

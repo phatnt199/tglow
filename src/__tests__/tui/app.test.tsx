@@ -2669,3 +2669,96 @@ test('dragging inside the conversation no longer scrolls it', async () => {
 
   expect(store.getState().messageCursor).toBe(afterPress);
 });
+
+// ── display toggles ───────────────────────────────────────────────────────
+
+test('zt hides the clock and gives its columns to the conversation', async () => {
+  const { renderer, store } = await mount({ width: 74, height: 8 });
+  const rowAt = (index: number): string => renderer.captureCharFrame().split('\n')[index]!;
+  // Sliced at the junction: the sidebar carries its own clock on the same
+  // terminal row, and the first version of this test matched that instead --
+  // reading a working feature as broken.
+  const conversationOn = (index: number): string => {
+    const row = rowAt(index);
+    return row.slice(rowAt(0).indexOf('┬'));
+  };
+  const contentStart = (): number => conversationOn(1).indexOf('msg1');
+  const before = contentStart();
+
+  await act(async () => { renderer.mockInput.pressKey('z'); renderer.mockInput.pressKey('t'); });
+  await renderer.flush();
+
+  expect(store.getState().showTime).toBe(false);
+  expect(conversationOn(1)).not.toMatch(/\d\d:\d\d/);
+  // The text moved left rather than a hole being left where the clock was.
+  expect(contentStart()).toBeLessThan(before);
+});
+
+test('zn hides the gutter and gives its columns to the conversation', async () => {
+  const { renderer, store } = await mount({ width: 74, height: 8 });
+  const contentStart = (): number => renderer.captureCharFrame().split('\n')[1]!.indexOf('msg1');
+  const before = contentStart();
+
+  await act(async () => { renderer.mockInput.pressKey('z'); renderer.mockInput.pressKey('n'); });
+  await renderer.flush();
+
+  expect(store.getState().showGutter).toBe(false);
+  expect(contentStart()).toBeLessThan(before);
+});
+
+test('both toggles are switches, not one-way', async () => {
+  const { renderer, store } = await mount();
+
+  for (const [key, field] of [['t', 'showTime'], ['n', 'showGutter']] as Array<[string, 'showTime' | 'showGutter']>) {
+    await act(async () => { renderer.mockInput.pressKey('z'); renderer.mockInput.pressKey(key); });
+    await renderer.flush();
+    expect(store.getState()[field], `${key} off`).toBe(false);
+
+    await act(async () => { renderer.mockInput.pressKey('z'); renderer.mockInput.pressKey(key); });
+    await renderer.flush();
+    expect(store.getState()[field], `${key} on`).toBe(true);
+  }
+});
+
+// zs already lived under the same prefix; adding two more must not have made
+// any of the three ambiguous with another.
+test('zs still reveals a spoiler alongside the new z bindings', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('z'); renderer.mockInput.pressKey('s'); });
+  await renderer.flush();
+  expect(store.getState().revealedSpoilers.size).toBeGreaterThan(0);
+});
+
+// Reported: the menu stayed open after clicking away. Only escape and choosing
+// an item closed it, which is not what any menu does.
+test('clicking away closes the context menu', async () => {
+  const { renderer, store } = await mount();
+  const mouse = createMockMouse(renderer.renderer);
+
+  await act(async () => { await mouse.click(40, 3, MouseButtons.RIGHT); });
+  await renderer.flush();
+  expect(store.getState().contextMenu).not.toBeNull();
+
+  await act(async () => { await mouse.click(40, 8); });
+  await renderer.flush();
+
+  expect(store.getState().contextMenu).toBeNull();
+});
+
+// The guard that makes the above safe: children handle a press before the root
+// does, so a right click has already opened its menu by the time the root sees
+// the same press. Closing unconditionally would shut it before it was drawn.
+test('a right click still opens a menu despite click-away closing', async () => {
+  const { renderer, store } = await mount();
+  const mouse = createMockMouse(renderer.renderer);
+
+  await act(async () => { await mouse.click(40, 3, MouseButtons.RIGHT); });
+  await renderer.flush();
+  expect(store.getState().contextMenu).not.toBeNull();
+
+  // And a second right click, with one already open, retargets rather than
+  // closing and leaving nothing.
+  await act(async () => { await mouse.click(40, 2, MouseButtons.RIGHT); });
+  await renderer.flush();
+  expect(store.getState().contextMenu).not.toBeNull();
+});

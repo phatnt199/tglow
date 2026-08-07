@@ -57,7 +57,8 @@ export type TAction =
   | { type: typeof ActionTypes.LINK_SHOW }
   | { type: typeof ActionTypes.WARNING_DISMISS }
   | { type: typeof ActionTypes.SEARCH_CYCLE; direction: 'next' | 'previous' }
-  | { type: typeof ActionTypes.FOLDER_CYCLE; delta: number };
+  | { type: typeof ActionTypes.FOLDER_CYCLE; delta: number }
+  | { type: typeof ActionTypes.DISPLAY_TOGGLE; field: 'gutter' | 'time' };
 
 export interface IEngineState {
   mode: TVimMode;

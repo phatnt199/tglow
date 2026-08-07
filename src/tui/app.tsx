@@ -362,6 +362,12 @@ export const App = (props: IAppProps) => {
    * one-column handle be draggable at all.
    */
   const dragModeRef = useRef<'divider' | null>(null);
+  /**
+   * Whether the press being handled right now is the one that opened a menu.
+   * Children handle a press before the root does, so without this the root
+   * would close a menu the child had just opened.
+   */
+  const menuOpenedThisPressRef = useRef(false);
 
   // The pending ambiguous-key timeout, if any. A ref, not state, for the same
   // reason the handler below reads store.getState() fresh rather than a
@@ -1105,6 +1111,7 @@ export const App = (props: IAppProps) => {
 
   const pressChat = (opts: { index: number; button: number; x?: number; y?: number }): void => {
     if (opts.button === MOUSE_BUTTON_RIGHT) {
+      menuOpenedThisPressRef.current = true;
       store.setState({
         patch: { contextMenu: { kind: 'chat', target: opts.index, x: opts.x ?? 0, y: opts.y ?? 0, cursor: 0 } },
       });
@@ -1140,6 +1147,7 @@ export const App = (props: IAppProps) => {
       // there too -- otherwise choosing Delete would ask about one message
       // while the cursorline sat on another.
       const current = store.getState();
+      menuOpenedThisPressRef.current = true;
       store.setState({
         patch: {
           messageCursor: Math.max(0, Math.min(opts.index, current.messages.length - 1)),
@@ -1293,6 +1301,20 @@ export const App = (props: IAppProps) => {
    * is known here exactly, so this needs no hit-testing at all.
    */
   const beginDrag = (opts: { x: number; button: number }): void => {
+    // Clicking away closes the menu, which is what every menu does and what
+    // this one failed to do -- only escape and choosing an item closed it.
+    //
+    // Guarded on a menu opened by *this* press: children handle the press
+    // before the root does, so a right click has already opened its menu by
+    // the time this runs, and closing unconditionally would shut it again
+    // before it was ever drawn. Choosing an item closes it via its own
+    // handler, so this only ever has to catch a press that landed elsewhere.
+    if (menuOpenedThisPressRef.current) {
+      menuOpenedThisPressRef.current = false;
+    } else if (store.getState().contextMenu !== null) {
+      closeMenu();
+    }
+
     if (opts.button !== MOUSE_BUTTON_LEFT) {
       return;
     }
@@ -1448,6 +1470,8 @@ export const App = (props: IAppProps) => {
             readOutboxMaxId={activeDialog?.readOutboxMaxId ?? 0}
             onMessagePress={pressMessage}
             onScroll={({ delta }) => { scrollBy({ unit: 'message', delta }); }}
+            showGutter={state.showGutter}
+            showTime={state.showTime}
           />
 
           {isOverlayOpen ? null : (

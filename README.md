@@ -195,6 +195,8 @@ by accident.
 | Key | Action |
 | --- | --- |
 | `zs` | reveal a spoiler under the cursor |
+| `zn` | show or hide the line-number gutter |
+| `zt` | show or hide timestamps |
 | `K` | show the URL of a link under the cursor |
 | `r` | reply to the message under the cursor |
 | `e` | edit your own message under the cursor |
