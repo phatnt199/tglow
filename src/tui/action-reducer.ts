@@ -404,6 +404,7 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
     // Side-effecting actions are App's to perform; the reducer has no patch.
     case ActionTypes.CHAT_OPEN:
     case ActionTypes.COMPOSER_SEND:
+    case ActionTypes.PIN_TOGGLE:
     case ActionTypes.APPLICATION_QUIT: {
       return {};
     }

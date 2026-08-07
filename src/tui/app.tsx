@@ -78,6 +78,7 @@ export interface IAppProps {
   onSend: (text: string) => Promise<void>;
   onEdit: (opts: { messageId: number; text: string }) => Promise<void>;
   onDelete: (opts: { messageIds: number[] }) => Promise<void>;
+  onPin: (opts: { peerId: string; messageId: number }) => Promise<void>;
   onQuit: () => void;
   onOpenChat: (opts: { peerId: string }) => Promise<void>;
   /**
@@ -321,7 +322,7 @@ const resolveClipboardText = (opts: {
 export const App = (props: IAppProps) => {
   const {
     store, engine, keymapService, keyNormalizer, messageSearchService, timeoutMilliseconds, tokens, resolveSenderName,
-    onSend, onEdit, onDelete, onQuit, onOpenChat, onMarkRead,
+    onSend, onEdit, onDelete, onPin, onQuit, onOpenChat, onMarkRead,
   } = props;
 
   // useSyncExternalStore re-subscribes whenever the `subscribe` argument's
@@ -442,6 +443,21 @@ export const App = (props: IAppProps) => {
             });
           break;
         }
+        // Pinning is a side effect App performs, like send and delete, rather
+        // than something the reducer can do: it is a network call, and the
+        // reducer is pure. It asks nothing first -- pinning is undone by the
+        // same key that did it, and the one confirmation in this application
+        // exists for the one thing that cannot be taken back.
+        case ActionTypes.PIN_TOGGLE: {
+          const target = accumulated.messages[accumulated.messageCursor];
+          if (target && accumulated.activePeerId !== null) {
+            void onPin({ peerId: accumulated.activePeerId, messageId: target.id }).catch(error => {
+              logRejection({ method: 'onPin', error });
+            });
+          }
+          break;
+        }
+
         case ActionTypes.CHAT_OPEN: {
           const target = accumulated.dialogs[accumulated.chatCursor];
           if (target) {
@@ -1258,6 +1274,17 @@ export const App = (props: IAppProps) => {
               operator: Operators.YANK, unit: 'message', from: 0, to: 0, register: null,
             },
           }),
+        });
+        return;
+      }
+      // Through commitResolution rather than applyAction, unlike its
+      // neighbours here: pinning is the one menu item whose action carries a
+      // side effect, and applyAction alone would move the state and never
+      // make the call. `P` reaches the same case by the same route.
+      case MenuActions.PIN: {
+        commitResolution({
+          current,
+          result: { state: current.engine, actions: [{ type: ActionTypes.PIN_TOGGLE }], status: 'resolved' },
         });
         return;
       }

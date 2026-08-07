@@ -99,6 +99,10 @@ const toRawMessage = (opts: { message: Api.Message }): IRawMessage => {
     out: message.out ? 1 : 0,
     entities: (message.entities ?? []).map(entity => toEntity({ entity })),
     replyToMessageId: message.replyTo?.replyToMsgId ?? null,
+    // A flag on the message itself, so it arrives with every fetch and every
+    // live delivery -- no separate lookup, and the marker cannot disagree with
+    // the server about a message already on screen.
+    pinned: message.pinned ? 1 : 0,
   };
 };
 
@@ -267,6 +271,19 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
   // markAsReadParams.maxId set, GramJS skips the mention-clearing branch
   // entirely and calls Api.channels.ReadHistory (channels) or
   // Api.messages.ReadHistory (everything else) with that maxId directly.
+  /**
+   * Pin or unpin a message. `unpin` is a flag on the same request rather than a
+   * second method, which is how Telegram models it -- and `silent` is left off
+   * so pinning notifies the chat the way it does everywhere else.
+   */
+  pinMessage: async (pinOpts: { peerId: string; messageId: number; unpin: boolean }): Promise<void> => {
+    await opts.client.invoke(new Api.messages.UpdatePinnedMessage({
+      peer: pinOpts.peerId,
+      id: pinOpts.messageId,
+      unpin: pinOpts.unpin,
+    }));
+  },
+
   markRead: async (markReadOpts: { peerId: string; maxId: number }): Promise<void> => {
     await opts.client.markAsRead(markReadOpts.peerId, undefined, { maxId: markReadOpts.maxId });
   },

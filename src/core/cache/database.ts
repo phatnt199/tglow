@@ -34,6 +34,8 @@ export interface IMessageInput {
   out: number;
   entities: ITelegramEntity[];
   replyToMessageId: number | null;
+  /** 1 when pinned in its chat; omitted means not pinned. */
+  pinned?: number;
 }
 
 export interface IDialogRow {
@@ -102,6 +104,8 @@ export interface IMessageRow {
   out: number;
   entities: ITelegramEntity[];
   replyToMessageId: number | null;
+  /** 1 when pinned in its chat. Optional on input so existing call sites need no change; always present on a row read back. */
+  pinned?: number;
 }
 
 export type TDrizzleDatabase = ReturnType<typeof drizzle>;
@@ -135,6 +139,7 @@ const MESSAGE_COLUMNS = {
   out: messages.out,
   entities: messages.entities,
   replyToMessageId: messages.replyToMsgId,
+  pinned: messages.pinned,
 };
 
 /**
@@ -406,6 +411,7 @@ export class DatabaseService {
             out: message.out,
             entities: JSON.stringify(message.entities),
             replyToMsgId: message.replyToMessageId,
+            pinned: message.pinned ?? 0,
           })
           .onConflictDoUpdate({
             target: [messages.peerId, messages.id],
@@ -416,11 +422,21 @@ export class DatabaseService {
               out: message.out,
               entities: JSON.stringify(message.entities),
               replyToMsgId: message.replyToMessageId,
+              pinned: message.pinned ?? 0,
             },
           })
           .run();
       }
     });
+  };
+
+  /** A direct UPDATE, the same shape clearUnreadCount uses: one column, and a no-op when the row is not cached. */
+  setMessagePinned = (opts: { peerId: string; id: number; pinned: number }): void => {
+    this.require('setMessagePinned')
+      .update(messages)
+      .set({ pinned: opts.pinned })
+      .where(and(eq(messages.peerId, opts.peerId), eq(messages.id, opts.id)))
+      .run();
   };
 
   listMessages = (opts: { peerId: string; limit: number }): IMessageRow[] => {

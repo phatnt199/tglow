@@ -71,6 +71,7 @@ const build = (
     edit: async (): Promise<IRawMessage> => { throw new Error('edit is not exercised by difference-service tests'); },
     delete: async (): Promise<void> => {},
     markRead: async (): Promise<void> => {},
+    pinMessage: async (): Promise<void> => {},
   } satisfies IMessageAdapter;
 
   // A real UpdateService, not a stand-in: "a backfilled message and a live one

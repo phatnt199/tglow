@@ -19,6 +19,7 @@ export class MenuActions {
   static readonly DELETE = 'delete';
   static readonly YANK = 'yank';
   static readonly COPY_LINK = 'copy-link';
+  static readonly PIN = 'pin';
   static readonly OPEN = 'open';
   static readonly MARK_READ = 'mark-read';
 }
@@ -48,7 +49,10 @@ export const buildMessageMenu = (opts: { message: IMessageRow | undefined }): IM
     items.push({ action: MenuActions.EDIT, label: 'Edit', key: 'e' });
   }
 
-  items.push({ action: MenuActions.YANK, label: 'Yank', key: 'yy' });
+  items.push(
+    { action: MenuActions.PIN, label: message.pinned === 1 ? 'Unpin' : 'Pin', key: 'P' },
+    { action: MenuActions.YANK, label: 'Yank', key: 'yy' },
+  );
 
   if (extractLinkUrls({ text: message.text, entities: message.entities }).length > 0) {
     items.push({ action: MenuActions.COPY_LINK, label: 'Copy link', key: 'K' });

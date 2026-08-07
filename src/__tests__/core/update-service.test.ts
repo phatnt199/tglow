@@ -39,6 +39,7 @@ const buildAdapter = (): {
     // Same reasoning as delete above -- MessageService.markRead (see
     // message-service.test.ts) is what exercises this.
     markRead: async (): Promise<void> => {},
+    pinMessage: async (): Promise<void> => {},
     subscribeToNewMessages: subscribeOpts => {
       onMessage = subscribeOpts.onMessage;
       return (): void => {

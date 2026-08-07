@@ -81,6 +81,8 @@ export class ActionTypes {
   static readonly FOLDER_CYCLE = 'folder.cycle';
   /** Switches one of the conversation's rail fields on or off. */
   static readonly DISPLAY_TOGGLE = 'display.toggle';
+  /** Pin or unpin the message under the cursor. Performed by App, like send and delete. */
+  static readonly PIN_TOGGLE = 'pin.toggle';
 }
 
 const SUPPORTED_MODES: readonly string[] = [

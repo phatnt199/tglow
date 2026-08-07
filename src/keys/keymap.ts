@@ -120,6 +120,12 @@ export class KeymapService {
       context: '*', mode: VimModes.NORMAL, keys: 'nf', description: 'Focus chat list',
       action: () => [{ type: ActionTypes.FOCUS_SET, context: VimContexts.CHAT_LIST }],
     },
+    // Pin. Shifted rather than a bare `p`, which vim spends on paste and this
+    // project will want for the same when registers gain one.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: '<S-p>', description: 'Pin or unpin the message',
+      action: () => [{ type: ActionTypes.PIN_TOGGLE }],
+    },
     // Display. `z` is vim's view prefix, and this project already uses it as
     // one -- `zs` reveals a spoiler. `zn` and `zt` switch the conversation's
     // gutter and clock, which also widens the text, since a hidden field gives

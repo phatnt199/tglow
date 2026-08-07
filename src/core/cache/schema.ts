@@ -46,6 +46,13 @@ export const messages = sqliteTable(
     mediaJson: text('media_json'),
     out: integer('out').notNull().default(0),
     deleted: integer('deleted').notNull().default(0),
+    /**
+     * Whether this message is pinned in its chat. Telegram carries it as a
+     * flag on the message itself, so it arrives with every fetch and every
+     * live delivery -- no separate lookup, and no risk of the marker
+     * disagreeing with the server about a message already on screen.
+     */
+    pinned: integer('pinned').notNull().default(0),
   },
   table => [
     primaryKey({ columns: [table.peerId, table.id] }),

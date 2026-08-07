@@ -33,4 +33,12 @@ export const EMBEDDED_MIGRATIONS: IEmbeddedMigration[] = [
       "CREATE TABLE `dialog_filters` (\n\t`id` integer PRIMARY KEY NOT NULL,\n\t`title` text NOT NULL,\n\t`emoticon` text,\n\t`ord` integer NOT NULL,\n\t`pinned_peers` text DEFAULT '[]' NOT NULL,\n\t`include_peers` text DEFAULT '[]' NOT NULL,\n\t`exclude_peers` text DEFAULT '[]' NOT NULL,\n\t`contacts` integer DEFAULT 0 NOT NULL,\n\t`non_contacts` integer DEFAULT 0 NOT NULL,\n\t`groups` integer DEFAULT 0 NOT NULL,\n\t`broadcasts` integer DEFAULT 0 NOT NULL,\n\t`bots` integer DEFAULT 0 NOT NULL,\n\t`exclude_muted` integer DEFAULT 0 NOT NULL,\n\t`exclude_read` integer DEFAULT 0 NOT NULL,\n\t`exclude_archived` integer DEFAULT 0 NOT NULL\n);\n",
     ],
   },
+  {
+    tag: "0002_curious_moon_knight",
+    hash: "55cb0e0c0e77a03a4cd2de8faf1d06a3c4fd125a5a3987d894ad629682498873",
+    createdAt: 1786093627803,
+    sql: [
+      "ALTER TABLE `messages` ADD `pinned` integer DEFAULT 0 NOT NULL;",
+    ],
+  },
 ];

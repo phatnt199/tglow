@@ -200,6 +200,7 @@ by accident.
 | `K` | show the URL of a link under the cursor |
 | `r` | reply to the message under the cursor |
 | `e` | edit your own message under the cursor |
+| `P` | pin or unpin the message under the cursor (pinned messages carry a `⚑`) |
 | `d{motion}` / `dd` / `3dd` | delete the message under the cursor, or a range (asks `y`/`n` first, and says how many) |
 | `y{motion}` / `yy` | yank the message(s) under the cursor into a register |
 | `c{motion}` / `cc` | edit (change) the message under the cursor, same as `e` |

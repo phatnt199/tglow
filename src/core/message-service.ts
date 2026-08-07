@@ -22,6 +22,12 @@ export interface IRawMessage {
   out: number;
   entities: ITelegramEntity[];
   replyToMessageId: number | null;
+  /** 1 when pinned in its chat. */
+  pinned?: number;
+}
+
+/**
+ * A message as the live update stream| null;
 }
 
 /**
@@ -79,6 +85,7 @@ export interface IMessageAdapter {
   edit(opts: { peerId: string; messageId: number; text: string }): Promise<IRawMessage>;
   delete(opts: { peerId: string; messageIds: number[]; forEveryone: boolean }): Promise<void>;
   markRead(opts: { peerId: string; maxId: number }): Promise<void>;
+  pinMessage(opts: { peerId: string; messageId: number; unpin: boolean }): Promise<void>;
   subscribeToNewMessages(opts: { onMessage: (live: ILiveMessage) => void }): () => void;
   subscribeToReadReceipts(opts: { onReadReceipt: (receipt: IReadReceipt) => void }): () => void;
   subscribeToTyping(opts: { onTyping: (status: ITypingStatus) => void }): () => void;
@@ -125,6 +132,7 @@ export class MessageService {
           out: message.out,
           entities: message.entities,
           replyToMessageId: message.replyToMessageId,
+          pinned: message.pinned,
         })),
       });
       this._store.setState({
@@ -433,6 +441,52 @@ export class MessageService {
    * both the network round trip and the clear below -- the prior successful
    * call already cleared the count, so there is nothing left to do.
    */
+  /**
+   * Pin or unpin a message, toggled from whatever tglow currently believes.
+   *
+   * Unlike delete this asks nothing first: pinning is reversible by the same
+   * key that did it, and a confirmation on a reversible action is friction
+   * without a purpose. The confirmation exists for the one thing that cannot
+   * be taken back.
+   *
+   * The cache is written only after the server agrees. Marking it pinned
+   * optimistically would leave a pin on screen that no other device shows,
+   * and the flag arrives on the message itself from then on, so a wrong local
+   * value would persist until that chat's history was fetched again.
+   */
+  pin = async (opts: { peerId: string; messageId: number }): Promise<void> => {
+    const { peerId, messageId } = opts;
+    const target = this._store.getState().messages.find(message => message.id === messageId);
+    const unpin = target?.pinned === 1;
+
+    try {
+      await this._adapter.pinMessage({ peerId, messageId, unpin });
+    } catch (error) {
+      this._logger.for(this.pin.name).error('Pin failed | Reason: %s', error);
+      this._store.setState({ patch: { statusMessage: `Pin failed: ${toError(error).message}` } });
+      return;
+    }
+
+    try {
+      this._database.setMessagePinned({ peerId, id: messageId, pinned: unpin ? 0 : 1 });
+      this._store.setState({
+        patch: {
+          messages: this.forDisplay({
+            rows: this._database.listMessages({ peerId, limit: this._historyLimit ?? REPUBLISH_LIMIT }),
+          }),
+          statusMessage: unpin ? 'Unpinned' : 'Pinned',
+        },
+      });
+    } catch (error) {
+      // The pin already reached Telegram; only the local copy is stale -- the
+      // same split send, edit and delete all draw.
+      this._logger.for(this.pin.name).error('Pinned but could not update the cache | Reason: %s', error);
+      this._store.setState({
+        patch: { statusMessage: `Pinned, but could not update the local cache: ${toError(error).message}` },
+      });
+    }
+  };
+
   markRead = async (opts: { peerId: string; maxId: number }): Promise<void> => {
     const { peerId, maxId } = opts;
     const now = Date.now();

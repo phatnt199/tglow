@@ -872,3 +872,36 @@ test('a wrapped own message keeps its lines aligned with each other', async () =
     .map(content => content.length - content.trimStart().length);
   expect(new Set(starts).size).toBe(1);
 });
+
+// ── the pinned mark ───────────────────────────────────────────────────────
+
+// The mark goes in the one column M1a reserved and left blank, and its width
+// is what the whole rail depends on: every field is fixed-width, so a glyph a
+// column wider than its field shifts the entire row. This asserts the position
+// of the field after it -- the gutter -- rather than only the flag's presence,
+// because a two-column flag would still "contain" ⚑ while pushing everything
+// after it one column right.
+test('a pinned message is flagged in the marker column without shifting the rail', async () => {
+  const pinned = messages.map(message => (message.id === 2 ? { ...message, pinned: 1 } : message));
+  const renderer = await render({ messages: pinned });
+  const lines = readRows(renderer);
+
+  expect(lines[1]!.slice(0, MARKER_COLUMNS)).toBe('⚑');
+  expect(lines[0]!.slice(0, MARKER_COLUMNS)).toBe(' ');
+  expect(readGutter(lines[1]!)).toBe('1');
+  expect(lines[1]!).toContain('msg2');
+});
+
+// A wrapped message is one utterance, and its flag belongs on the line that
+// opens it -- repeating the mark down every continuation row would make one
+// pinned message look like four.
+test('the flag appears once on a wrapped message, on its first row', async () => {
+  const long = [{
+    peerId: 'u1', id: 1, fromId: 'u1', date: 100, out: 0, entities: [], replyToMessageId: null, pinned: 1,
+    text: 'wrapping past the content column so this message takes several rows to draw in full',
+  }] satisfies IMessageRow[];
+  const renderer = await render({ messages: long });
+  const flagged = readRows(renderer).filter(line => line.startsWith('⚑'));
+
+  expect(flagged).toHaveLength(1);
+});

@@ -104,6 +104,16 @@ const BLANK_TICK = ' '.repeat(TICK_WIDTH);
 // The single "sent" tick sits in the same first column the read state's own
 // first ✓ occupies, so a message going from sent to read never shifts the
 // tick already on screen -- only fills in the second column beside it.
+/**
+ * The pinned mark, in the one column M1a reserved and left blank.
+ *
+ * A flag rather than 📌: the pushpin is two columns wide, and widening the
+ * rail by one for every message in every chat to mark the handful that are
+ * pinned is a poor trade. `⚑` measures one, which the whole rail depends on --
+ * every field here is fixed-width, and a glyph a column wider than its field
+ * shifts the entire row.
+ */
+const PIN_MARKER = '⚑';
 const TICK_SENT = '✓ ';
 const TICK_READ = '✓✓';
 
@@ -124,6 +134,8 @@ interface IRenderedRow {
   content: IStyledSpan[];
   own: boolean;
   revealed: boolean;
+  /** The pinned mark, or a blank. Only the row that opens a message carries one. */
+  marker: string;
   /** True for a row carrying `pre` content -- prefixed with PRE_RULE ahead of `content` at render time. Always false for a quote row. */
   rulePrefix: boolean;
 }
@@ -491,6 +503,10 @@ const buildRows = (opts: {
         key: `${message.id}:quote`,
         messageIndex: index,
         kind: 'quote',
+        // The pinned mark belongs to the message, and the message's own first
+        // row carries it -- a quote row above it would put the flag on the
+        // wrong line.
+        marker: MARKER,
         // Blank, like a wrapped continuation row: the quote is not itself a
         // dated, sent-by someone message, so the rail has nothing to show.
         gutter: BLANK_GUTTER,
@@ -535,6 +551,7 @@ const buildRows = (opts: {
         key: `${message.id}:${lineIndex}`,
         messageIndex: index,
         kind: 'content',
+        marker: opensMessage && message.pinned === 1 ? PIN_MARKER : MARKER,
         gutter: opensMessage ? padStartToWidth({ text: gutter, width: GUTTER_WIDTH }) : BLANK_GUTTER,
         time: opensMessage && opensGroup ? formatTime({ date: message.date }) : BLANK_TIME,
         sender:
@@ -614,7 +631,7 @@ export const MessageView = (props: IMessageViewProps) => {
             }}
           >
             <span fg={highlighted ? tokens.chatUnread : tokens.dim}>
-              {showGutter ? `${MARKER}${row.gutter} ` : MARKER}
+              {showGutter ? `${row.marker}${row.gutter} ` : row.marker}
             </span>
             <span fg={tokens.dim}>
               {`${showTime ? `${row.time} ` : ''}${row.sender} ${row.tick} `}

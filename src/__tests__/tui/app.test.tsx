@@ -215,6 +215,11 @@ const mount = async (opts: {
   // composer text to protect, so nothing here needs the "still what I sent?"
   // guard -- App itself clears pendingConfirmation the instant y is pressed
   // (action-reducer.ts's CONFIRM case), before this ever runs.
+  const pinned: Array<{ peerId: string; messageId: number }> = [];
+  const onPin = async (target: { peerId: string; messageId: number }): Promise<void> => {
+    pinned.push(target);
+  };
+
   const deleted: Array<{ messageIds: number[] }> = [];
   const onDelete = opts.onDelete ?? (async (deletion: { messageIds: number[] }): Promise<void> => {
     deleted.push(deletion);
@@ -247,6 +252,7 @@ const mount = async (opts: {
       onSend={onSend}
       onEdit={onEdit}
       onDelete={onDelete}
+      onPin={onPin}
       onQuit={() => { quit.push(true); }}
       onOpenChat={onOpenChat}
       onMarkRead={onMarkRead}
@@ -254,7 +260,7 @@ const mount = async (opts: {
     { width: opts.width ?? TERMINAL_WIDTH, height: opts.height ?? TERMINAL_HEIGHT },
   );
   await renderer.flush();
-  return { renderer, store, sent, composerAtSend, edited, deleted, opened, marked, quit, database };
+  return { renderer, store, sent, composerAtSend, edited, deleted, pinned, opened, marked, quit, database };
 };
 
 test('starts in NORMAL mode with both panes on screen', async () => {
@@ -2761,4 +2767,52 @@ test('a right click still opens a menu despite click-away closing', async () => 
   await act(async () => { await mouse.click(40, 2, MouseButtons.RIGHT); });
   await renderer.flush();
   expect(store.getState().contextMenu).not.toBeNull();
+});
+
+// ── pinning ───────────────────────────────────────────────────────────────
+
+// The keyboard route. `P` rather than `p`, which vim spends on paste.
+//
+// The cursor moves first, deliberately: pinning from the default position
+// would pass just as well if PIN_TOGGLE always acted on the first message,
+// and "acts on the message under the cursor" is the whole claim.
+test('P pins the message under the cursor', async () => {
+  const { renderer, pinned } = await mount();
+
+  await act(async () => { renderer.mockInput.pressKey('j'); });
+  await act(async () => { renderer.mockInput.pressKey('j'); });
+  await act(async () => { renderer.mockInput.pressKey('P'); });
+  await renderer.flush();
+
+  expect(pinned).toEqual([{ peerId: 'u1', messageId: 3 }]);
+});
+
+// The mouse route, and the rule the whole menu is built on: every item
+// dispatches exactly what its key already dispatches. Pinning is the only
+// item whose action carries a side effect, so it is the only one that could
+// move the state and quietly never make the call.
+test('choosing Pin from the menu makes the same call P does', async () => {
+  const { renderer, pinned } = await mount();
+  const mouse = createMockMouse(renderer.renderer);
+
+  await act(async () => { await mouse.click(40, 1, MouseButtons.RIGHT); });
+  await renderer.flush();
+  expect(renderer.captureCharFrame()).toContain('Pin');
+
+  // Reply, Pin, Yank, Delete -- Edit is absent on an incoming message.
+  await act(async () => { renderer.mockInput.pressKey('j'); });
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+
+  expect(pinned).toEqual([{ peerId: 'u1', messageId: 1 }]);
+});
+
+// Pinning something in no chat at all would be a call with no peer.
+test('P does nothing with no chat open', async () => {
+  const { renderer, pinned } = await mount({ messages: [] });
+
+  await act(async () => { renderer.mockInput.pressKey('P'); });
+  await renderer.flush();
+
+  expect(pinned).toEqual([]);
 });
