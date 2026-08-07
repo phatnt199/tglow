@@ -50,6 +50,42 @@ Everything tglow stores lives under `~/.local/share/tglow/`: the session, the
 message cache and the log. Deleting that directory logs you out and forgets the
 cache; it does not touch anything on Telegram.
 
+## The interface
+
+Two panes inside one frame. The sidebar stacks your Telegram **folders** over
+the **chat list**; the conversation and its composer share the pane on the
+right. The focused pane's border is drawn in the palette's accent, so which
+pane has focus is visible without hunting for the cursor.
+
+Folders are your own, read from Telegram. `]f` and `[f` move between them.
+tglow evaluates the folders you build by picking chats exactly; a folder built
+purely on "all contacts", "unmuted only" or "not archived" will show fewer
+chats here than in the official client, because tglow does not cache contact,
+notification or archive state. The rail is hidden entirely if you have no
+folders.
+
+Each chat shows two rows — name and time, then the last thing said and how much
+is unread. When someone is **typing**, recording a voice message or choosing a
+sticker, that displaces the preview and appears in the open chat's title.
+
+In a wide window your own messages sit on the right and the other side's on the
+left, the way a graphical client lays them out. Below sixty columns of
+conversation everything stays left-aligned: right-aligning in a cramped pane
+costs the text the room it has least of.
+
+### The mouse
+
+tglow holds the mouse by default. This is not new — OpenTUI has enabled mouse
+reporting since the first release — but tglow now intends to use it. Hold
+`Shift` for your terminal's own click-and-drag selection, which is the usual
+convention and is the terminal's behaviour rather than anything tglow does.
+
+To hand the mouse back completely:
+
+```toml
+mouse = false
+```
+
 ## Themes
 
 tglow ships the twelve [devglow](https://github.com/phatnt199/devglow) palettes:
@@ -150,6 +186,7 @@ by accident.
 | `<C-d>` / `<C-u>` | half page down / up |
 | `nf` | focus the chat list |
 | `<C-w>h` / `<C-w>l` | move focus between chat list and messages |
+| `]f` / `[f` | next / previous chat folder |
 | `Enter` (chat list) | open the chat |
 | `Esc` (chat list) | back to messages, without opening anything |
 
