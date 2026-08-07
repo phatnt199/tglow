@@ -194,7 +194,7 @@ footer{margin-top:4.5rem;padding-bottom:2rem;color:var(--dim);font-size:.82rem}
       <p class="links" style="margin-top:1.9rem">
         <a href="https://github.com/phatnt199/tglow">Source on GitHub</a>
         <span class="sep" aria-hidden="true">·</span>
-        <a href="https://github.com/phatnt199/tglow/releases/latest">Download v0.3.0</a>
+        <a href="https://github.com/phatnt199/tglow/releases/latest">Download v0.4.0</a>
         <span class="sep" aria-hidden="true">·</span>
         <span class="muted">Linux x64</span>
       </p>
@@ -204,7 +204,7 @@ footer{margin-top:4.5rem;padding-bottom:2rem;color:var(--dim);font-size:.82rem}
                           <span class="them">a look</span>
 <span class="n">    2</span> <span class="t">09:15</span> <span class="who">me        </span> <span class="tick">✓</span>  <span class="me">reading it now</span>
 <span class="n">    1</span> <span class="t">09:16</span> <span class="who">Tấn Phát  </span>    <span class="them">run it with <span class="cd">`bun run build`</span> before you push</span>
-<span class="cur"><span class="n">    4</span> <span class="t">09:22</span> <span class="who">me        </span> <span class="tick">✓</span>  <span class="me"><span class="bd">shipped</span> — v0.3.0 is out</span></span>
+<span class="cur"><span class="n">    4</span> <span class="t">09:22</span> <span class="who">me        </span> <span class="tick">✓</span>  <span class="me"><span class="bd">shipped</span> — v0.4.0 is out</span></span>
       </div>
       <p class="caption">Real output. The gutter counts distance from the cursor, so <kbd>3j</kbd> is obvious before you type it.</p>
     </div>
@@ -292,6 +292,11 @@ footer{margin-top:4.5rem;padding-bottom:2rem;color:var(--dim);font-size:.82rem}
         </div>
 
         <div class="item">
+          <h3>It uses the room it has</h3>
+          <p>Give it a wide window and your messages move to the right, theirs stay left. Narrow it and everything returns to one column — right-aligning in a cramped pane costs the text the room it has least of. Your Telegram folders sit above the chat list, and <kbd>]f</kbd> moves between them.</p>
+        </div>
+
+        <div class="item">
           <h3>Read state that keeps up</h3>
           <p>A tick becomes two the moment they read you. Read a chat on your phone and the badge here stops counting it — following Telegram's own figure, so a partial read shows what is genuinely left.</p>
         </div>
@@ -345,7 +350,7 @@ printf 'api_id = 0\napi_hash = ""\n' &gt; ~/.config/tglow/config.toml</div>
       <p class="muted" style="margin-bottom:1.25rem">Things people reasonably expect, that this version does not do:</p>
       <ul class="not">
         <li>No media. Photos, stickers and voice notes are not displayed — the renderer for them exists and is proven, but is not wired up.</li>
-        <li>No reactions, typing indicators or online status.</li>
+        <li>No reactions or online status. Typing, recording and choosing-a-sticker do show.</li>
         <li>Themes are chosen in the config file. Switching one while tglow is running needs a command mode it does not have yet.</li>
         <li>Recovery after being offline covers private chats. Channels and supergroups are not backfilled yet.</li>
         <li>Linux x64 only.</li>
