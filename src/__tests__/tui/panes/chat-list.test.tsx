@@ -10,6 +10,8 @@ import { measureTextWidth } from '../../../tui/text-width.ts';
 import { ChatList, type IChatListProps } from '../../../tui/panes/chat-list.tsx';
 
 const tokens = buildTokens({ paletteName: 'sage' });
+/** Mirrors chat-list.tsx's own ROWS_PER_CHAT. */
+const ROWS_PER_CHAT = 2;
 
 const dialogs: IDialogRow[] = [
   { peerId: 'u1', title: 'Alice', pinned: 0, unreadCount: 2, lastMessageAt: 300, topMessageId: 9, readOutboxMaxId: 0, preview: null },
@@ -61,15 +63,27 @@ test('lists every chat', async () => {
   expect(frame).toContain('devs');
 });
 
-test('shows unread counts, right-aligned, and nothing at all when zero', async () => {
+// Two rows per chat now: a name and a time, then the preview and the badge.
+// A name row is `index * 2`, its second row one below.
+const NAME_ROW = (index: number): number => index * ROWS_PER_CHAT;
+const PREVIEW_ROW = (index: number): number => index * ROWS_PER_CHAT + 1;
+
+test('each chat takes a name row and a preview row', async () => {
   const rows = readRows(await render());
-  expect(rows[0]!).toBe(` Alice${' '.repeat(13)}2`);
-  expect(rows[1]!.trimEnd()).toBe(' Bob');
-  expect(rows[2]!).toBe(` devs${' '.repeat(14)}7`);
+  expect(rows[NAME_ROW(0)]!).toContain('Alice');
+  expect(rows[NAME_ROW(1)]!).toContain('Bob');
+  expect(rows[NAME_ROW(2)]!).toContain('devs');
+});
+
+test('shows unread counts on the preview row, right-aligned, and nothing at all when zero', async () => {
+  const rows = readRows(await render());
+  expect(rows[PREVIEW_ROW(0)]!.trimEnd().endsWith('2')).toBe(true);
+  expect(rows[PREVIEW_ROW(1)]!.trim()).toBe('');
+  expect(rows[PREVIEW_ROW(2)]!.trimEnd().endsWith('7')).toBe(true);
 });
 
 test('an unread count is drawn in the unread colour', async () => {
-  const spans = readSpans(await render(), 0);
+  const spans = readSpans(await render(), PREVIEW_ROW(0));
   const badge = spans[spans.length - 1]!;
   expect(badge.text.trim()).toBe('2');
   expect(badge.foreground).toBe(tokens.chatUnread.toLowerCase());
@@ -79,13 +93,19 @@ test('an unread count is drawn in the unread colour', async () => {
 // cursorlineopt="both", so position is a background across the row, and the
 // column-zero glyph is reserved for something the old build could not express
 // at all: which chat is *open*, as distinct from which one the cursor is on.
-test('marks the cursor row with a cursorline, not an arrow', async () => {
+// The cursorline covers BOTH of a chat's rows: highlighting only the name
+// would split one chat visually in half.
+test('marks the cursor chat with a cursorline across both its rows, not an arrow', async () => {
   const renderer = await render({ cursor: 1 });
-  const spans = readSpans(renderer, 1);
-  expect(spans.map(span => span.background)).toEqual(spans.map(() => tokens.messageCursor.toLowerCase()));
-  expect(spans.reduce((total, span) => total + span.width, 0)).toBe(20);
+  for (const row of [NAME_ROW(1), PREVIEW_ROW(1)]) {
+    const spans = readSpans(renderer, row);
+    expect(spans.map(span => span.background), `row ${row}`)
+      .toEqual(spans.map(() => tokens.messageCursor.toLowerCase()));
+    expect(spans.reduce((total, span) => total + span.width, 0), `row ${row}`).toBe(20);
+  }
   expect(renderer.captureCharFrame()).not.toContain('▸');
-  expect(readSpans(renderer, 0).every(span => span.background !== tokens.messageCursor.toLowerCase())).toBe(true);
+  expect(readSpans(renderer, NAME_ROW(0)).every(span => span.background !== tokens.messageCursor.toLowerCase()))
+    .toBe(true);
 });
 
 test('does not mark the cursor row when unfocused', async () => {
@@ -144,19 +164,20 @@ test('Vietnamese and CJK names are truncated by column, not by code point', asyn
     { peerId: 'e1', title: '🔥🔥🔥 hot takes only, no exceptions', pinned: 0, unreadCount: 0, lastMessageAt: 2, topMessageId: 1, readOutboxMaxId: 0, preview: null },
   ];
   const PANE_WIDTH = 22;
-  const BADGE_COLUMNS = 4;
-  const renderer = await render({ dialogs: wide, cursor: 0, width: PANE_WIDTH, terminalWidth: PANE_WIDTH });
+  const renderer = await render({
+    dialogs: wide, cursor: 0, width: PANE_WIDTH, terminalWidth: PANE_WIDTH, terminalHeight: 10,
+  });
 
   // span.width is the renderer's own column count -- the authority here, and
   // not recoverable from the captured text, which drops trailing cells once a
-  // row carries combining marks.
-  for (let row = 0; row < wide.length; row += 1) {
-    const spans = readSpans(renderer, row);
-    expect({
-      row,
-      total: spans.reduce((sum, span) => sum + span.width, 0),
-      badge: spans[spans.length - 1]!.width,
-    }).toEqual({ row, total: PANE_WIDTH, badge: BADGE_COLUMNS });
+  // row carries combining marks. Every row of every chat, name and preview
+  // alike: a wide name that overflowed would push the time off its own row.
+  for (let index = 0; index < wide.length; index += 1) {
+    for (const row of [NAME_ROW(index), PREVIEW_ROW(index)]) {
+      const spans = readSpans(renderer, row);
+      expect({ row, total: spans.reduce((sum, span) => sum + span.width, 0) })
+        .toEqual({ row, total: PANE_WIDTH });
+    }
   }
 
   // And the names themselves are what a naive .length would have mismeasured.
@@ -169,7 +190,8 @@ test('a name too long for the pane is ellipsised rather than clipped silently', 
     dialogs: [{ peerId: 'x', title: 'a name far too long for this sidebar', pinned: 0, unreadCount: 0, lastMessageAt: 1, topMessageId: 1, readOutboxMaxId: 0, preview: null }],
     width: 20,
   }));
-  expect(rows[0]!.trimEnd()).toBe(' a name far to…');
+  expect(rows[NAME_ROW(0)]!).toContain('…');
+  expect(rows[NAME_ROW(0)]!).not.toContain('sidebar');
 });
 
 test('an unread count past four digits is abbreviated so the column holds', async () => {
@@ -177,5 +199,94 @@ test('an unread count past four digits is abbreviated so the column holds', asyn
     dialogs: [{ peerId: 'x', title: 'busy channel', pinned: 0, unreadCount: 12_034, lastMessageAt: 1, topMessageId: 1, readOutboxMaxId: 0, preview: null }],
     width: 20,
   }));
-  expect(rows[0]!).toBe(' busy channel   999+');
+  expect(rows[PREVIEW_ROW(0)]!.trimEnd().endsWith('999+')).toBe(true);
+});
+
+// ── the preview row ───────────────────────────────────────────────────────
+
+test('the preview row shows the last thing said', async () => {
+  const rows = readRows(await render({
+    dialogs: [{ ...dialogs[0]!, preview: 'morning — spec is up' }],
+  }));
+  expect(rows[PREVIEW_ROW(0)]!).toContain('morning');
+});
+
+// A chat the cache has no history for -- most of the list on a first run --
+// shows an empty line rather than a placeholder making a claim tglow cannot.
+test('a chat with no cached history leaves the preview row blank', async () => {
+  const rows = readRows(await render({ dialogs: [{ ...dialogs[1]!, preview: null }] }));
+  expect(rows[PREVIEW_ROW(0)]!.trim()).toBe('');
+});
+
+// One row per chat, always: a multi-line message must not push the next chat
+// down and desynchronise every row index below it.
+test('a multi-line message previews only its first line', async () => {
+  const rows = readRows(await render({
+    dialogs: [{ ...dialogs[0]!, preview: 'first line\nsecond line' }],
+  }));
+  expect(rows[PREVIEW_ROW(0)]!).toContain('first line');
+  expect(rows[PREVIEW_ROW(0)]!).not.toContain('second line');
+});
+
+test('the name row carries the time the chat was last spoken in', async () => {
+  const at = new Date(2026, 0, 2, 9, 5).getTime() / 1000;
+  const rows = readRows(await render({ dialogs: [{ ...dialogs[0]!, lastMessageAt: at }] }));
+  expect(rows[NAME_ROW(0)]!).toContain('09:05');
+});
+
+test('a chat that has never been spoken in shows no time', async () => {
+  const rows = readRows(await render({ dialogs: [{ ...dialogs[0]!, lastMessageAt: 0 }] }));
+  expect(rows[NAME_ROW(0)]!).not.toMatch(/\d\d:\d\d/);
+});
+
+// The preview is history; a live action is the present, and displaces it.
+test('a live typing status displaces the preview', async () => {
+  const rows = readRows(await render({
+    dialogs: [{ ...dialogs[0]!, preview: 'said this earlier' }],
+    typingByPeer: new Map([['u1', { actorId: 'u1', phrase: 'typing…', expiresAt: 5_000 }]]),
+    now: 1_000,
+  }));
+  expect(rows[PREVIEW_ROW(0)]!).toContain('typing…');
+  expect(rows[PREVIEW_ROW(0)]!).not.toContain('said this earlier');
+});
+
+// A long action is truncated to the pane like any other second-row text,
+// rather than pushing the badge off the edge.
+test('a long action is truncated to the pane, badge intact', async () => {
+  const rows = readRows(await render({
+    dialogs: [{ ...dialogs[0]!, preview: null }],
+    typingByPeer: new Map([['u1', { actorId: 'u1', phrase: 'recording a voice message', expiresAt: 5_000 }]]),
+    now: 1_000,
+  }));
+  expect(rows[PREVIEW_ROW(0)]!).toContain('recording a');
+  expect(rows[PREVIEW_ROW(0)]!).toContain('…');
+  expect(rows[PREVIEW_ROW(0)]!.trimEnd().endsWith('2')).toBe(true);
+});
+
+test('an expired typing status leaves the preview alone', async () => {
+  const rows = readRows(await render({
+    dialogs: [{ ...dialogs[0]!, preview: 'said this earlier' }],
+    typingByPeer: new Map([['u1', { actorId: 'u1', phrase: 'recording', expiresAt: 1_000 }]]),
+    now: 5_000,
+  }));
+  expect(rows[PREVIEW_ROW(0)]!).toContain('said this');
+  expect(rows[PREVIEW_ROW(0)]!).not.toContain('recording');
+});
+
+// Two rows per chat means the window holds half as many. Scrolling in
+// half-chat steps would strand one row of a chat at the pane's edge.
+test('the visible window is measured in chats, not rows', async () => {
+  const many: IDialogRow[] = Array.from({ length: 40 }, (unused, index) => ({
+    peerId: `p${index}`, title: `chat${String(index).padStart(2, '0')}`, pinned: 0,
+    unreadCount: 0, lastMessageAt: index, topMessageId: index, readOutboxMaxId: 0, preview: null,
+  }));
+  const renderer = await render({ dialogs: many, cursor: 39, height: 6, terminalHeight: 10 });
+  const rows = readRows(renderer);
+
+  expect(renderer.captureCharFrame()).toContain('chat39');
+  // Six rows hold three chats, not six -- so the row above the last chat's
+  // name belongs to the chat before it, never to a chat half off the pane.
+  expect(rows[NAME_ROW(0)]!).toContain('chat37');
+  expect(rows[NAME_ROW(1)]!).toContain('chat38');
+  expect(rows[NAME_ROW(2)]!).toContain('chat39');
 });

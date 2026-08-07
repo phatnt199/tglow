@@ -38,8 +38,11 @@ import type { KeyNormalizerService, KeymapService, VimEngineService } from '../k
 import { applyAction, resolveSearchMatchIndices } from './action-reducer.ts';
 import { ChatPicker, resolveChatPickerHeight, resolveWhichKeyHeight, SEARCH_OVERLAY_HEIGHT, SearchOverlay, WhichKey } from './overlays/index.ts';
 import {
+  FRAME_TEE_LEFT,
+  FRAME_TEE_RIGHT,
   FRAME_VERTICAL,
   FRAME_VERTICAL_COST,
+  buildSectionDivider,
   buildBottomEdge,
   buildTopEdge,
   resolvePaneWidths,
@@ -113,14 +116,24 @@ const EDIT_INDICATOR_HEIGHT = 1;
  * itself, so it is still exactly one column and the seam cannot come back.
  */
 const MINIMUM_PANE_WIDTH = 16;
-/** Wide enough for a folder name and its unread badge, narrow enough not to cost the conversation. */
-const FOLDER_RAIL_WIDTH = 12;
+/** The titled rule between the sidebar's folder section and its chat list. */
+const SECTION_DIVIDER_HEIGHT = 1;
 
-/** One `<text>` per row, the same one-child-one-row rule the panes follow, so a frame column cannot be shrunk into its neighbours. */
-const FrameColumn = (props: { height: number; colour: string }) => (
+/**
+ * One `<text>` per row, the same one-child-one-row rule the panes follow, so a
+ * frame column cannot be shrunk into its neighbours.
+ *
+ * `tee` names the row where a pane's own section divider meets this column, and
+ * the glyph to draw there -- `├` on the left edge, `┤` on the right -- which is
+ * what makes the divider and the frame read as one continuous rule instead of a
+ * rule that stops short at a wall.
+ */
+const FrameColumn = (props: { height: number; colour: string; tee?: { row: number; glyph: string } }) => (
   <box flexDirection="column" width={1} height={props.height} flexShrink={0}>
     {Array.from({ length: props.height }, (unused, row) => (
-      <text key={row} height={1} flexShrink={0} fg={props.colour}>{FRAME_VERTICAL}</text>
+      <text key={row} height={1} flexShrink={0} fg={props.colour}>
+        {props.tee?.row === row ? props.tee.glyph : FRAME_VERTICAL}
+      </text>
     ))}
   </box>
 );
@@ -967,8 +980,20 @@ export const App = (props: IAppProps) => {
     width,
     sidebarWidth: SIDEBAR_WIDTH,
     minimumPane: MINIMUM_PANE_WIDTH,
-    railWidth: hasFolders ? FOLDER_RAIL_WIDTH : 0,
   });
+  // The folder section takes what its folders need, capped so the chat list
+  // always keeps the larger half: folders are how you reach chats, not a thing
+  // to look at on their own. Zero hides it, divider included.
+  const folderSectionHeight = hasFolders
+    ? Math.max(0, Math.min(state.folders.length, Math.floor(paneHeight / 2) - SECTION_DIVIDER_HEIGHT))
+    : 0;
+  const chatListHeight = Math.max(
+    1,
+    paneHeight - (folderSectionHeight > 0 ? folderSectionHeight + SECTION_DIVIDER_HEIGHT : 0),
+  );
+  /** Where the sidebar's own divider meets a frame column, or nothing when there is no divider. */
+  const sectionTee = (glyph: string): { row: number; glyph: string } | undefined =>
+    (folderSectionHeight > 0 ? { row: folderSectionHeight, glyph } : undefined);
   // The open chat's frame title says what the other side is doing, when they
   // are doing anything -- "Alice · typing…" -- which is where every graphical
   // client puts it. Read with `now` rather than trusting the map, so a status
@@ -992,38 +1017,57 @@ export const App = (props: IAppProps) => {
       <text height={1} flexShrink={0} fg={frameColour}>
         {buildTopEdge({
           widths: paneWidths,
-          titles: { rail: 'Folders', sidebar: 'Chats', messages: activeChatTitle },
+          // The sidebar's top edge names whichever section actually starts
+          // there: the folders when they are shown, the chat list when they
+          // are not. The divider below carries the other name.
+          titles: {
+            rail: 'Folders',
+            sidebar: folderSectionHeight > 0 ? 'Folders' : 'Chats',
+            messages: activeChatTitle,
+          },
         })}
       </text>
 
       <box flexDirection="row" height={paneHeight}>
-        <FrameColumn height={paneHeight} colour={frameColour} />
+        <FrameColumn height={paneHeight} colour={frameColour} tee={sectionTee(FRAME_TEE_RIGHT)} />
 
-        {paneWidths.rail > 0 ? (
-          <>
-            <FolderRail
-              folders={state.folders}
-              activeFolderId={state.activeFolderId}
-              unreadByFolder={unreadByFolder}
-              tokens={tokens}
-              width={paneWidths.rail}
-              height={paneHeight}
-            />
-            <FrameColumn height={paneHeight} colour={frameColour} />
-          </>
-        ) : null}
+        {/* The sidebar is one column split horizontally -- folders above,
+            chats below -- rather than a separate rail beside the chat list.
+            The owner asked for this shape (their own herdr sidebar stacks
+            spaces over agents the same way), and in a terminal it is the
+            better trade: horizontal room is what a conversation needs, and a
+            third pane spends it where a divider row costs almost nothing. */}
+        <box flexDirection="column" width={paneWidths.sidebar} height={paneHeight} flexShrink={0}>
+          {folderSectionHeight > 0 ? (
+            <>
+              <FolderRail
+                folders={state.folders}
+                activeFolderId={state.activeFolderId}
+                unreadByFolder={unreadByFolder}
+                tokens={tokens}
+                width={paneWidths.sidebar}
+                height={folderSectionHeight}
+              />
+              <text height={1} flexShrink={0} fg={frameColour}>
+                {buildSectionDivider({ width: paneWidths.sidebar, title: 'Chats' })}
+              </text>
+            </>
+          ) : null}
 
-        <ChatList
-          dialogs={visibleDialogs}
-          cursor={state.chatCursor}
-          focused={chatListFocused}
-          tokens={tokens}
-          width={paneWidths.sidebar}
-          height={paneHeight}
-          activePeerId={state.activePeerId}
-        />
+          <ChatList
+            dialogs={visibleDialogs}
+            cursor={state.chatCursor}
+            focused={chatListFocused}
+            tokens={tokens}
+            width={paneWidths.sidebar}
+            height={chatListHeight}
+            activePeerId={state.activePeerId}
+            typingByPeer={state.typingByPeer}
+            now={now}
+          />
+        </box>
 
-        <FrameColumn height={paneHeight} colour={frameColour} />
+        <FrameColumn height={paneHeight} colour={frameColour} tee={sectionTee(FRAME_TEE_LEFT)} />
 
         {/* The right column: conversation, a rule, then the composer beneath
             it. The composer belongs to the chat it writes into, so it stops

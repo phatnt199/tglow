@@ -180,3 +180,28 @@ export const buildBottomEdge = (opts: { widths: IPaneWidths }): string => {
 };
 
 export const FRAME_VERTICAL = VERTICAL;
+/** The glyphs a frame column shows where a section divider meets it. */
+export const FRAME_TEE_RIGHT = '├';
+export const FRAME_TEE_LEFT = '┤';
+
+/**
+ * The titled rule inside a pane that is split horizontally -- the sidebar's
+ * folders above, its chats below.
+ *
+ * A pane's own divider, not the frame's, so it spans exactly that pane's
+ * width. The frame columns either side draw `├` and `┤` on the same row, which
+ * is what makes the three read as one continuous rule.
+ */
+export const buildSectionDivider = (opts: { width: number; title: string }): string => {
+  const { width, title } = opts;
+  if (width <= 0) {
+    return '';
+  }
+  const decoration = measureTextWidth({ text: TITLE_PREFIX + TITLE_SUFFIX });
+  if (width < decoration + 2) {
+    return HORIZONTAL.repeat(width);
+  }
+  const shown = truncateToWidth({ text: title, width: width - decoration - 1 });
+  const used = decoration + measureTextWidth({ text: shown });
+  return `${TITLE_PREFIX}${shown}${TITLE_SUFFIX}${HORIZONTAL.repeat(Math.max(0, width - used))}`;
+};
