@@ -2429,3 +2429,42 @@ test('the wheel stops at the ends rather than wrapping', async () => {
   await renderer.flush();
   expect(store.getState().messageCursor).toBe(store.getState().messages.length - 1);
 });
+
+// Reported: "sometimes the conversation pane has no vertical line". Pressing
+// the leader was enough -- which-key grows with the number of bindings, and on
+// a short terminal it asked for nearly the whole window, leaving the frame as
+// a top edge, one row and a bottom edge. The borders had not gone anywhere;
+// there was nothing left between them.
+test('an overlay never squeezes the panes down to nothing', async () => {
+  for (const keys of [['\\'], ['<C-p>'], ['/']]) {
+    const { renderer } = await mount();
+    await act(async () => {
+      for (const key of keys) {
+        if (key === '<C-p>') {
+          renderer.mockInput.pressKey('p', { ctrl: true });
+        } else {
+          renderer.mockInput.pressKey(key);
+        }
+      }
+    });
+    await renderer.flush();
+
+    const rows = renderer.captureCharFrame().split('\n').filter(row => row !== '');
+    const framed = rows.filter(row => '┌└│'.includes(row[0] ?? ''));
+    // Top edge, bottom edge and at least the minimum in between.
+    expect({ keys: keys.join(''), framed: framed.length >= 6 }).toEqual({ keys: keys.join(''), framed: true });
+  }
+});
+
+// Every framed row closes on the right. A row that opened with a border and
+// ended without one would mean content had overdrawn it.
+test('every framed row closes on the right, at every size', async () => {
+  for (const [width, height] of [[70, 14], [60, 12], [46, 10], [40, 10], [34, 9]] as Array<[number, number]>) {
+    const { renderer } = await mount({ width, height });
+    const rows = renderer.captureCharFrame().split('\n').filter(row => row !== '');
+    const unclosed = rows
+      .filter(row => '┌└│'.includes(row[0] ?? ''))
+      .filter(row => !'┐┘│'.includes(row[row.length - 1] ?? ''));
+    expect({ width, unclosed: unclosed.length }).toEqual({ width, unclosed: 0 });
+  }
+});

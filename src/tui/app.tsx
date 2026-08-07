@@ -116,6 +116,12 @@ const EDIT_INDICATOR_HEIGHT = 1;
  * itself, so it is still exactly one column and the seam cannot come back.
  */
 const MINIMUM_PANE_WIDTH = 16;
+/**
+ * Rows the panes keep whatever an overlay asks for. Below this the frame is a
+ * top edge, a sliver and a bottom edge, which reads as the borders having
+ * disappeared rather than as a popup being tall.
+ */
+const MINIMUM_PANE_HEIGHT = 4;
 /** The titled rule between the sidebar's folder section and its chat list. */
 const SECTION_DIVIDER_HEIGHT = 1;
 
@@ -130,6 +136,9 @@ const MOUSE_BUTTON_LEFT = 0;
 /** What one notch of the wheel moves, matching the three lines most terminals send. */
 const SCROLL_ROWS_PER_NOTCH = 3;
 
+/** The frame's left border, which the sidebar starts after. */
+const FRAME_LEFT_COLUMNS = 1;
+
 /**
  * One `<text>` per row, the same one-child-one-row rule the panes follow, so a
  * frame column cannot be shrunk into its neighbours.
@@ -139,8 +148,20 @@ const SCROLL_ROWS_PER_NOTCH = 3;
  * what makes the divider and the frame read as one continuous rule instead of a
  * rule that stops short at a wall.
  */
-const FrameColumn = (props: { height: number; colour: string; tee?: { row: number; glyph: string } }) => (
-  <box flexDirection="column" width={1} height={props.height} flexShrink={0}>
+const FrameColumn = (props: {
+  height: number;
+  colour: string;
+  tee?: { row: number; glyph: string };
+  /** Present only on the divider between the panes, which is the one draggable column. */
+  onDrag?: (opts: { x: number }) => void;
+}) => (
+  <box
+    flexDirection="column"
+    width={1}
+    height={props.height}
+    flexShrink={0}
+    onMouseDrag={props.onDrag ? (event: { x: number }) => { props.onDrag?.({ x: event.x }); } : undefined}
+  >
     {Array.from({ length: props.height }, (unused, row) => (
       <text key={row} height={1} flexShrink={0} fg={props.colour}>
         {props.tee?.row === row ? props.tee.glyph : FRAME_VERTICAL}
@@ -942,13 +963,27 @@ export const App = (props: IAppProps) => {
   // down. An overlay still replaces it outright: Composer is not rendered at
   // all while one is open.
   const isOverlayOpen = isChatPickerOpen || isWhichKeyOpen || isSearchOpen;
-  const chromeHeight = isChatPickerOpen
+  const requestedChromeHeight = isChatPickerOpen
     ? resolveChatPickerHeight({ resultCount: chatPickerResults.length }) + STATUS_LINE_HEIGHT
     : isWhichKeyOpen
       ? resolveWhichKeyHeight({ bindingCount: whichKeyBindings.length, width }) + STATUS_LINE_HEIGHT
       : isSearchOpen
         ? SEARCH_OVERLAY_HEIGHT + STATUS_LINE_HEIGHT
         : STATUS_LINE_HEIGHT;
+  // An overlay takes what it asks for, but never so much that the panes above
+  // collapse. which-key grows with the number of bindings, and on a short
+  // terminal it asked for nearly the whole window -- leaving the frame as a
+  // top edge, one row, and a bottom edge, which reads as the conversation
+  // having lost its borders rather than as a popup being large. Reported as
+  // exactly that: "sometimes the conversation pane has no vertical line".
+  //
+  // Capped rather than scrolled: an overlay that has to be scrolled to be read
+  // is worse than one showing a little less, and every overlay here is a list
+  // whose tail the user can reach another way.
+  const chromeHeight = Math.min(
+    requestedChromeHeight,
+    Math.max(STATUS_LINE_HEIGHT, height - FRAME_VERTICAL_COST - MINIMUM_PANE_HEIGHT),
+  );
   // The frame's two edge rows come out of the pane height, and its three
   // columns out of the pane widths. Getting either wrong is how a wrapped line
   // ends up drawn over its own border -- M1a's interleaved-text report in a
@@ -989,7 +1024,7 @@ export const App = (props: IAppProps) => {
   ]));
   const paneWidths = resolvePaneWidths({
     width,
-    sidebarWidth: SIDEBAR_WIDTH,
+    sidebarWidth: state.sidebarWidth ?? SIDEBAR_WIDTH,
     minimumPane: MINIMUM_PANE_WIDTH,
   });
   // The folder section takes what its folders need, capped so the chat list
@@ -1075,6 +1110,19 @@ export const App = (props: IAppProps) => {
         action: { type: ActionTypes.CURSOR_MOVE, unit: opts.unit, delta: opts.delta * SCROLL_ROWS_PER_NOTCH },
       }),
     });
+  };
+
+  /**
+   * Dragging the divider between the panes.
+   *
+   * `x` is the pointer's column in the window, and the sidebar starts one
+   * column in -- past the frame's left border -- so the width it implies is
+   * `x - 1`. Nothing is clamped here: resolvePaneWidths already refuses to let
+   * either pane vanish, and doing it twice would mean two places to disagree
+   * about the minimum.
+   */
+  const dragDivider = (opts: { x: number }): void => {
+    store.setState({ patch: { sidebarWidth: Math.max(0, opts.x - FRAME_LEFT_COLUMNS) } });
   };
 
   const pressFolder = (opts: { id: number; button: number }): void => {
@@ -1173,7 +1221,7 @@ export const App = (props: IAppProps) => {
           />
         </box>
 
-        <FrameColumn height={paneHeight} colour={frameColour} tee={sectionTee(FRAME_TEE_LEFT)} />
+        <FrameColumn height={paneHeight} colour={frameColour} tee={sectionTee(FRAME_TEE_LEFT)} onDrag={dragDivider} />
 
         {/* The right column: conversation, a rule, then the composer beneath
             it. The composer belongs to the chat it writes into, so it stops
