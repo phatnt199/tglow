@@ -26,6 +26,14 @@ export interface IChatListProps {
   typingByPeer?: Map<string, IActiveTyping>;
   /** Passed in rather than read from the clock here, so a component stays a pure function of its props. */
   now?: number;
+  /**
+   * A click on a chat, by its index in `dialogs`. The pane reports which chat
+   * was hit and nothing more -- whether that focuses, moves a cursor or opens
+   * the chat is App's decision, the same division every other pane keeps.
+   */
+  onChatPress?: (opts: { index: number; button: number }) => void;
+  /** A wheel over the pane. Positive scrolls toward newer chats. */
+  onScroll?: (opts: { delta: number }) => void;
 }
 
 /** The open-chat bar; the cursorline carries position, so this column is only ever that. */
@@ -77,7 +85,10 @@ const formatBadge = (opts: { unreadCount: number }): string => {
 };
 
 export const ChatList = (props: IChatListProps) => {
-  const { dialogs, cursor, focused, tokens, width, height, activePeerId, typingByPeer, now = 0 } = props;
+  const {
+    dialogs, cursor, focused, tokens, width, height, activePeerId, typingByPeer, now = 0,
+    onChatPress, onScroll,
+  } = props;
 
   if (dialogs.length === 0) {
     return (
@@ -103,7 +114,17 @@ export const ChatList = (props: IChatListProps) => {
   });
 
   return (
-    <box flexDirection="column" width={width} height={height}>
+    <box
+      flexDirection="column"
+      width={width}
+      height={height}
+      onMouseScroll={(event: { scroll?: { direction: string } }) => {
+        // A wheel moves the list, not the cursor -- the distinction a naive
+        // mapping to j/k gets wrong, and the reason reading is still an
+        // explicit act rather than a side effect of scrolling past a chat.
+        onScroll?.({ delta: event.scroll?.direction === 'down' ? 1 : -1 });
+      }}
+    >
       {dialogs.slice(start, end).map((dialog, offset) => {
         // The absolute position in the list, not the position in the window: a
         // sliced index would silently renumber the whole pane.
@@ -136,7 +157,16 @@ export const ChatList = (props: IChatListProps) => {
         });
 
         return (
-          <box key={dialog.peerId} flexDirection="column" width={width} height={ROWS_PER_CHAT} flexShrink={0}>
+          <box
+            key={dialog.peerId}
+            flexDirection="column"
+            width={width}
+            height={ROWS_PER_CHAT}
+            flexShrink={0}
+            // On the whole chat, not each row: both rows are one target, so a
+            // click on the preview line opens the same chat its name does.
+            onMouseDown={(event: { button: number }) => { onChatPress?.({ index, button: event.button }); }}
+          >
             <text height={1} flexShrink={0} bg={background}>
               <span fg={tokens.chatActive}>{marker}</span>
               <span fg={tokens.foreground}>{`${name} `}</span>

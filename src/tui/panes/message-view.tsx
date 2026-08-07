@@ -42,6 +42,10 @@ export interface IMessageViewProps {
    * misleading, number) rather than fail to compile.
    */
   readOutboxMaxId: number;
+  /** A click on a message, by its index in `messages`. */
+  onMessagePress?: (opts: { index: number; button: number }) => void;
+  /** A wheel over the pane. Positive scrolls toward newer messages. */
+  onScroll?: (opts: { delta: number }) => void;
 }
 
 /** Reserved and always blank: the cursorline shows position, not an arrow. */
@@ -531,7 +535,10 @@ const buildRows = (opts: {
 };
 
 export const MessageView = (props: IMessageViewProps) => {
-  const { messages, cursor, focused, tokens, height, width, resolveSenderName, revealedSpoilers, readOutboxMaxId } = props;
+  const {
+    messages, cursor, focused, tokens, height, width, resolveSenderName, revealedSpoilers, readOutboxMaxId,
+    onMessagePress, onScroll,
+  } = props;
 
   if (messages.length === 0) {
     return (
@@ -556,7 +563,17 @@ export const MessageView = (props: IMessageViewProps) => {
   });
 
   return (
-    <box flexDirection="column" width={width} height={height}>
+    <box
+      flexDirection="column"
+      width={width}
+      height={height}
+      onMouseScroll={(event: { scroll?: { direction: string } }) => {
+        // The viewport moves, not the cursor. Scrolling past the newest
+        // message must not mark it read -- reading is an explicit act, and a
+        // wheel is not one.
+        onScroll?.({ delta: event.scroll?.direction === 'down' ? 1 : -1 });
+      }}
+    >
       {rows.slice(start, end).map(row => {
         const highlighted = row.messageIndex === cursor && focused;
 
@@ -566,6 +583,13 @@ export const MessageView = (props: IMessageViewProps) => {
             height={1}
             flexShrink={0}
             bg={highlighted ? tokens.messageCursor : undefined}
+            // Every row of a message reports the message it belongs to, not
+            // the row: clicking the third line of a wrapped message puts the
+            // cursor on that message, the way clicking anywhere in a paragraph
+            // does. row.messageIndex is already that mapping.
+            onMouseDown={(event: { button: number }) => {
+              onMessagePress?.({ index: row.messageIndex, button: event.button });
+            }}
           >
             <span fg={highlighted ? tokens.chatUnread : tokens.dim}>{`${MARKER}${row.gutter} `}</span>
             <span fg={tokens.dim}>{`${row.time} ${row.sender} ${row.tick} `}</span>

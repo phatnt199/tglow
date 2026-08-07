@@ -120,6 +120,14 @@ const MINIMUM_PANE_WIDTH = 16;
 const SECTION_DIVIDER_HEIGHT = 1;
 
 /**
+ * OpenTUI's MouseButton.LEFT. Named rather than compared to a bare 0, and
+ * checked by every press handler: until the context menu exists a right click
+ * must do nothing at all, and "nothing" is not the same as "whatever left
+ * does" -- which is exactly what an unguarded handler would give it.
+ */
+const MOUSE_BUTTON_LEFT = 0;
+
+/**
  * One `<text>` per row, the same one-child-one-row rule the panes follow, so a
  * frame column cannot be shrunk into its neighbours.
  *
@@ -994,6 +1002,76 @@ export const App = (props: IAppProps) => {
   /** Where the sidebar's own divider meets a frame column, or nothing when there is no divider. */
   const sectionTee = (glyph: string): { row: number; glyph: string } | undefined =>
     (folderSectionHeight > 0 ? { row: folderSectionHeight, glyph } : undefined);
+
+  // ── the mouse ──────────────────────────────────────────────────────────
+  //
+  // Every handler below dispatches the action its keyboard equivalent already
+  // dispatches, rather than patching state directly. That is what keeps the
+  // mouse an alternative route rather than a second, divergence-prone
+  // implementation -- and it is why clicking delete would still ask y/n, the
+  // same way `dd` does.
+  //
+  // A click also focuses the pane it landed in, exactly as clicking into a
+  // window does in vim: acting on a pane you are not in would be the surprise.
+
+  const pressChat = (opts: { index: number; button: number }): void => {
+    if (opts.button !== MOUSE_BUTTON_LEFT) {
+      return;
+    }
+    const current = store.getState();
+    // The index the pane reports is into the *filtered* list it was given, so
+    // it is resolved back to a peer here rather than trusted as a chat cursor.
+    const dialog = visibleDialogs[opts.index];
+    if (!dialog) {
+      return;
+    }
+    store.setState({
+      patch: {
+        engine: { ...current.engine, context: VimContexts.CHAT_LIST },
+        chatCursor: opts.index,
+      },
+    });
+    // Opening is what Enter does from the chat list, so a click does it too:
+    // a click that only moved a cursor would need a second click to mean
+    // anything, which is not what clicking a chat means anywhere else.
+    void onOpenChat({ peerId: dialog.peerId }).catch(error => {
+      logRejection({ method: 'onOpenChat', error });
+    });
+  };
+
+  const pressMessage = (opts: { index: number; button: number }): void => {
+    if (opts.button !== MOUSE_BUTTON_LEFT) {
+      return;
+    }
+    const current = store.getState();
+    store.setState({
+      patch: {
+        engine: { ...current.engine, context: VimContexts.MESSAGES },
+        messageCursor: Math.max(0, Math.min(opts.index, current.messages.length - 1)),
+      },
+    });
+  };
+
+  const pressFolder = (opts: { id: number; button: number }): void => {
+    if (opts.button !== MOUSE_BUTTON_LEFT) {
+      return;
+    }
+    const current = store.getState();
+    const target = current.folders.findIndex(folder => folder.id === opts.id);
+    if (target === -1) {
+      return;
+    }
+    // Through FOLDER_CYCLE rather than setting activeFolderId directly, so a
+    // click and `]f` go through one code path -- including its reset of the
+    // chat cursor, which a direct write would silently skip.
+    const from = current.folders.findIndex(folder => folder.id === current.activeFolderId);
+    store.setState({
+      patch: applyAction({
+        state: current,
+        action: { type: ActionTypes.FOLDER_CYCLE, delta: target - (from === -1 ? 0 : from) },
+      }),
+    });
+  };
   // The open chat's frame title says what the other side is doing, when they
   // are doing anything -- "Alice · typing…" -- which is where every graphical
   // client puts it. Read with `now` rather than trusting the map, so a status
@@ -1044,6 +1122,7 @@ export const App = (props: IAppProps) => {
                 folders={state.folders}
                 activeFolderId={state.activeFolderId}
                 unreadByFolder={unreadByFolder}
+                onFolderPress={pressFolder}
                 tokens={tokens}
                 width={paneWidths.sidebar}
                 height={folderSectionHeight}
@@ -1064,6 +1143,7 @@ export const App = (props: IAppProps) => {
             activePeerId={state.activePeerId}
             typingByPeer={state.typingByPeer}
             now={now}
+            onChatPress={pressChat}
           />
         </box>
 
@@ -1090,6 +1170,7 @@ export const App = (props: IAppProps) => {
             resolveSenderName={resolveSenderName}
             revealedSpoilers={state.revealedSpoilers}
             readOutboxMaxId={activeDialog?.readOutboxMaxId ?? 0}
+            onMessagePress={pressMessage}
           />
 
           {isOverlayOpen ? null : (

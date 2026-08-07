@@ -10,6 +10,8 @@ export interface IFolderRailProps {
   tokens: ITokens;
   width: number;
   height: number;
+  /** A click on a folder, by its id. */
+  onFolderPress?: (opts: { id: number; button: number }) => void;
 }
 
 /** Right-aligned, and absent entirely at zero -- the same convention the chat list's own badge follows. */
@@ -42,7 +44,7 @@ const formatBadge = (opts: { unreadCount: number }): string => {
  * the selection directly.
  */
 export const FolderRail = (props: IFolderRailProps) => {
-  const { folders, activeFolderId, unreadByFolder, tokens, width, height } = props;
+  const { folders, activeFolderId, unreadByFolder, tokens, width, height, onFolderPress } = props;
 
   const labelWidth = Math.max(1, width - MARKER_WIDTH - BADGE_WIDTH);
 
@@ -54,7 +56,12 @@ export const FolderRail = (props: IFolderRailProps) => {
         const label = folder.emoticon ? `${folder.emoticon} ${folder.title}` : folder.title;
 
         return (
-          <text key={folder.id} height={1} flexShrink={0}>
+          <text
+            key={folder.id}
+            height={1}
+            flexShrink={0}
+            onMouseDown={(event: { button: number }) => { onFolderPress?.({ id: folder.id, button: event.button }); }}
+          >
             <span fg={tokens.chatActive}>{active ? MARKER : ' '}</span>
             <span fg={active ? tokens.foreground : tokens.dim}>
               {padToWidth({ text: truncateToWidth({ text: label, width: labelWidth }), width: labelWidth })}

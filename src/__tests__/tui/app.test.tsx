@@ -1,6 +1,8 @@
 import { test, expect } from 'bun:test';
 import { act } from 'react';
 
+import { createMockMouse, MouseButtons } from '@opentui/core/testing';
+
 import { BindingScopes, Container } from '@venizia/ignis-inversion';
 import { rgbToHex } from '@opentui/core';
 import type { TestRendererSetup } from '@opentui/core/testing';
@@ -2278,4 +2280,76 @@ test('an expired typing status is not drawn', async () => {
   const top = renderer.captureCharFrame().split('\n')[0]!;
   expect(top).not.toContain('typing');
   expect(top).toContain('Alice');
+});
+
+// ── the mouse ─────────────────────────────────────────────────────────────
+//
+// M2's governing rule is that the mouse is an alternative route, never the
+// only one -- so every one of these has a keyboard equivalent already tested
+// above, and each asserts the click produces the same outcome that key does.
+
+test('clicking a chat focuses the chat list and opens it, the way Enter does', async () => {
+  const { renderer, store, opened } = await mount();
+  const mouse = createMockMouse(renderer.renderer);
+
+  // Row 1 is the first chat's name row: row 0 is the frame's top edge, and
+  // column 1 is inside the sidebar past the frame's left border.
+  await act(async () => { await mouse.click(2, 1); });
+  await renderer.flush();
+
+  expect(store.getState().engine.context).toBe(VimContexts.CHAT_LIST);
+  expect(opened).toEqual(['u1']);
+});
+
+// Clicking the preview line means the same chat as clicking its name: both
+// rows are one target, because they are one chat.
+test('clicking a chat preview row opens the same chat as its name row', async () => {
+  const { renderer, opened } = await mount();
+  const mouse = createMockMouse(renderer.renderer);
+
+  await act(async () => { await mouse.click(2, 2); });
+  await renderer.flush();
+
+  expect(opened).toEqual(['u1']);
+});
+
+test('clicking a message focuses the messages pane and moves the cursor there', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('n'); renderer.mockInput.pressKey('f'); });
+  await renderer.flush();
+  expect(store.getState().engine.context).toBe(VimContexts.CHAT_LIST);
+
+  const mouse = createMockMouse(renderer.renderer);
+  // The third message's row, inside the right pane.
+  await act(async () => { await mouse.click(40, 3); });
+  await renderer.flush();
+
+  expect(store.getState().engine.context).toBe(VimContexts.MESSAGES);
+  expect(store.getState().messageCursor).toBe(2);
+});
+
+// A click must never reach past the end of the list: the pane draws blank rows
+// below the last message, and a click on one of those has no message to mean.
+test('clicking a blank row below the last message leaves the cursor alone', async () => {
+  const { renderer, store } = await mount();
+  const before = store.getState().messageCursor;
+  const mouse = createMockMouse(renderer.renderer);
+
+  await act(async () => { await mouse.click(40, 9); });
+  await renderer.flush();
+
+  expect(store.getState().messageCursor).toBe(before);
+});
+
+// The one rule the whole milestone is governed by, checked rather than
+// asserted in prose: a right click must not act as a left one. Until the
+// context menu exists it does nothing at all -- but it must not open a chat.
+test('a right click does not open a chat', async () => {
+  const { renderer, opened } = await mount();
+  const mouse = createMockMouse(renderer.renderer);
+
+  await act(async () => { await mouse.click(2, 1, MouseButtons.RIGHT); });
+  await renderer.flush();
+
+  expect(opened).toEqual([]);
 });
