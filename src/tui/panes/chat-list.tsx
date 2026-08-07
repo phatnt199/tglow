@@ -31,7 +31,7 @@ export interface IChatListProps {
    * was hit and nothing more -- whether that focuses, moves a cursor or opens
    * the chat is App's decision, the same division every other pane keeps.
    */
-  onChatPress?: (opts: { index: number; button: number }) => void;
+  onChatPress?: (opts: { index: number; button: number; x: number; y: number }) => void;
   /** A wheel over the pane. Positive scrolls toward newer chats. */
   onScroll?: (opts: { delta: number }) => void;
 }
@@ -165,7 +165,9 @@ export const ChatList = (props: IChatListProps) => {
             flexShrink={0}
             // On the whole chat, not each row: both rows are one target, so a
             // click on the preview line opens the same chat its name does.
-            onMouseDown={(event: { button: number }) => { onChatPress?.({ index, button: event.button }); }}
+            onMouseDown={(event: { button: number; x: number; y: number }) => {
+              onChatPress?.({ index, button: event.button, x: event.x, y: event.y });
+            }}
           >
             <text height={1} flexShrink={0} bg={background}>
               <span fg={tokens.chatActive}>{marker}</span>

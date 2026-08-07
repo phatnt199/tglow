@@ -36,7 +36,8 @@ import {
 } from '../keys/common/index.ts';
 import type { KeyNormalizerService, KeymapService, VimEngineService } from '../keys/index.ts';
 import { applyAction, resolveSearchMatchIndices } from './action-reducer.ts';
-import { ChatPicker, resolveChatPickerHeight, resolveWhichKeyHeight, SEARCH_OVERLAY_HEIGHT, SearchOverlay, WhichKey } from './overlays/index.ts';
+import { ChatPicker, ContextMenu, resolveChatPickerHeight, resolveWhichKeyHeight, SEARCH_OVERLAY_HEIGHT, SearchOverlay, WhichKey } from './overlays/index.ts';
+import { buildChatMenu, buildMessageMenu, MenuActions, resolveMenuPosition, resolveMenuWidth } from './context-menu.ts';
 import {
   FRAME_TEE_LEFT,
   FRAME_TEE_RIGHT,
@@ -132,6 +133,8 @@ const SECTION_DIVIDER_HEIGHT = 1;
  * does" -- which is exactly what an unguarded handler would give it.
  */
 const MOUSE_BUTTON_LEFT = 0;
+/** OpenTUI's MouseButton.RIGHT, which opens the context menu. */
+const MOUSE_BUTTON_RIGHT = 2;
 
 /** What one notch of the wheel moves, matching the three lines most terminals send. */
 const SCROLL_ROWS_PER_NOTCH = 3;
@@ -602,6 +605,43 @@ export const App = (props: IAppProps) => {
     // CANCEL_CONFIRMATION are still real actions run through applyAction,
     // not a hand-rolled patch, so the reducer stays the one place that
     // decides what answering the question does to state.
+    // The context menu owns input while it is open, and is checked before the
+    // confirmation gate below because a menu can only be open when nothing is
+    // pending -- choosing Delete closes it before the question is asked.
+    //
+    // j/k/Enter/escape rather than mouse-only: M2's governing rule is that
+    // nothing becomes reachable only by mouse, and a menu you could not
+    // operate from the keyboard would break it in the very feature that
+    // introduces the mouse.
+    if (current.contextMenu !== null) {
+      const menuToken = keyNormalizer.toCanonicalString({ key });
+      const openMenu = current.contextMenu;
+
+      if (menuToken === OVERLAY_ESCAPE_TOKEN) {
+        closeMenu();
+        return;
+      }
+      if (menuToken === 'j' || menuToken === '<down>') {
+        store.setState({
+          patch: {
+            contextMenu: { ...openMenu, cursor: Math.min(openMenu.cursor + 1, Math.max(0, menuItems.length - 1)) },
+          },
+        });
+        return;
+      }
+      if (menuToken === 'k' || menuToken === '<up>') {
+        store.setState({ patch: { contextMenu: { ...openMenu, cursor: Math.max(0, openMenu.cursor - 1) } } });
+        return;
+      }
+      if (menuToken === '<return>') {
+        chooseMenuItem({ index: openMenu.cursor });
+        return;
+      }
+      // Every other key is swallowed. A menu that let keys through to the pane
+      // underneath would act on a message while asking about it.
+      return;
+    }
+
     if (current.pendingConfirmation !== null) {
       const confirmationToken = keyNormalizer.toCanonicalString({ key });
 
@@ -1070,7 +1110,13 @@ export const App = (props: IAppProps) => {
   // A click also focuses the pane it landed in, exactly as clicking into a
   // window does in vim: acting on a pane you are not in would be the surprise.
 
-  const pressChat = (opts: { index: number; button: number }): void => {
+  const pressChat = (opts: { index: number; button: number; x?: number; y?: number }): void => {
+    if (opts.button === MOUSE_BUTTON_RIGHT) {
+      store.setState({
+        patch: { contextMenu: { kind: 'chat', target: opts.index, x: opts.x ?? 0, y: opts.y ?? 0, cursor: 0 } },
+      });
+      return;
+    }
     if (opts.button !== MOUSE_BUTTON_LEFT) {
       return;
     }
@@ -1095,7 +1141,20 @@ export const App = (props: IAppProps) => {
     });
   };
 
-  const pressMessage = (opts: { index: number; button: number }): void => {
+  const pressMessage = (opts: { index: number; button: number; x?: number; y?: number }): void => {
+    if (opts.button === MOUSE_BUTTON_RIGHT) {
+      // The menu acts on the message it was opened over, so the cursor moves
+      // there too -- otherwise choosing Delete would ask about one message
+      // while the cursorline sat on another.
+      const current = store.getState();
+      store.setState({
+        patch: {
+          messageCursor: Math.max(0, Math.min(opts.index, current.messages.length - 1)),
+          contextMenu: { kind: 'message', target: opts.index, x: opts.x ?? 0, y: opts.y ?? 0, cursor: 0 },
+        },
+      });
+      return;
+    }
     if (opts.button !== MOUSE_BUTTON_LEFT) {
       return;
     }
@@ -1145,6 +1204,89 @@ export const App = (props: IAppProps) => {
 
   /** The one column the divider occupies: past the frame's left border and the sidebar. */
   const dividerColumn = FRAME_LEFT_COLUMNS + paneWidths.sidebar;
+
+  const menuItems = state.contextMenu === null
+    ? []
+    : state.contextMenu.kind === 'message'
+      ? buildMessageMenu({ message: state.messages[state.contextMenu.target] })
+      : buildChatMenu({ dialog: visibleDialogs[state.contextMenu.target] });
+
+  const closeMenu = (): void => {
+    store.setState({ patch: { contextMenu: null } });
+  };
+
+  /**
+   * Running a menu item.
+   *
+   * Each dispatches exactly what its key dispatches -- the menu is another way
+   * to reach an action, never a second implementation. Delete goes through
+   * DELETE_REQUEST, so it still asks y/n: a menu must not become the one route
+   * that skips the only confirmation in the app.
+   */
+  const chooseMenuItem = (opts: { index: number }): void => {
+    const menu = state.contextMenu;
+    const item = menuItems[opts.index];
+    if (menu === null || !item) {
+      return;
+    }
+
+    // Closed first, so whatever the action does to state cannot be undone by a
+    // stale menu patch landing after it.
+    closeMenu();
+    const current = store.getState();
+
+    switch (item.action) {
+      case MenuActions.REPLY: {
+        store.setState({ patch: applyAction({ state: current, action: { type: ActionTypes.REPLY_START } }) });
+        return;
+      }
+      case MenuActions.EDIT: {
+        store.setState({ patch: applyAction({ state: current, action: { type: ActionTypes.EDIT_START } }) });
+        return;
+      }
+      case MenuActions.DELETE: {
+        store.setState({ patch: applyAction({ state: current, action: { type: ActionTypes.DELETE_REQUEST } }) });
+        return;
+      }
+      case MenuActions.YANK: {
+        store.setState({
+          patch: applyAction({
+            state: current,
+            action: {
+              type: ActionTypes.OPERATOR_APPLY,
+              operator: Operators.YANK, unit: 'message', from: 0, to: 0, register: null,
+            },
+          }),
+        });
+        return;
+      }
+      case MenuActions.COPY_LINK: {
+        store.setState({ patch: applyAction({ state: current, action: { type: ActionTypes.LINK_SHOW } }) });
+        return;
+      }
+      case MenuActions.OPEN: {
+        const dialog = visibleDialogs[menu.target];
+        if (dialog) {
+          void onOpenChat({ peerId: dialog.peerId }).catch(error => {
+            logRejection({ method: 'onOpenChat', error });
+          });
+        }
+        return;
+      }
+      case MenuActions.MARK_READ: {
+        const dialog = visibleDialogs[menu.target];
+        if (dialog && dialog.topMessageId !== null) {
+          void onMarkRead({ peerId: dialog.peerId, maxId: dialog.topMessageId }).catch(error => {
+            logRejection({ method: 'onMarkRead', error });
+          });
+        }
+        return;
+      }
+      default: {
+        return;
+      }
+    }
+  };
 
   /**
    * What a press begins, decided from where it landed rather than from which
@@ -1372,6 +1514,40 @@ export const App = (props: IAppProps) => {
       <text height={1} flexShrink={0} fg={frameColour}>
         {buildBottomEdge({ widths: paneWidths })}
       </text>
+
+      {/* Absolutely positioned at the pointer, so it sits over the pane it was
+          opened on rather than pushing it aside -- a menu that reflowed the
+          conversation would move the very message it is about. Pulled back
+          from the edges by resolveMenuPosition so it never runs off. */}
+      {state.contextMenu !== null && menuItems.length > 0 ? (
+        <box
+          position="absolute"
+          left={resolveMenuPosition({
+            x: state.contextMenu.x,
+            y: state.contextMenu.y,
+            width: resolveMenuWidth({ items: menuItems }),
+            height: menuItems.length,
+            windowWidth: width,
+            windowHeight: height,
+          }).x}
+          top={resolveMenuPosition({
+            x: state.contextMenu.x,
+            y: state.contextMenu.y,
+            width: resolveMenuWidth({ items: menuItems }),
+            height: menuItems.length,
+            windowWidth: width,
+            windowHeight: height,
+          }).y}
+        >
+          <ContextMenu
+            items={menuItems}
+            cursor={state.contextMenu.cursor}
+            tokens={tokens}
+            width={resolveMenuWidth({ items: menuItems })}
+            onChoose={chooseMenuItem}
+          />
+        </box>
+      ) : null}
 
       {isChatPickerOpen ? (
         <ChatPicker

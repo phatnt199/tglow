@@ -43,7 +43,7 @@ export interface IMessageViewProps {
    */
   readOutboxMaxId: number;
   /** A click on a message, by its index in `messages`. */
-  onMessagePress?: (opts: { index: number; button: number }) => void;
+  onMessagePress?: (opts: { index: number; button: number; x: number; y: number }) => void;
   /** A wheel over the pane. Positive scrolls toward newer messages. */
   onScroll?: (opts: { delta: number }) => void;
   /** A drag inside the pane, reported as the pointer's row. */
@@ -594,8 +594,8 @@ export const MessageView = (props: IMessageViewProps) => {
             // the row: clicking the third line of a wrapped message puts the
             // cursor on that message, the way clicking anywhere in a paragraph
             // does. row.messageIndex is already that mapping.
-            onMouseDown={(event: { button: number }) => {
-              onMessagePress?.({ index: row.messageIndex, button: event.button });
+            onMouseDown={(event: { button: number; x: number; y: number }) => {
+              onMessagePress?.({ index: row.messageIndex, button: event.button, x: event.x, y: event.y });
             }}
           >
             <span fg={highlighted ? tokens.chatUnread : tokens.dim}>{`${MARKER}${row.gutter} `}</span>

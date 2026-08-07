@@ -28,6 +28,19 @@ export interface IApplicationState {
    */
   sidebarWidth: number | null;
   /**
+   * The open right-click menu, or null. `target` is an index into whichever
+   * list the menu was opened over -- messages for a message menu, the visible
+   * dialogs for a chat menu -- resolved to an actual row only when an item is
+   * chosen, so a list that changed underneath cannot act on a stale object.
+   */
+  contextMenu: {
+    kind: 'message' | 'chat';
+    target: number;
+    x: number;
+    y: number;
+    cursor: number;
+  } | null;
+  /**
    * Peer type and bot-ness, which folder membership needs and IDialogRow does
    * not carry. Published alongside the folders rather than looked up per
    * render: App is a pure function of state and has no database of its own.
@@ -138,6 +151,7 @@ const INITIAL_STATE: IApplicationState = {
   folders: [],
   activeFolderId: 0,
   sidebarWidth: null,
+  contextMenu: null,
   peerKinds: new Map(),
   typingByPeer: new Map(),
   messages: [],

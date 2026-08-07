@@ -2546,3 +2546,144 @@ test('a second drag moves by its own distance, not by the gap since the last one
 
   expect(store.getState().messageCursor - afterPress).toBeLessThanOrEqual(1);
 });
+
+// ── the right-click menu ──────────────────────────────────────────────────
+
+test('right-clicking a message opens a menu at the pointer', async () => {
+  const { renderer, store } = await mount();
+  const mouse = createMockMouse(renderer.renderer);
+
+  await act(async () => { await mouse.click(40, 3, MouseButtons.RIGHT); });
+  await renderer.flush();
+
+  expect(store.getState().contextMenu?.kind).toBe('message');
+  expect(renderer.captureCharFrame()).toContain('Reply');
+});
+
+// A menu about a message must leave the cursor on that message, or choosing
+// Delete would ask about one while the cursorline sat on another.
+test('the menu moves the cursor to the message it is about', async () => {
+  const { renderer, store } = await mount();
+  const mouse = createMockMouse(renderer.renderer);
+
+  await act(async () => { await mouse.click(40, 3, MouseButtons.RIGHT); });
+  await renderer.flush();
+
+  expect(store.getState().messageCursor).toBe(2);
+});
+
+// Edit is offered only where `e` would actually work. Telegram refuses to edit
+// someone else's message, and so does EDIT_START.
+//
+// Own and theirs are seeded explicitly: mount's default history is entirely
+// incoming, so a test relying on one of those rows being own would assert
+// nothing. The first version of this did exactly that and read the correct
+// absence of Edit as a bug.
+test('edit is offered on your own message and withheld on theirs', async () => {
+  const mixed: IMessageRow[] = [
+    { peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'theirs', out: 0, entities: [], replyToMessageId: null },
+    { peerId: 'u1', id: 2, fromId: 'me', date: 200, text: 'mine', out: 1, entities: [], replyToMessageId: null },
+  ];
+  const { renderer } = await mount({ messages: mixed });
+  const mouse = createMockMouse(renderer.renderer);
+
+  await act(async () => { await mouse.click(40, 1, MouseButtons.RIGHT); });
+  await renderer.flush();
+  expect(renderer.captureCharFrame()).not.toContain('Edit');
+
+  await pressEscape(renderer);
+  await act(async () => { await mouse.click(40, 2, MouseButtons.RIGHT); });
+  await renderer.flush();
+  expect(renderer.captureCharFrame()).toContain('Edit');
+});
+
+// M2's governing rule, in the feature that introduces the mouse: a menu you
+// could not operate from the keyboard would be the first mouse-only thing.
+test('the menu is navigable by j, k and Enter', async () => {
+  const { renderer, store } = await mount();
+  const mouse = createMockMouse(renderer.renderer);
+
+  await act(async () => { await mouse.click(40, 3, MouseButtons.RIGHT); });
+  await renderer.flush();
+  expect(store.getState().contextMenu?.cursor).toBe(0);
+
+  await act(async () => { renderer.mockInput.pressKey('j'); });
+  await renderer.flush();
+  expect(store.getState().contextMenu?.cursor).toBe(1);
+
+  await act(async () => { renderer.mockInput.pressKey('k'); });
+  await renderer.flush();
+  expect(store.getState().contextMenu?.cursor).toBe(0);
+
+  // Enter on Reply, the first item.
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+  expect(store.getState().contextMenu).toBeNull();
+  expect(store.getState().replyToMessageId).not.toBeNull();
+});
+
+test('escape closes the menu without doing anything', async () => {
+  const { renderer, store, deleted } = await mount();
+  const mouse = createMockMouse(renderer.renderer);
+
+  await act(async () => { await mouse.click(40, 3, MouseButtons.RIGHT); });
+  await renderer.flush();
+  await pressEscape(renderer);
+  await renderer.flush();
+
+  expect(store.getState().contextMenu).toBeNull();
+  expect(store.getState().replyToMessageId).toBeNull();
+  expect(deleted).toEqual([]);
+});
+
+// The menu must not become the one route that skips the only confirmation in
+// the app: Delete goes through DELETE_REQUEST exactly as `dd` does.
+test('choosing Delete still asks y/n rather than deleting outright', async () => {
+  const { renderer, store, deleted } = await mount();
+  const mouse = createMockMouse(renderer.renderer);
+
+  await act(async () => { await mouse.click(40, 3, MouseButtons.RIGHT); });
+  await renderer.flush();
+
+  const items = store.getState().contextMenu;
+  expect(items).not.toBeNull();
+  // Walk to Delete, which is last.
+  for (let step = 0; step < 6; step += 1) {
+    await act(async () => { renderer.mockInput.pressKey('j'); });
+  }
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+
+  expect(deleted).toEqual([]);
+  expect(store.getState().pendingConfirmation).not.toBeNull();
+  expect(renderer.captureCharFrame()).toContain('Delete this message?');
+});
+
+// A key that means something in the pane underneath must not reach it while
+// the menu is open, or it would act on a message the menu is asking about.
+test('keys do not fall through the menu to the pane underneath', async () => {
+  const { renderer, store } = await mount();
+  const mouse = createMockMouse(renderer.renderer);
+
+  await act(async () => { await mouse.click(40, 3, MouseButtons.RIGHT); });
+  await renderer.flush();
+  const before = store.getState().composerText;
+
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await renderer.flush();
+
+  expect(store.getState().engine.mode).toBe(VimModes.NORMAL);
+  expect(store.getState().composerText).toBe(before);
+});
+
+test('right-clicking a chat offers to open it', async () => {
+  const { renderer, store } = await mount();
+  const mouse = createMockMouse(renderer.renderer);
+
+  await act(async () => { await mouse.click(2, 1, MouseButtons.RIGHT); });
+  await renderer.flush();
+
+  expect(store.getState().contextMenu?.kind).toBe('chat');
+  expect(renderer.captureCharFrame()).toContain('Open');
+});
