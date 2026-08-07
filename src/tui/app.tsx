@@ -153,14 +153,14 @@ const FrameColumn = (props: {
   colour: string;
   tee?: { row: number; glyph: string };
   /** Present only on the divider between the panes, which is the one draggable column. */
-  onDrag?: (opts: { x: number }) => void;
+  onPress?: () => void;
 }) => (
   <box
     flexDirection="column"
     width={1}
     height={props.height}
     flexShrink={0}
-    onMouseDrag={props.onDrag ? (event: { x: number }) => { props.onDrag?.({ x: event.x }); } : undefined}
+    onMouseDown={props.onPress ? () => { props.onPress?.(); } : undefined}
   >
     {Array.from({ length: props.height }, (unused, row) => (
       <text key={row} height={1} flexShrink={0} fg={props.colour}>
@@ -348,6 +348,24 @@ export const App = (props: IAppProps) => {
   // current value on the very next synchronous key press, the same reason it
   // already reads store.getState() fresh rather than a render's `state`.
   const sendInFlightRef = useRef(false);
+  /**
+   * The row a drag was last seen at, or null between drags. A drag reports an
+   * absolute position rather than a delta, so this is what turns one into the
+   * other -- and clearing it on drag-end is what stops the next drag beginning
+   * with a jump from wherever the last one ended.
+   */
+  const dragOriginRef = useRef<number | null>(null);
+  /**
+   * What the drag in progress is doing, decided by what was pressed down on
+   * rather than by what the pointer is currently over.
+   *
+   * OpenTUI delivers a drag to the element under the pointer, not to the one
+   * the drag started on -- so the divider stopped receiving events the instant
+   * the pointer moved off its single column, which is to say immediately.
+   * Tracking the mode here and handling the drag at the root is what lets a
+   * one-column handle be draggable at all.
+   */
+  const dragModeRef = useRef<'divider' | 'conversation' | null>(null);
 
   // The pending ambiguous-key timeout, if any. A ref, not state, for the same
   // reason the handler below reads store.getState() fresh rather than a
@@ -1125,6 +1143,75 @@ export const App = (props: IAppProps) => {
     store.setState({ patch: { sidebarWidth: Math.max(0, opts.x - FRAME_LEFT_COLUMNS) } });
   };
 
+  /** The one column the divider occupies: past the frame's left border and the sidebar. */
+  const dividerColumn = FRAME_LEFT_COLUMNS + paneWidths.sidebar;
+
+  /**
+   * What a press begins, decided from where it landed rather than from which
+   * element claimed it.
+   *
+   * Deciding by coordinate rather than by a handler on the divider itself is
+   * deliberate. OpenTUI delivers a drag to whatever is under the pointer, so a
+   * one-column handle loses the drag on the first movement -- and relying on
+   * that column to receive even the initial press made the whole gesture
+   * depend on hit-testing a single cell, which it did not survive. The column
+   * is known here exactly, so this needs no hit-testing at all.
+   */
+  const beginDrag = (opts: { x: number; button: number }): void => {
+    if (opts.button !== MOUSE_BUTTON_LEFT) {
+      return;
+    }
+    dragModeRef.current = opts.x === dividerColumn ? 'divider' : 'conversation';
+    dragOriginRef.current = null;
+  };
+
+  /** Every drag, routed by what it started on rather than what it is over. */
+  const dragAnywhere = (opts: { x: number; y: number }): void => {
+    if (dragModeRef.current === 'divider') {
+      dragDivider({ x: opts.x });
+      return;
+    }
+    if (dragModeRef.current === 'conversation') {
+      dragConversation({ y: opts.y });
+    }
+  };
+
+  const endDrag = (): void => {
+    dragModeRef.current = null;
+    dragOriginRef.current = null;
+  };
+
+  /**
+   * Grab the conversation and pull it.
+   *
+   * Inverted, like touch scrolling: dragging the content downward brings older
+   * messages into view, because you are moving the paper rather than the
+   * window over it.
+   *
+   * A drag reports an absolute row each time, not a delta, so the previous row
+   * is remembered between events. It is cleared on drag-end -- without that,
+   * the next drag anywhere in the pane would begin by jumping the distance
+   * between where the last one ended and where this one started.
+   */
+  const dragConversation = (opts: { y: number }): void => {
+    const previous = dragOriginRef.current;
+    dragOriginRef.current = opts.y;
+    if (previous === null) {
+      return;
+    }
+    const delta = previous - opts.y;
+    if (delta === 0) {
+      return;
+    }
+    const current = store.getState();
+    store.setState({
+      patch: applyAction({
+        state: current,
+        action: { type: ActionTypes.CURSOR_MOVE, unit: 'message', delta },
+      }),
+    });
+  };
+
   const pressFolder = (opts: { id: number; button: number }): void => {
     if (opts.button !== MOUSE_BUTTON_LEFT) {
       return;
@@ -1164,7 +1251,20 @@ export const App = (props: IAppProps) => {
   const frameColour = chatListFocused ? tokens.borderActive : tokens.border;
 
   return (
-    <box flexDirection="column" width={width} height={height} backgroundColor={tokens.background}>
+    <box
+      flexDirection="column"
+      width={width}
+      height={height}
+      backgroundColor={tokens.background}
+      // Every drag is handled here rather than on the element it started from,
+      // because OpenTUI delivers a drag to whatever is under the pointer --
+      // which loses a one-column divider on the first movement. What the drag
+      // means was decided when it began; see dragModeRef.
+      onMouseDown={(event: { x: number; button: number }) => { beginDrag({ x: event.x, button: event.button }); }}
+      onMouseDrag={(event: { x: number; y: number }) => { dragAnywhere({ x: event.x, y: event.y }); }}
+      onMouseDragEnd={endDrag}
+      onMouseUp={endDrag}
+    >
       <text height={1} flexShrink={0} fg={frameColour}>
         {buildTopEdge({
           widths: paneWidths,
@@ -1221,7 +1321,7 @@ export const App = (props: IAppProps) => {
           />
         </box>
 
-        <FrameColumn height={paneHeight} colour={frameColour} tee={sectionTee(FRAME_TEE_LEFT)} onDrag={dragDivider} />
+        <FrameColumn height={paneHeight} colour={frameColour} tee={sectionTee(FRAME_TEE_LEFT)} />
 
         {/* The right column: conversation, a rule, then the composer beneath
             it. The composer belongs to the chat it writes into, so it stops

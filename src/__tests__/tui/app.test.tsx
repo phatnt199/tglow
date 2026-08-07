@@ -2468,3 +2468,81 @@ test('every framed row closes on the right, at every size', async () => {
     expect({ width, unclosed: unclosed.length }).toEqual({ width, unclosed: 0 });
   }
 });
+
+// ── drags ─────────────────────────────────────────────────────────────────
+
+test('dragging the divider rebalances the panes', async () => {
+  const { renderer } = await mount({ width: 90, height: 14 });
+  const before = renderer.captureCharFrame().split('\n')[0]!.indexOf('┬');
+  const mouse = createMockMouse(renderer.renderer);
+
+  await act(async () => { await mouse.drag(before, 4, before + 10, 4); });
+  await renderer.flush();
+
+  const after = renderer.captureCharFrame().split('\n')[0]!.indexOf('┬');
+  expect(after).toBeGreaterThan(before);
+});
+
+// resolvePaneWidths owns the minimum, and the drag must not be able to talk it
+// past that -- a divider dragged to the far edge would otherwise leave a pane
+// with nothing in it.
+test('the divider cannot be dragged far enough to erase a pane', async () => {
+  const { renderer } = await mount({ width: 90, height: 14 });
+  const mouse = createMockMouse(renderer.renderer);
+  const start = renderer.captureCharFrame().split('\n')[0]!.indexOf('┬');
+
+  await act(async () => { await mouse.drag(start, 4, 89, 4); });
+  await renderer.flush();
+
+  const rows = renderer.captureCharFrame().split('\n').filter(row => row !== '');
+  const junction = rows[0]!.indexOf('┬');
+  expect(junction).toBeGreaterThan(0);
+  expect(junction).toBeLessThan(89 - 1);
+  // And the frame still closes: nothing was squeezed into a negative width.
+  const unclosed = rows
+    .filter(row => '┌└│'.includes(row[0] ?? ''))
+    .filter(row => !'┐┘│'.includes(row[row.length - 1] ?? ''));
+  expect(unclosed).toHaveLength(0);
+});
+
+// Inverted, like touch scrolling: pulling the content down brings older
+// messages into view, because you are moving the paper rather than the window.
+test('dragging the conversation scrolls it, inverted like touch', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('g'); renderer.mockInput.pressKey('g'); });
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(0);
+
+  const mouse = createMockMouse(renderer.renderer);
+  await act(async () => { await mouse.drag(40, 4, 40, 1); });
+  await renderer.flush();
+
+  expect(store.getState().messageCursor).toBeGreaterThan(0);
+});
+
+// A drag reports an absolute row, so the previous one has to be forgotten when
+// it ends. Without that, the next drag starts by jumping the gap between where
+// the last one finished and where this one began.
+//
+// Measured as a delta rather than an absolute cursor, because pressing down is
+// also a click and a click moves the cursor to the message under it -- the
+// first version of this test read that legitimate move as a failure.
+test('a second drag moves by its own distance, not by the gap since the last one', async () => {
+  const { renderer, store } = await mount();
+  const mouse = createMockMouse(renderer.renderer);
+
+  await act(async () => { await mouse.drag(40, 4, 40, 2); });
+  await renderer.flush();
+
+  // Starting far from where the last drag ended. A remembered origin would add
+  // that whole gap to this drag's own one-row movement.
+  await act(async () => { await mouse.pressDown(40, 4); });
+  await renderer.flush();
+  const afterPress = store.getState().messageCursor;
+
+  await act(async () => { await mouse.moveTo(40, 3); });
+  await act(async () => { await mouse.release(40, 3); });
+  await renderer.flush();
+
+  expect(store.getState().messageCursor - afterPress).toBeLessThanOrEqual(1);
+});

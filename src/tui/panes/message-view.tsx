@@ -46,6 +46,10 @@ export interface IMessageViewProps {
   onMessagePress?: (opts: { index: number; button: number }) => void;
   /** A wheel over the pane. Positive scrolls toward newer messages. */
   onScroll?: (opts: { delta: number }) => void;
+  /** A drag inside the pane, reported as the pointer's row. */
+  onDrag?: (opts: { y: number }) => void;
+  /** The end of that drag, so the next one starts fresh rather than jumping. */
+  onDragEnd?: () => void;
 }
 
 /** Reserved and always blank: the cursorline shows position, not an arrow. */
@@ -537,7 +541,7 @@ const buildRows = (opts: {
 export const MessageView = (props: IMessageViewProps) => {
   const {
     messages, cursor, focused, tokens, height, width, resolveSenderName, revealedSpoilers, readOutboxMaxId,
-    onMessagePress, onScroll,
+    onMessagePress, onScroll, onDrag, onDragEnd,
   } = props;
 
   if (messages.length === 0) {
@@ -574,6 +578,8 @@ export const MessageView = (props: IMessageViewProps) => {
         // separately.
         onScroll?.({ delta: event.scroll?.direction === 'down' ? 1 : -1 });
       }}
+      onMouseDrag={(event: { y: number }) => { onDrag?.({ y: event.y }); }}
+      onMouseDragEnd={() => { onDragEnd?.(); }}
     >
       {rows.slice(start, end).map(row => {
         const highlighted = row.messageIndex === cursor && focused;
