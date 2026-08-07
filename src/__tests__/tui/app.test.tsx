@@ -2505,47 +2505,6 @@ test('the divider cannot be dragged far enough to erase a pane', async () => {
   expect(unclosed).toHaveLength(0);
 });
 
-// Inverted, like touch scrolling: pulling the content down brings older
-// messages into view, because you are moving the paper rather than the window.
-test('dragging the conversation scrolls it, inverted like touch', async () => {
-  const { renderer, store } = await mount();
-  await act(async () => { renderer.mockInput.pressKey('g'); renderer.mockInput.pressKey('g'); });
-  await renderer.flush();
-  expect(store.getState().messageCursor).toBe(0);
-
-  const mouse = createMockMouse(renderer.renderer);
-  await act(async () => { await mouse.drag(40, 4, 40, 1); });
-  await renderer.flush();
-
-  expect(store.getState().messageCursor).toBeGreaterThan(0);
-});
-
-// A drag reports an absolute row, so the previous one has to be forgotten when
-// it ends. Without that, the next drag starts by jumping the gap between where
-// the last one finished and where this one began.
-//
-// Measured as a delta rather than an absolute cursor, because pressing down is
-// also a click and a click moves the cursor to the message under it -- the
-// first version of this test read that legitimate move as a failure.
-test('a second drag moves by its own distance, not by the gap since the last one', async () => {
-  const { renderer, store } = await mount();
-  const mouse = createMockMouse(renderer.renderer);
-
-  await act(async () => { await mouse.drag(40, 4, 40, 2); });
-  await renderer.flush();
-
-  // Starting far from where the last drag ended. A remembered origin would add
-  // that whole gap to this drag's own one-row movement.
-  await act(async () => { await mouse.pressDown(40, 4); });
-  await renderer.flush();
-  const afterPress = store.getState().messageCursor;
-
-  await act(async () => { await mouse.moveTo(40, 3); });
-  await act(async () => { await mouse.release(40, 3); });
-  await renderer.flush();
-
-  expect(store.getState().messageCursor - afterPress).toBeLessThanOrEqual(1);
-});
 
 // ── the right-click menu ──────────────────────────────────────────────────
 
@@ -2686,4 +2645,27 @@ test('right-clicking a chat offers to open it', async () => {
 
   expect(store.getState().contextMenu?.kind).toBe('chat');
   expect(renderer.captureCharFrame()).toContain('Open');
+});
+
+// Drag-to-scroll was built and then removed at the owner's request. A drag
+// anywhere but the divider must now do nothing at all -- and in particular
+// must not still move the cursor, which is what it used to do.
+test('dragging inside the conversation no longer scrolls it', async () => {
+  const { renderer, store } = await mount();
+  await act(async () => { renderer.mockInput.pressKey('g'); renderer.mockInput.pressKey('g'); });
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(0);
+
+  const mouse = createMockMouse(renderer.renderer);
+  // The press itself is a click and moves the cursor to that message; the
+  // movement after it must add nothing.
+  await act(async () => { await mouse.pressDown(40, 2); });
+  await renderer.flush();
+  const afterPress = store.getState().messageCursor;
+
+  await act(async () => { await mouse.moveTo(40, 8); });
+  await act(async () => { await mouse.release(40, 8); });
+  await renderer.flush();
+
+  expect(store.getState().messageCursor).toBe(afterPress);
 });

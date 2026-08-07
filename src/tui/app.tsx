@@ -352,13 +352,6 @@ export const App = (props: IAppProps) => {
   // already reads store.getState() fresh rather than a render's `state`.
   const sendInFlightRef = useRef(false);
   /**
-   * The row a drag was last seen at, or null between drags. A drag reports an
-   * absolute position rather than a delta, so this is what turns one into the
-   * other -- and clearing it on drag-end is what stops the next drag beginning
-   * with a jump from wherever the last one ended.
-   */
-  const dragOriginRef = useRef<number | null>(null);
-  /**
    * What the drag in progress is doing, decided by what was pressed down on
    * rather than by what the pointer is currently over.
    *
@@ -368,7 +361,7 @@ export const App = (props: IAppProps) => {
    * Tracking the mode here and handling the drag at the root is what lets a
    * one-column handle be draggable at all.
    */
-  const dragModeRef = useRef<'divider' | 'conversation' | null>(null);
+  const dragModeRef = useRef<'divider' | null>(null);
 
   // The pending ambiguous-key timeout, if any. A ref, not state, for the same
   // reason the handler below reads store.getState() fresh rather than a
@@ -1303,55 +1296,22 @@ export const App = (props: IAppProps) => {
     if (opts.button !== MOUSE_BUTTON_LEFT) {
       return;
     }
-    dragModeRef.current = opts.x === dividerColumn ? 'divider' : 'conversation';
-    dragOriginRef.current = null;
+    // Only the divider. A drag anywhere else does nothing: dragging the
+    // conversation to scroll it was built and then removed at the owner's
+    // request, and the wheel covers the same ground without competing with the
+    // terminal's own click-and-drag.
+    dragModeRef.current = opts.x === dividerColumn ? 'divider' : null;
   };
 
   /** Every drag, routed by what it started on rather than what it is over. */
-  const dragAnywhere = (opts: { x: number; y: number }): void => {
+  const dragAnywhere = (opts: { x: number }): void => {
     if (dragModeRef.current === 'divider') {
       dragDivider({ x: opts.x });
-      return;
-    }
-    if (dragModeRef.current === 'conversation') {
-      dragConversation({ y: opts.y });
     }
   };
 
   const endDrag = (): void => {
     dragModeRef.current = null;
-    dragOriginRef.current = null;
-  };
-
-  /**
-   * Grab the conversation and pull it.
-   *
-   * Inverted, like touch scrolling: dragging the content downward brings older
-   * messages into view, because you are moving the paper rather than the
-   * window over it.
-   *
-   * A drag reports an absolute row each time, not a delta, so the previous row
-   * is remembered between events. It is cleared on drag-end -- without that,
-   * the next drag anywhere in the pane would begin by jumping the distance
-   * between where the last one ended and where this one started.
-   */
-  const dragConversation = (opts: { y: number }): void => {
-    const previous = dragOriginRef.current;
-    dragOriginRef.current = opts.y;
-    if (previous === null) {
-      return;
-    }
-    const delta = previous - opts.y;
-    if (delta === 0) {
-      return;
-    }
-    const current = store.getState();
-    store.setState({
-      patch: applyAction({
-        state: current,
-        action: { type: ActionTypes.CURSOR_MOVE, unit: 'message', delta },
-      }),
-    });
   };
 
   const pressFolder = (opts: { id: number; button: number }): void => {
@@ -1403,7 +1363,7 @@ export const App = (props: IAppProps) => {
       // which loses a one-column divider on the first movement. What the drag
       // means was decided when it began; see dragModeRef.
       onMouseDown={(event: { x: number; button: number }) => { beginDrag({ x: event.x, button: event.button }); }}
-      onMouseDrag={(event: { x: number; y: number }) => { dragAnywhere({ x: event.x, y: event.y }); }}
+      onMouseDrag={(event: { x: number }) => { dragAnywhere({ x: event.x }); }}
       onMouseDragEnd={endDrag}
       onMouseUp={endDrag}
     >
