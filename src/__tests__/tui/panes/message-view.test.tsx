@@ -816,3 +816,59 @@ test('two consecutive own messages each show their own tick, independent of grou
   expect(readTick(rows[0]!)).toBe('✓✓');
   expect(readTick(rows[1]!)).toBe('✓ ');
 });
+
+// ── which side a message sits on ──────────────────────────────────────────
+//
+// Telegram's own behaviour, and what the owner asked for: in a wide window
+// your messages sit right and theirs sit left; in a narrow one everything
+// stays left, because right-aligning in a cramped pane costs the text the room
+// it has least of and buys a distinction the `me` in the sender column already
+// makes.
+
+const buildAlignmentRow = (over: Partial<IMessageRow>): IMessageRow => ({
+  peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: '', out: 0, entities: [], replyToMessageId: null, ...over,
+});
+
+const alignmentMessages: IMessageRow[] = [
+  buildAlignmentRow({ id: 1, fromId: 'u1', out: 0, text: 'theirs' }),
+  buildAlignmentRow({ id: 2, fromId: 'me', out: 1, text: 'mine' }),
+];
+
+const contentOf = (row: string): string => row.slice(RAIL_COLUMNS);
+
+test('in a wide pane an own message is pushed to the right edge', async () => {
+  const rows = readRows(await render({ messages: alignmentMessages, width: 100 }));
+  const mine = rows.find(row => row.includes('mine'))!;
+  expect(mine.trimEnd().endsWith('mine')).toBe(true);
+  // And it really moved, rather than merely ending there because it is short.
+  expect(contentOf(mine).startsWith('mine')).toBe(false);
+});
+
+test('in a wide pane the other side stays on the left', async () => {
+  const rows = readRows(await render({ messages: alignmentMessages, width: 100 }));
+  const theirs = rows.find(row => row.includes('theirs'))!;
+  expect(contentOf(theirs).startsWith('theirs')).toBe(true);
+});
+
+test('in a narrow pane both sides stay left, the way a narrow Telegram window does', async () => {
+  const rows = readRows(await render({ messages: alignmentMessages, width: 46 }));
+  expect(contentOf(rows.find(row => row.includes('mine'))!).startsWith('mine')).toBe(true);
+  expect(contentOf(rows.find(row => row.includes('theirs'))!).startsWith('theirs')).toBe(true);
+});
+
+// One indent for the block, not one per row: indenting each row to its own
+// width would right-align every line individually and leave a wrapped
+// paragraph ragged down its left edge.
+test('a wrapped own message keeps its lines aligned with each other', async () => {
+  const long = 'this message is long enough that it has to wrap across more than one row of the pane';
+  const rows = readRows(await render({
+    messages: [buildAlignmentRow({ id: 1, fromId: 'me', out: 1, text: long })],
+    width: 100,
+  }));
+  const wrapped = rows.filter(row => row.trim() !== '' && !row.includes('┌'));
+  const starts = wrapped
+    .map(row => contentOf(row))
+    .filter(content => content.trim() !== '')
+    .map(content => content.length - content.trimStart().length);
+  expect(new Set(starts).size).toBe(1);
+});

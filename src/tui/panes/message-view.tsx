@@ -293,20 +293,63 @@ const buildQuoteText = (opts: {
  * columns would draw a style nothing asked for, so a styled last span gets
  * its own unstyled trailing span instead.
  */
-const padRowContent = (opts: { spans: IStyledSpan[]; width: number }): IStyledSpan[] => {
+const padRowContent = (opts: { spans: IStyledSpan[]; width: number; indent?: number }): IStyledSpan[] => {
   const { spans, width } = opts;
-  const used = spans.reduce((total, span) => total + measureTextWidth({ text: span.text }), 0);
+  const indent = Math.max(0, opts.indent ?? 0);
+  // Prepended as its own unstyled span rather than merged into the first: the
+  // first span may be a link or a code run, and extending either backwards
+  // would underline or colour blank columns nothing asked for -- the same
+  // reasoning the trailing pad already follows.
+  const indented = indent > 0 ? [{ text: ' '.repeat(indent), kinds: [], url: null }, ...spans] : spans;
+
+  const used = indented.reduce((total, span) => total + measureTextWidth({ text: span.text }), 0);
   const deficit = width - used;
   if (deficit <= 0) {
-    return spans;
+    return indented;
   }
 
   const padding = ' '.repeat(deficit);
-  const last = spans[spans.length - 1]!;
+  const last = indented[indented.length - 1]!;
   if (isPlainSpan(last)) {
-    return [...spans.slice(0, -1), { ...last, text: last.text + padding }];
+    return [...indented.slice(0, -1), { ...last, text: last.text + padding }];
   }
-  return [...spans, { text: padding, kinds: [], url: null }];
+  return [...indented, { text: padding, kinds: [], url: null }];
+};
+
+/**
+ * The minimum content width at which own messages are pushed to the right.
+ *
+ * Below it every message stays left-aligned, the way a narrow Telegram window
+ * also gives up on side-by-side. Right-aligning in a cramped pane costs the
+ * one thing that pane has least of -- room for the text itself -- and buys a
+ * distinction the `me` in the sender column already makes.
+ */
+export const RIGHT_ALIGN_MINIMUM_CONTENT_WIDTH = 60;
+
+/**
+ * How far right to push a message's block, so its widest line ends at the
+ * pane's right edge. Own messages only, and only when there is room.
+ *
+ * The indent needs no cap of its own: it is `contentWidth - widest`, which
+ * shrinks to nothing as a message grows, so a long message barely moves while
+ * a short one goes all the way over. An earlier version capped it at half the
+ * pane, reasoning that a block should never be squeezed thin -- but the
+ * squeezing it feared cannot happen, and the cap only stopped short messages
+ * from reaching the edge, which is precisely the case right-alignment is for.
+ * It parked every one of them mid-pane instead.
+ */
+const resolveBlockIndent = (opts: { own: boolean; contentWidth: number; rows: IStyledSpan[][] }): number => {
+  const { own, contentWidth, rows } = opts;
+  if (!own || contentWidth < RIGHT_ALIGN_MINIMUM_CONTENT_WIDTH || rows.length === 0) {
+    return 0;
+  }
+
+  const widest = rows.reduce(
+    (widestSoFar, row) =>
+      Math.max(widestSoFar, row.reduce((total, span) => total + measureTextWidth({ text: span.text }), 0)),
+    0,
+  );
+  return Math.max(0, contentWidth - widest);
 };
 
 const isLinkKind = (kinds: TEntityKind[]): boolean => LINK_KINDS.some(kind => kinds.includes(kind));
@@ -446,6 +489,20 @@ const buildRows = (opts: {
     const wrappedRows = toLogicalSpanLines({ spans: styled })
       .flatMap(line => wrapLogicalLine({ spans: line, contentWidth, preContentWidth }));
 
+    // How far this message's block is pushed right. Zero for everything the
+    // other side sent, and zero in a narrow pane -- see resolveBlockIndent.
+    //
+    // Computed once per message from its widest row, not per row: indenting
+    // each row to its own width would right-align every line individually and
+    // leave a wrapped paragraph ragged down its left edge. One indent for the
+    // whole block keeps the lines aligned with each other and moves the block
+    // as a unit, which is what a bubble is.
+    const blockIndent = resolveBlockIndent({
+      own,
+      contentWidth,
+      rows: wrappedRows.map(row => row.spans),
+    });
+
     wrappedRows.forEach(({ spans: rowSpans, isPre }, lineIndex) => {
       const opensMessage = lineIndex === 0;
       const rowWidth = isPre ? preContentWidth : contentWidth;
@@ -462,7 +519,7 @@ const buildRows = (opts: {
         // Every own message's own row, not gated on opensGroup the way
         // time/sender are -- see resolveTick's own comment above.
         tick: opensMessage ? tick : BLANK_TICK,
-        content: padRowContent({ spans: rowSpans, width: rowWidth }),
+        content: padRowContent({ spans: rowSpans, width: rowWidth, indent: isPre ? 0 : blockIndent }),
         own,
         revealed,
         rulePrefix: isPre,
