@@ -116,6 +116,24 @@ export class MessageService {
     return [...opts.rows].reverse();
   };
 
+  /**
+   * Where the cursor goes when a chat opens: the newest message.
+   *
+   * Which is what "scrolled to the bottom" means here -- the cursor drives the
+   * viewport (src/tui/viewport.ts), so there is no separate scroll offset to
+   * set. It is also where the unread messages are, and where every other chat
+   * client puts you.
+   *
+   * Set on open rather than left alone, because leaving it alone was worse
+   * than merely starting at the top: the cursor carried over from the previous
+   * chat, so switching from a long history to a short one left it past the end
+   * of the new one, pointing at a message that does not exist. Zero for an
+   * empty chat -- a -1 would index before the start of the list everywhere it
+   * is read.
+   */
+  private cursorAtNewest = (opts: { messages: IMessageRow[] }): number =>
+    Math.max(0, opts.messages.length - 1);
+
   loadHistory = async (opts: { peerId: string; limit: number }): Promise<void> => {
     const { peerId, limit } = opts;
     this._historyLimit = limit;
@@ -135,9 +153,11 @@ export class MessageService {
           pinned: message.pinned,
         })),
       });
+      const messages = this.forDisplay({ rows: this._database.listMessages({ peerId, limit }) });
       this._store.setState({
         patch: {
-          messages: this.forDisplay({ rows: this._database.listMessages({ peerId, limit }) }),
+          messages,
+          messageCursor: this.cursorAtNewest({ messages }),
           activePeerId: peerId,
           statusMessage: null,
         },
@@ -156,10 +176,12 @@ export class MessageService {
         this._logger.for(this.loadHistory.name).error('Cache unreadable | Reason: %s', cacheError);
       }
 
-      // Offline is not an error state for reading — show what we already have.
+      // Offline is not an error state for reading — show what we already have,
+      // at the bottom of it, exactly as a successful open would.
       this._store.setState({
         patch: {
           messages: cached,
+          messageCursor: this.cursorAtNewest({ messages: cached }),
           activePeerId: peerId,
           statusMessage: `Could not load history: ${toError(error).message}`,
         },

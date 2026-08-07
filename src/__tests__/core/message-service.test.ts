@@ -612,3 +612,48 @@ test('an empty id list touches neither the network nor the cache', async () => {
   expect(harness.database.listMessages({ peerId: 'u1', limit: 10 })).toHaveLength(1);
   harness.database.close();
 });
+
+// ── opening a chat lands on the newest message ────────────────────────────
+
+// Where every chat client puts you, and where the unread messages are. The
+// cursor drives the viewport, so this is what "scrolled to the bottom" means
+// here -- there is no separate scroll offset to set.
+test('opening a chat puts the cursor on the newest message', async () => {
+  const { service, store, database } = buildService(
+    buildAdapter({
+      fetchHistory: async () => [1, 2, 3, 4, 5].map(id =>
+        buildRawMessage({ id, date: id * 100, text: `msg${id}` })),
+    }),
+  );
+
+  await service.loadHistory({ peerId: 'u1', limit: 50 });
+
+  expect(store.getState().messageCursor).toBe(4);
+  database.close();
+});
+
+// Switching from a long chat to a short one used to leave the cursor past the
+// end of the new history, pointing at a message that is not there.
+test('opening a shorter chat does not leave the cursor past the end', async () => {
+  const { service, store, database } = buildService(
+    buildAdapter({ fetchHistory: async () => [buildRawMessage({ id: 1, date: 100 })] }),
+  );
+  store.setState({ patch: { messageCursor: 40 } });
+
+  await service.loadHistory({ peerId: 'u1', limit: 50 });
+
+  expect(store.getState().messageCursor).toBe(0);
+  database.close();
+});
+
+// An empty chat has no message to sit on, and a cursor of -1 would index
+// before the start of the list everywhere it is read.
+test('opening an empty chat leaves the cursor at zero', async () => {
+  const { service, store, database } = buildService(buildAdapter({ fetchHistory: async () => [] }));
+  store.setState({ patch: { messageCursor: 12 } });
+
+  await service.loadHistory({ peerId: 'u1', limit: 50 });
+
+  expect(store.getState().messageCursor).toBe(0);
+  database.close();
+});
