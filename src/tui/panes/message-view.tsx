@@ -568,9 +568,10 @@ export const MessageView = (props: IMessageViewProps) => {
       width={width}
       height={height}
       onMouseScroll={(event: { scroll?: { direction: string } }) => {
-        // The viewport moves, not the cursor. Scrolling past the newest
-        // message must not mark it read -- reading is an explicit act, and a
-        // wheel is not one.
+        // Reported as a direction; what it moves is App's decision. It moves
+        // the cursor there, and the viewport follows, because this pane's
+        // window has always been derived from the cursor rather than tracked
+        // separately.
         onScroll?.({ delta: event.scroll?.direction === 'down' ? 1 : -1 });
       }}
     >

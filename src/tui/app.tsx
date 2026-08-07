@@ -127,6 +127,9 @@ const SECTION_DIVIDER_HEIGHT = 1;
  */
 const MOUSE_BUTTON_LEFT = 0;
 
+/** What one notch of the wheel moves, matching the three lines most terminals send. */
+const SCROLL_ROWS_PER_NOTCH = 3;
+
 /**
  * One `<text>` per row, the same one-child-one-row rule the panes follow, so a
  * frame column cannot be shrunk into its neighbours.
@@ -1052,6 +1055,28 @@ export const App = (props: IAppProps) => {
     });
   };
 
+  /**
+   * The wheel, over either pane.
+   *
+   * It moves the cursor, and the viewport follows it -- the viewport is
+   * derived from the cursor, and always has been. That is also what vim does
+   * once you scroll far enough to push the cursor out of the window, and it is
+   * what Telegram does: scrolling to the newest message marks it read, because
+   * you have genuinely seen it. The rule that reading is an explicit act is
+   * about the chat *list* -- never marking a chat read because the cursor
+   * passed over it -- and that still holds, since a wheel over the sidebar
+   * moves through chats without opening any.
+   */
+  const scrollBy = (opts: { unit: 'message' | 'chat'; delta: number }): void => {
+    const current = store.getState();
+    store.setState({
+      patch: applyAction({
+        state: current,
+        action: { type: ActionTypes.CURSOR_MOVE, unit: opts.unit, delta: opts.delta * SCROLL_ROWS_PER_NOTCH },
+      }),
+    });
+  };
+
   const pressFolder = (opts: { id: number; button: number }): void => {
     if (opts.button !== MOUSE_BUTTON_LEFT) {
       return;
@@ -1144,6 +1169,7 @@ export const App = (props: IAppProps) => {
             typingByPeer={state.typingByPeer}
             now={now}
             onChatPress={pressChat}
+            onScroll={({ delta }) => { scrollBy({ unit: 'chat', delta }); }}
           />
         </box>
 
@@ -1171,6 +1197,7 @@ export const App = (props: IAppProps) => {
             revealedSpoilers={state.revealedSpoilers}
             readOutboxMaxId={activeDialog?.readOutboxMaxId ?? 0}
             onMessagePress={pressMessage}
+            onScroll={({ delta }) => { scrollBy({ unit: 'message', delta }); }}
           />
 
           {isOverlayOpen ? null : (

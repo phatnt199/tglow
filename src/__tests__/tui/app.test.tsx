@@ -2353,3 +2353,79 @@ test('a right click does not open a chat', async () => {
 
   expect(opened).toEqual([]);
 });
+
+/**
+ * Enough chats that the cursor has somewhere to scroll to. `u1` stays first
+ * because mount seeds its peers from this list, and its default messages
+ * belong to u1 -- dropping it fails the foreign key from messages to peers.
+ */
+const manyDialogs: IDialogRow[] = [
+  { peerId: 'u1', title: 'Alice', pinned: 0, unreadCount: 0, lastMessageAt: 1000, topMessageId: 1, readOutboxMaxId: 0, preview: null },
+  ...Array.from({ length: 11 }, (unused, index) => ({
+    peerId: `s${String(index)}`,
+    title: `chat${String(index)}`,
+    pinned: 0,
+    unreadCount: 0,
+    lastMessageAt: 999 - index,
+    topMessageId: 1,
+    readOutboxMaxId: 0,
+    preview: null,
+  })),
+];
+
+test('the wheel scrolls the conversation', async () => {
+  const { renderer, store } = await mount();
+  const mouse = createMockMouse(renderer.renderer);
+  expect(store.getState().messageCursor).toBe(0);
+
+  await act(async () => { await mouse.scroll(40, 3, 'down'); });
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBeGreaterThan(0);
+
+  await act(async () => { await mouse.scroll(40, 3, 'up'); });
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(0);
+});
+
+test('the wheel scrolls the chat list', async () => {
+  const { renderer, store } = await mount({ dialogs: manyDialogs });
+  const mouse = createMockMouse(renderer.renderer);
+  expect(store.getState().chatCursor).toBe(0);
+
+  await act(async () => { await mouse.scroll(2, 2, 'down'); });
+  await renderer.flush();
+
+  expect(store.getState().chatCursor).toBeGreaterThan(0);
+});
+
+// Scrolling the sidebar moves through chats; it must never open one. That is
+// the rule that reading is an explicit act, in the one place a wheel could
+// break it.
+test('scrolling the chat list opens nothing', async () => {
+  const { renderer, opened } = await mount({ dialogs: manyDialogs });
+  const mouse = createMockMouse(renderer.renderer);
+
+  await act(async () => { await mouse.scroll(2, 2, 'down'); });
+  await act(async () => { await mouse.scroll(2, 2, 'down'); });
+  await renderer.flush();
+
+  expect(opened).toEqual([]);
+});
+
+// A wheel at the end of the list must stop, not wrap round to the top.
+test('the wheel stops at the ends rather than wrapping', async () => {
+  const { renderer, store } = await mount();
+  const mouse = createMockMouse(renderer.renderer);
+
+  for (let notch = 0; notch < 6; notch += 1) {
+    await act(async () => { await mouse.scroll(40, 3, 'up'); });
+  }
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(0);
+
+  for (let notch = 0; notch < 12; notch += 1) {
+    await act(async () => { await mouse.scroll(40, 3, 'down'); });
+  }
+  await renderer.flush();
+  expect(store.getState().messageCursor).toBe(store.getState().messages.length - 1);
+});

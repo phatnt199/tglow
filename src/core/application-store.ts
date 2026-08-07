@@ -18,6 +18,16 @@ export interface IApplicationState {
   /** Which folder the sidebar is showing. ALL_CHATS_FOLDER_ID means no filtering. */
   activeFolderId: number;
   /**
+   * The sidebar's width in columns, or null for the built-in default. Set by
+   * dragging the divider between the panes.
+   *
+   * Not persisted. Writing it back would mean rewriting config.toml, and the
+   * TOML reader tglow uses preserves neither comments nor formatting -- a
+   * round-trip would quietly destroy a hand-edited file, which is a far worse
+   * outcome than re-dragging a divider once per session.
+   */
+  sidebarWidth: number | null;
+  /**
    * Peer type and bot-ness, which folder membership needs and IDialogRow does
    * not carry. Published alongside the folders rather than looked up per
    * render: App is a pure function of state and has no database of its own.
@@ -127,6 +137,7 @@ const INITIAL_STATE: IApplicationState = {
   dialogs: [],
   folders: [],
   activeFolderId: 0,
+  sidebarWidth: null,
   peerKinds: new Map(),
   typingByPeer: new Map(),
   messages: [],

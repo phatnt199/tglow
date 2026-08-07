@@ -119,9 +119,9 @@ export const ChatList = (props: IChatListProps) => {
       width={width}
       height={height}
       onMouseScroll={(event: { scroll?: { direction: string } }) => {
-        // A wheel moves the list, not the cursor -- the distinction a naive
-        // mapping to j/k gets wrong, and the reason reading is still an
-        // explicit act rather than a side effect of scrolling past a chat.
+        // Reported as a direction; what it moves is App's decision. Scrolling
+        // the sidebar moves through chats without opening any, so the rule
+        // that reading is an explicit act is untouched by it.
         onScroll?.({ delta: event.scroll?.direction === 'down' ? 1 : -1 });
       }}
     >
