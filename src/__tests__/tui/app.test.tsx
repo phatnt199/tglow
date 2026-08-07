@@ -2816,3 +2816,40 @@ test('P does nothing with no chat open', async () => {
 
   expect(pinned).toEqual([]);
 });
+
+// ── the status line's wiring ──────────────────────────────────────────────
+
+// The component's own tests prove it can draw these fields. This proves App
+// hands it the right ones -- a line that faithfully renders whatever it is
+// given is no use if what it is given is a constant.
+test('the status line follows the cursor through the history', async () => {
+  const { renderer } = await mount();
+
+  const readStatus = (): string => {
+    const lines = renderer.captureCharFrame().split('\n');
+    return lines[lines.length - 2] ?? '';
+  };
+
+  expect(readStatus()).toContain('#1');
+  expect(readStatus()).toContain('Top');
+
+  await act(async () => { renderer.mockInput.pressKey('G'); });
+  await renderer.flush();
+
+  expect(readStatus()).toContain('#4');
+  expect(readStatus()).toContain('Bot');
+  expect(readStatus()).toContain('4/4');
+});
+
+// The one field that only exists to explain a key that appears to have done
+// nothing. Reading it off App rather than the component proves the engine
+// state actually reaches the line.
+test('a half-typed command reaches the status line', async () => {
+  const { renderer } = await mount();
+
+  await act(async () => { renderer.mockInput.pressKey('"'); });
+  await act(async () => { renderer.mockInput.pressKey('a'); });
+  await renderer.flush();
+
+  expect(renderer.captureCharFrame()).toContain('"a');
+});

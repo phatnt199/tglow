@@ -3,7 +3,7 @@ import { test, expect } from 'bun:test';
 import { rgbToHex } from '@opentui/core';
 import type { TestRendererSetup } from '@opentui/core/testing';
 
-import { VimModes, type TVimMode } from '../../../keys/common/index.ts';
+import { INITIAL_ENGINE_STATE, Operators, VimModes, type IEngineState, type TVimMode } from '../../../keys/common/index.ts';
 import { renderWithKeys } from '../../helpers/render.tsx';
 import { buildTokens } from '../../../tui/theme/index.ts';
 import { StatusLine, type IStatusLineProps } from '../../../tui/panes/status-line.tsx';
@@ -104,6 +104,8 @@ test('position and hint are pushed to the right edge', async () => {
 });
 
 // A long group title used to run straight into the position, or off the pane.
+// It is still ellipsised -- but only past half the line, which is as much as a
+// title may claim before the readouts start competing with it.
 test('a title too long for the line is ellipsised rather than pushing the position off the edge', async () => {
   const row = readRow(await render({
     title: 'a very long group chat title that will not fit beside anything else at all',
@@ -114,8 +116,9 @@ test('a title too long for the line is ellipsised rather than pushing the positi
   }));
   expect(row.length).toBe(STATUS_WIDTH);
   expect(row).toContain('…');
-  expect(row.trimEnd().endsWith('\\ for keys')).toBe(true);
-  expect(row).toContain('7/900');
+  // The position holds the right edge, and the hint is what gave way for it.
+  expect(row.trimEnd().endsWith('7/900')).toBe(true);
+  expect(row).not.toContain('for keys');
 });
 
 test('a title of wide characters still leaves the right edge intact', async () => {
@@ -125,8 +128,22 @@ test('a title of wide characters still leaves the right edge intact', async () =
     total: 34,
     hint: '\\ for keys',
   }));
-  expect(row.trimEnd().endsWith('\\ for keys')).toBe(true);
+  expect(row.trimEnd().endsWith('12/34')).toBe(true);
   expect(renderRowColumns(row)).toBe(STATUS_WIDTH);
+});
+
+// The hint teaches the keymap once and is noise forever after, so it is the
+// first thing the line gives up -- but only when something has to go. On a
+// line with room for everything it stays, or it would never teach anyone.
+test('the hint survives when there is room and goes first when there is not', async () => {
+  const roomy = readRow(await render({ title: 'Alice', position: 4, total: 6, hint: '\\ for keys' }));
+  expect(roomy.trimEnd().endsWith('\\ for keys')).toBe(true);
+
+  const crowded = readRow(await render({
+    title: 'Alice', position: 4, total: 6, hint: '\\ for keys', width: 34,
+  }));
+  expect(crowded).not.toContain('for keys');
+  expect(crowded).toContain('4/6');
 });
 
 // captureCharFrame gives one character per character, not per cell, so a wide
@@ -180,4 +197,106 @@ test('the mode block turns the danger colour while confirmation is blocking ever
 test('a warning colours the message but leaves the mode block alone', async () => {
   const renderer = await render({ mode: VimModes.NORMAL, warning: true, title: 'Some updates may be missing' });
   expect(toHex(renderer.captureSpans().lines[0]!.spans[0]!.bg)).toBe(tokens.modeNormal.toLowerCase());
+});
+
+
+// ── the enriched line ─────────────────────────────────────────────────────
+
+// A wide terminal has room for all of it, and the request this answers was for
+// more information rather than less.
+test('a wide line carries everything it is given', async () => {
+  const row = readRow(await render({
+    width: 110,
+    title: 'Alice',
+    position: 12,
+    total: 240,
+    unreadCount: 3,
+    hint: '\\ for keys',
+    connection: 'connected',
+    folder: 'Work',
+    peerKind: 'group',
+    typing: 'typing…',
+    messageId: 1482,
+    messageTime: '14:32',
+    messagePinned: true,
+  }));
+
+  expect(row).toContain('●');
+  expect(row).toContain('Work');
+  expect(row).toContain('Alice · group · 3 unread · typing…');
+  expect(row).toContain('⚑');
+  expect(row).toContain('#1482');
+  expect(row).toContain('14:32');
+  expect(row).toContain('4%');
+  expect(row).toContain('12/240');
+  expect(row).toContain('\\ for keys');
+});
+
+// showcmd is the field that answers "why did nothing happen when I pressed
+// that?", so it outranks every readout beside it.
+test('a half-typed command is shown, and outlives the readouts around it', async () => {
+  const engine: IEngineState = { ...INITIAL_ENGINE_STATE, register: 'a', count: 3, operator: Operators.DELETE };
+  const row = readRow(await render({
+    width: 40, title: 'Alice', position: 12, total: 240, hint: '\\ for keys', engine,
+  }));
+
+  expect(row).toContain('"a3d');
+  expect(row).not.toContain('for keys');
+});
+
+// Only while typing: the count answers "how much room is left", which is not a
+// question anyone has in normal mode.
+test('the composer length is shown in insert mode and not otherwise', async () => {
+  const props = { title: 'Alice', composerLength: 137, width: 80 };
+  expect(readRow(await render({ ...props, mode: VimModes.INSERT }))).toContain('137/4096');
+  expect(readRow(await render({ ...props, mode: VimModes.NORMAL }))).not.toContain('137');
+});
+
+// Telegram refuses the send past the limit, so the count has to say so before
+// the user finds out by losing what they wrote.
+//
+// Rendered and read one at a time: a second renderer frees the first one's
+// buffer, and captureSpans on the stale one throws rather than returning
+// something wrong -- which is at least honest, but it is not a test result.
+const colourOf = async (
+  overrides: Partial<IStatusLineProps>, text: string,
+): Promise<string | undefined> => {
+  const renderer = await render(overrides);
+  const span = renderer.captureSpans().lines[0]?.spans.find(item => item.text.includes(text));
+  return span === undefined ? undefined : rgbToHex(span.fg).toLowerCase();
+};
+
+test('a composer past the limit turns the count red', async () => {
+  expect(await colourOf({ mode: VimModes.INSERT, composerLength: 10, width: 80 }, '10/4096'))
+    .toBe(tokens.dim.toLowerCase());
+  expect(await colourOf({ mode: VimModes.INSERT, composerLength: 5000, width: 80 }, '5000/4096'))
+    .toBe(tokens.error.toLowerCase());
+});
+
+// The good case must not draw the eye: an always-lit indicator trains people
+// to stop seeing the field, and then it cannot report the bad case either.
+test('a lost connection is marked and coloured, a healthy one only marked', async () => {
+  expect(await colourOf({ connection: 'connected', width: 80 }, '●')).toBe(tokens.dim.toLowerCase());
+  expect(await colourOf({ connection: 'offline', width: 80 }, '✕')).toBe(tokens.error.toLowerCase());
+});
+
+// The reported bug this was found by: a warning is not a chat name. It is a
+// message about data the user may have lost, and every readout on the line is
+// worth less than reading it in full.
+test('a warning claims the width it needs, whatever else has to go', async () => {
+  const warned = readRow(await render({
+    width: 70,
+    title: 'Some missed messages could not be saved',
+    warning: true,
+    unreadCount: 2,
+    position: 1,
+    total: 4,
+    hint: '\\ for keys',
+    connection: 'offline',
+    messageId: 1,
+    messageTime: '00:01',
+  }));
+
+  expect(warned).toContain('Some missed messages could not be saved');
+  expect(warned).toContain('1/4');
 });

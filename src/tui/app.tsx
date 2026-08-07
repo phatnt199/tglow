@@ -23,8 +23,10 @@ import { writeToClipboard } from '../core/clipboard.ts';
 // Task 8) is called below, not just typed against, so it too has to come
 // from its concrete module rather than the core/ barrel.
 import { fuzzyMatch } from '../core/fuzzy-match.ts';
-import { resolveFolderMembership } from '../core/folder-service.ts';
+import { ALL_CHATS_FOLDER_ID, resolveFolderMembership } from '../core/folder-service.ts';
 import { readTypingStatus } from '../core/typing-status.ts';
+import { formatClock } from './clock.ts';
+import { formatPeerKind } from './status-segments.ts';
 // Type-only: App receives a MessageSearchService instance through props
 // (constructed and DI-wired by main.ts) and only ever calls the instance
 // method .search() on it below -- there is no `new MessageSearchService(...)`
@@ -1396,6 +1398,24 @@ export const App = (props: IAppProps) => {
     : activeTyping === null
       ? activeDialog.title
       : `${activeDialog.title} · ${activeTyping.phrase}`;
+
+  // What the status line shows beyond the M1 four. Derived here rather than
+  // inside the component: everything below reads state the component has no
+  // business holding, and none of it changes what the line does -- only what
+  // it has to say.
+  const cursorMessage = state.messages[state.messageCursor];
+  // Named only when the user has narrowed to one. "All chats" says the same
+  // thing as an empty folder field and costs nine columns to say it.
+  const statusFolder = hasFolders && activeFolder !== null && activeFolder.id !== ALL_CHATS_FOLDER_ID
+    ? activeFolder.title
+    : '';
+  // Chats, not messages, and across every folder rather than the visible ones:
+  // the question this answers is "is something waiting that I cannot see from
+  // here", which a total that only counts the current folder cannot.
+  const unreadChats = state.dialogs.reduce(
+    (waiting, dialog) => waiting + (dialog.unreadCount > 0 ? 1 : 0),
+    0,
+  ) - (activeDialog !== undefined && activeDialog.unreadCount > 0 ? 1 : 0);
   const chatListFocused = state.engine.context === VimContexts.CHAT_LIST;
   // The focused pane's frame, not both: which pane has focus was previously
   // visible only through a cursor highlight, invisible in an empty pane.
@@ -1595,6 +1615,16 @@ export const App = (props: IAppProps) => {
         width={width}
         confirming={isConfirming}
         warning={isWarning}
+        engine={state.engine}
+        connection={state.connection}
+        folder={statusFolder}
+        peerKind={formatPeerKind({ kind: state.activePeerId === null ? undefined : state.peerKinds.get(state.activePeerId) })}
+        typing={activeTyping?.phrase ?? ''}
+        messageId={cursorMessage?.id ?? null}
+        messageTime={cursorMessage === undefined ? '' : formatClock({ date: cursorMessage.date })}
+        messagePinned={cursorMessage?.pinned === 1}
+        unreadChats={unreadChats}
+        composerLength={state.composerText.length}
       />
     </box>
   );

@@ -162,6 +162,30 @@ Writes `dist/tglow` and `dist/tglow.sha256`. The build regenerates
 binary has no `drizzle/` folder to read migrations from, so they are compiled
 in, and a test fails if the committed copy ever drifts from `drizzle/`.
 
+## The status line
+
+One row, lualine's shape, and as much of this as the terminal has columns for:
+
+```
+ NORMAL  ● Work  Alice · group · 3 unread · typing…     "a3d  ⚑  #1482  14:32  4%  12/240  \ for keys
+```
+
+| Field | Says |
+| --- | --- |
+| `NORMAL` | the mode, and red while a delete is waiting on `y`/`n` |
+| `●` `◐` `✕` | connected, connecting, offline |
+| `Work` | the active folder, when you have narrowed to one |
+| `Alice · group` | the open chat and what kind it is — a plain DM gets no tag |
+| `3 unread · typing…` | what is waiting in it, and what the other side is doing |
+| `"a3d` | vim's showcmd: the register, count and operator you have typed so far |
+| `137/4096` | characters in the composer against Telegram's limit, while in insert mode — red past it |
+| `⚑ #1482 14:32` | the message under the cursor: pinned, its id, its clock |
+| `4% 12/240` | how far down the history you are |
+
+Nothing is clipped to fit. Each field has a priority, and a narrow terminal
+drops the cheapest ones whole — `\ for keys` first, the position and the mode
+last. A data-integrity warning claims whatever width it needs.
+
 ## Keys
 
 Leader is `\`. The application starts in NORMAL mode — nothing you type is sent

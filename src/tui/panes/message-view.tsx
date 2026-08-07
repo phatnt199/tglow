@@ -4,6 +4,7 @@ import { TextAttributes } from '@opentui/core';
 
 import type { IMessageRow } from '../../core/cache/index.ts';
 import { EntityKinds, type TEntityKind } from '../../core/common/index.ts';
+import { formatClock } from '../clock.ts';
 import { toStyledSpans, type IStyledSpan } from '../entities.ts';
 import { measureTextWidth, padStartToWidth, padToWidth, toGraphemes, truncateToWidth } from '../text-width.ts';
 import type { ITokens } from '../theme/index.ts';
@@ -152,14 +153,6 @@ const resolveTick = (opts: { own: boolean; messageId: number; readOutboxMaxId: n
     return BLANK_TICK;
   }
   return messageId <= readOutboxMaxId ? TICK_READ : TICK_SENT;
-};
-
-/** `date` is a Unix timestamp in seconds -- what telegram-adapter.ts stores. */
-const formatTime = (opts: { date: number }): string => {
-  const at = new Date(opts.date * 1000);
-  const hours = String(at.getHours()).padStart(2, '0');
-  const minutes = String(at.getMinutes()).padStart(2, '0');
-  return `${hours}:${minutes}`;
 };
 
 /**
@@ -553,7 +546,7 @@ const buildRows = (opts: {
         kind: 'content',
         marker: opensMessage && message.pinned === 1 ? PIN_MARKER : MARKER,
         gutter: opensMessage ? padStartToWidth({ text: gutter, width: GUTTER_WIDTH }) : BLANK_GUTTER,
-        time: opensMessage && opensGroup ? formatTime({ date: message.date }) : BLANK_TIME,
+        time: opensMessage && opensGroup ? formatClock({ date: message.date }) : BLANK_TIME,
         sender:
           opensMessage && opensGroup
             ? padToWidth({ text: truncateToWidth({ text: senderName, width: SENDER_WIDTH }), width: SENDER_WIDTH })

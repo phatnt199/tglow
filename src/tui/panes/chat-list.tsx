@@ -1,5 +1,6 @@
 import type { IDialogRow } from '../../core/cache/index.ts';
 import type { IActiveTyping } from '../../core/typing-status.ts';
+import { formatClock } from '../clock.ts';
 import type { ITokens } from '../theme/index.ts';
 import { padStartToWidth, padToWidth, truncateToWidth } from '../text-width.ts';
 import { resolveVisibleRange } from '../viewport.ts';
@@ -63,11 +64,11 @@ const TIME_WIDTH = 5;
  */
 const formatTime = (opts: { at: number | null }): string => {
   const { at } = opts;
+  // A chat with nothing in it has no time to show, and the epoch is not one.
   if (at === null || at <= 0) {
     return '';
   }
-  const when = new Date(at * 1000);
-  return `${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')}`;
+  return formatClock({ date: at });
 };
 
 /** A preview is one row: a multi-line message must not push the next chat down. */
