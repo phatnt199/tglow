@@ -10,6 +10,7 @@ import initialiseChafa from 'chafa-wasm';
 import './chafa-asset.ts';
 
 import { resolveImageSize, type IImageSize } from './half-block.ts';
+import type { IRgbaImage } from './kitty-graphics.ts';
 
 /**
  * Pictures, as terminal cells.
@@ -23,6 +24,12 @@ import { resolveImageSize, type IImageSize } from './half-block.ts';
  * output into something the renderer can draw, and never letting a bad image
  * take the application down with it.
  */
+
+export interface IRenderedImage {
+  cells: IImageCell[][];
+  /** The decoded pixels, for a terminal that would rather have the picture than a drawing of it. */
+  pixels: IRgbaImage;
+}
 
 export interface IImageCell {
   char: string;
@@ -119,7 +126,7 @@ export const renderImage = async (opts: {
   bytes: Uint8Array;
   maximumColumns: number;
   maximumRows: number;
-}): Promise<IImageCell[][] | null> => {
+}): Promise<IRenderedImage | null> => {
   const { bytes, maximumColumns, maximumRows } = opts;
   if (bytes.length === 0 || maximumColumns <= 0 || maximumRows <= 0) {
     return null;
@@ -136,11 +143,17 @@ export const renderImage = async (opts: {
     }
 
     const matrix = await toMatrix({ module, image, size });
-    return matrix.map(row => row.map(([codePoint, foreground, background]) => ({
-      char: String.fromCodePoint(codePoint),
-      foreground: toHexColour({ value: foreground }),
-      background: toHexColour({ value: background }),
-    })));
+    return {
+      cells: matrix.map(row => row.map(([codePoint, foreground, background]) => ({
+        char: String.fromCodePoint(codePoint),
+        foreground: toHexColour({ value: foreground }),
+        background: toHexColour({ value: background }),
+      }))),
+      // Handed back rather than decoded again by whoever wants to send the
+      // real picture to the terminal: decoding is the expensive half, and two
+      // decodes of the same bytes could disagree about the dimensions.
+      pixels: { width: image.width, height: image.height, data: image.data },
+    };
   } catch (error) {
     // Logged, not swallowed. A renderer that returns null without saying why
     // is undiagnosable: the picture simply does not appear, and every layer

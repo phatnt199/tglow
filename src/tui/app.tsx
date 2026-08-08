@@ -30,7 +30,7 @@ import { describePresence, PresenceKinds } from '../core/presence.ts';
 import { renderImage } from './image-renderer.ts';
 import { formatClock } from './clock.ts';
 import { CommandNames, completeCommand, describeUnknown, parseCommand } from './command-line.ts';
-import { place, supportsGraphics, transmit } from './kitty-graphics.ts';
+import { place, supportsGraphics, transmit, type IImagePlacement } from './kitty-graphics.ts';
 import { resolveReactionKey } from './reaction-picker.ts';
 import { measureTextWidth, toGraphemes } from './text-width.ts';
 import { formatPeerKind } from './status-segments.ts';
@@ -179,6 +179,19 @@ const SCROLL_ROWS_PER_NOTCH = 3;
 const FRAME_LEFT_COLUMNS = 1;
 /** The frame's top border, which the folder rail starts under. */
 const FRAME_TOP_ROWS = 1;
+/**
+ * Straight to the terminal, past the renderer.
+ *
+ * A picture is not made of cells and OpenTUI has nowhere to put one, so the
+ * graphics sequences go out on their own. `process.stdout.write` is the right
+ * call and not a bypass: the renderer only replaces it when it is capturing
+ * output for a split footer, which tglow does not use -- and if that ever
+ * changed, being captured is a better failure than writing behind its back.
+ */
+const writeToTerminal = (opts: { text: string }): void => {
+  process.stdout.write(opts.text);
+};
+
 /** The frame's bottom border, under the panes and above the status line. */
 const FRAME_BOTTOM_ROWS = 1;
 /** The vertical rule between the sidebar and the conversation. */
@@ -481,6 +494,8 @@ export const App = (props: IAppProps) => {
   const graphicsCapable = useMemo(() => supportsGraphics({ environment: process.env }), []);
   /** Images already handed to the terminal, so each is sent once rather than once per frame. */
   const transmittedRef = useRef<Set<number>>(new Set());
+  /** Where the pictures currently are, so the per-frame repaint has something to re-place without re-deriving it. */
+  const placementsRef = useRef<IImagePlacement[]>([]);
   /**
    * Whether the press being handled right now is the one that opened a menu.
    * Children handle a press before the root does, so without this the root
@@ -1680,23 +1695,43 @@ export const App = (props: IAppProps) => {
       return;
     }
     const paneLeft = dividerColumn + FRAME_DIVIDER_COLUMNS;
-    const sequences = placements
-      .filter(placement => transmittedRef.current.has(placement.messageId))
-      .map(placement => place({
-        placement: {
-          id: placement.messageId,
-          // One-based, which is what a cursor position is.
-          row: FRAME_TOP_ROWS + placement.paneRow + 1,
-          column: paneLeft + placement.paneColumn + 1,
-          columns: placement.columns,
-          rows: placement.rows,
-        },
-      }));
-
-    if (sequences.length > 0) {
-      process.stdout.write(sequences.join(''));
-    }
+    placementsRef.current = placements.map(placement => ({
+      id: placement.messageId,
+      // One-based, which is what a cursor position is.
+      row: FRAME_TOP_ROWS + placement.paneRow + 1,
+      column: paneLeft + placement.paneColumn + 1,
+      columns: placement.columns,
+      rows: placement.rows,
+    }));
   }, [graphicsCapable, dividerColumn]);
+
+  /**
+   * Put the pictures back, every frame.
+   *
+   * Not once per render, which is what this did at first and why nothing
+   * appeared: React re-renders when state changes, and the renderer repaints
+   * many times between those. A placement made during one render is gone by
+   * the time anything looks at the screen, and nothing puts it back until the
+   * user happens to press a key.
+   *
+   * Re-placing is cheap -- a few dozen bytes naming an image the terminal
+   * already holds -- which is exactly why transmitting and placing are
+   * separate calls.
+   */
+  useEffect(() => {
+    if (!graphicsCapable) {
+      return;
+    }
+    const repaint = (): void => {
+      const current = placementsRef.current;
+      if (current.length === 0) {
+        return;
+      }
+      writeToTerminal({ text: current.map(placement => place({ placement })).join('') });
+    };
+    renderer.addPostProcessFn(repaint);
+    return (): void => { renderer.removePostProcessFn(repaint); };
+  }, [graphicsCapable, renderer]);
 
 
   // Pictures for whatever is on screen.
@@ -1729,28 +1764,30 @@ export const App = (props: IAppProps) => {
           continue;
         }
 
-        // The picture itself, for a terminal that can hold one. Sent once per
-        // message: transmitting is the expensive half and the terminal keeps
-        // it until told otherwise.
-        if (graphicsCapable && !transmittedRef.current.has(message.id)) {
-          transmittedRef.current.add(message.id);
-          process.stdout.write(transmit({ id: message.id, bytes }));
-        }
-
         const sticker = message.media?.kind === MediaKinds.STICKER;
         const available = Math.max(1, paneWidths.messages - IMAGE_RAIL_ALLOWANCE);
-        const cells = await renderImage({
+        const rendered = await renderImage({
           bytes,
           maximumColumns: sticker ? Math.min(available, MAXIMUM_STICKER_COLUMNS) : available,
           maximumRows: sticker ? MAXIMUM_STICKER_ROWS : MAXIMUM_IMAGE_ROWS,
         });
         // Checked again after the await: a chat switched away from mid-render
         // must not have another conversation's pictures land in it.
-        if (!live || cells === null || store.getState().activePeerId !== peerId) {
+        if (!live || rendered === null || store.getState().activePeerId !== peerId) {
           continue;
         }
+
+        // The picture itself, for a terminal that can hold one. Sent once per
+        // message: transmitting is the expensive half and the terminal keeps
+        // it until told otherwise. The pixels come from the same decode the
+        // drawing used, so nothing is decoded twice.
+        if (graphicsCapable && !transmittedRef.current.has(message.id)) {
+          transmittedRef.current.add(message.id);
+          writeToTerminal({ text: transmit({ id: message.id, pixels: rendered.pixels }) });
+        }
+
         const next = new Map(store.getState().imagesByMessageId);
-        next.set(message.id, cells);
+        next.set(message.id, rendered.cells);
         store.setState({ patch: { imagesByMessageId: next } });
       }
     })();

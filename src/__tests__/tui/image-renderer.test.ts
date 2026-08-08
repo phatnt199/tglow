@@ -57,19 +57,20 @@ const buildPng = (opts: { width: number; height: number }): Uint8Array => {
 };
 
 test('a picture comes back as a grid of cells inside the size asked for', async () => {
-  const cells = await renderImage({ bytes: buildPng({ width: 64, height: 64 }), maximumColumns: 16, maximumRows: 8 });
+  const rendered = await renderImage({ bytes: buildPng({ width: 64, height: 64 }), maximumColumns: 16, maximumRows: 8 });
 
-  expect(cells).not.toBeNull();
-  expect(cells!.length).toBeLessThanOrEqual(8);
-  expect(cells![0]!.length).toBeLessThanOrEqual(16);
-  expect(cells!.every(row => row.length === cells![0]!.length)).toBe(true);
+  expect(rendered).not.toBeNull();
+  const cells = rendered!.cells;
+  expect(cells.length).toBeLessThanOrEqual(8);
+  expect(cells[0]!.length).toBeLessThanOrEqual(16);
+  expect(cells.every(row => row.length === cells[0]!.length)).toBe(true);
 });
 
 // The point of using chafa rather than one glyph: it picks the character that
 // best fits each cell, so a picture with an edge in it uses more than blanks.
 test('an image with shape in it uses more than one glyph', async () => {
-  const cells = await renderImage({ bytes: buildPng({ width: 64, height: 64 }), maximumColumns: 20, maximumRows: 10 });
-  const glyphs = new Set(cells!.flat().map(cell => cell.char));
+  const rendered = await renderImage({ bytes: buildPng({ width: 64, height: 64 }), maximumColumns: 20, maximumRows: 10 });
+  const glyphs = new Set(rendered!.cells.flat().map(cell => cell.char));
 
   expect(glyphs.size).toBeGreaterThan(1);
 });
@@ -77,9 +78,9 @@ test('an image with shape in it uses more than one glyph', async () => {
 // Every colour must be drawable: a malformed hex would reach the renderer and
 // be rejected there, one frame later and much harder to trace.
 test('every colour is a six-digit hex or nothing at all', async () => {
-  const cells = await renderImage({ bytes: buildPng({ width: 32, height: 32 }), maximumColumns: 10, maximumRows: 5 });
+  const rendered = await renderImage({ bytes: buildPng({ width: 32, height: 32 }), maximumColumns: 10, maximumRows: 5 });
 
-  for (const cell of cells!.flat()) {
+  for (const cell of rendered!.cells.flat()) {
     for (const colour of [cell.foreground, cell.background]) {
       if (colour !== null) {
         expect(colour).toMatch(/^#[0-9a-f]{6}$/);
@@ -103,5 +104,5 @@ test('several pictures at once share one started module', async () => {
   const all = await Promise.all([1, 2, 3].map(async () =>
     renderImage({ bytes, maximumColumns: 8, maximumRows: 4 })));
 
-  expect(all.every(cells => cells !== null)).toBe(true);
+  expect(all.every(image => image !== null)).toBe(true);
 });

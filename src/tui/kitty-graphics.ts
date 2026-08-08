@@ -15,6 +15,8 @@
  * is what makes the escape sequences testable without a terminal at all.
  */
 
+import { deflateSync } from 'node:zlib';
+
 /**
  * APC ... ST, which is how the protocol is framed.
  *
@@ -35,6 +37,16 @@ const ST = '\\';
  */
 export const CHUNK_SIZE = 4096;
 
+/** Decoded pixels, four bytes each, row by row -- what chafa hands back and what the terminal takes. */
+export interface IRgbaImage {
+  width: number;
+  height: number;
+  data: Uint8Array | Uint8ClampedArray;
+}
+
+/** RGBA, four bytes per pixel. The protocol's own number for it. */
+const RGBA_FORMAT = 32;
+
 export interface IImagePlacement {
   /** The id this image was transmitted under, so it can be placed again without resending. */
   id: number;
@@ -52,17 +64,24 @@ const toControl = (opts: { keys: Record<string, number | string> }): string =>
 /**
  * Send the image itself, once.
  *
- * `f=100` means "these bytes are a PNG or JPEG, work it out" -- the terminal
- * decodes it, so tglow does not have to hand over raw pixels it would first
- * have to produce. `q=2` silences the terminal's acknowledgement, which would
- * otherwise arrive on stdin and be read as keystrokes.
+ * Raw pixels, not the file. `f=100` is the only compressed format the protocol
+ * takes and it means **PNG specifically** -- not "a compressed image, work it
+ * out", which is what it looks like and what this first assumed. Telegram
+ * sends JPEG and WebP, and kitty answered every one of them with
+ * `EBADPNG: Not a PNG file`. Nothing appeared and nothing said why, because
+ * tglow ships q=2 and never heard the complaint.
+ *
+ * So the pixels are decoded first -- chafa already does that to draw them --
+ * and go over as `f=32`, RGBA, with the dimensions the terminal needs to make
+ * sense of them. `o=z` deflates them on the way: raw RGBA is a hundred times
+ * a JPEG's size, and this puts most of that back.
  *
  * `a=t` transmits without displaying: where it goes is a separate decision,
  * made per frame by `place` below, so a picture that scrolls does not need
  * sending again.
  */
-export const transmit = (opts: { id: number; bytes: Uint8Array }): string => {
-  const encoded = Buffer.from(opts.bytes).toString('base64');
+export const transmit = (opts: { id: number; pixels: IRgbaImage }): string => {
+  const encoded = deflateSync(Buffer.from(opts.pixels.data)).toString('base64');
   const chunks: string[] = [];
 
   for (let offset = 0; offset < encoded.length; offset += CHUNK_SIZE) {
@@ -71,7 +90,13 @@ export const transmit = (opts: { id: number; bytes: Uint8Array }): string => {
     // Only the first chunk carries the full control data; the rest carry just
     // the continuation flag, which is what the protocol expects.
     const control = offset === 0
-      ? toControl({ keys: { a: 't', f: 100, i: opts.id, q: 2, m: last ? 0 : 1 } })
+      ? toControl({
+        keys: {
+          a: 't', f: RGBA_FORMAT, o: 'z', i: opts.id,
+          s: opts.pixels.width, v: opts.pixels.height,
+          q: 2, m: last ? 0 : 1,
+        },
+      })
       : toControl({ keys: { m: last ? 0 : 1 } });
     chunks.push(`${APC}${control};${payload}${ST}`);
   }
@@ -92,7 +117,12 @@ export const transmit = (opts: { id: number; bytes: Uint8Array }): string => {
 export const place = (opts: { placement: IImagePlacement }): string => {
   const { id, row, column, columns, rows } = opts.placement;
   const move = `[${row};${column}H`;
-  const control = toControl({ keys: { a: 'p', i: id, c: columns, r: rows, q: 2, C: 1 } });
+  // `z=1` puts the picture above the text rather than leaving the layering to
+  // a default. The cells underneath are blank where tglow draws the real
+  // image, so this decides nothing visually today -- but a default that
+  // changed would be a picture that silently disappeared behind its own
+  // reserved space, which is a bad thing to leave to chance.
+  const control = toControl({ keys: { a: 'p', i: id, c: columns, r: rows, z: 1, q: 2, C: 1 } });
   return `${move}${APC}${control};${ST}`;
 };
 
