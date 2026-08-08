@@ -244,6 +244,9 @@ const mount = async (opts: {
   const onSendFile = async (request: { peerId: string; path: string }): Promise<void> => {
     filesSent.push(request);
   };
+  // No pictures: the renderer needs two megabytes of WebAssembly, and no test
+  // here is about what a photo looks like -- message-view's own tests are.
+  const onThumbnail = async (): Promise<Uint8Array | null> => null;
   const pinnedChats: string[] = [];
   const onPinChat = async (request: { peerId: string }): Promise<void> => {
     pinnedChats.push(request.peerId);
@@ -292,6 +295,7 @@ const mount = async (opts: {
       onReact={onReact}
       onForward={onForward}
       onSendFile={onSendFile}
+      onThumbnail={onThumbnail}
       onQuit={() => { quit.push(true); }}
       onOpenChat={onOpenChat}
       onMarkRead={onMarkRead}

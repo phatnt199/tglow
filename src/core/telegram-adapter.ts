@@ -343,6 +343,69 @@ const toChannelDifferenceResult = (
 /** How many messages one channel difference call asks for. Telegram's own cap for a non-bot account. */
 const CHANNEL_DIFFERENCE_LIMIT = 100;
 
+/**
+ * The narrowest thumbnail still worth drawing, in pixels.
+ *
+ * A photo becomes a few dozen terminal cells, so anything past a few hundred
+ * pixels is detail thrown away -- but Telegram's smallest size is a stripped
+ * placeholder of a few hundred *bytes*, far too coarse to recognise. 320 is
+ * the first real size Telegram offers for a photo and about ten times the
+ * width tglow draws, which leaves chafa plenty to work from at a fifth of the
+ * original's bytes.
+ */
+const MINIMUM_THUMBNAIL_WIDTH = 320;
+
+/**
+ * Which size to ask for.
+ *
+ * The smallest that is still big enough, falling back to the largest there is.
+ * Chosen by measuring rather than by index: the sizes a photo carries vary,
+ * and `thumb: -1` -- which the type's "number" and a reasonable guess both
+ * suggest counts from the end -- in fact returns zero bytes. That guess cost a
+ * whole debugging session, so this picks a size object and hands that over,
+ * which says exactly what it means.
+ */
+const resolveThumbnailSize = (opts: { photo: Api.TypePhoto | undefined }): Api.TypePhotoSize | undefined => {
+  const { photo } = opts;
+  if (!photo || photo.className !== 'Photo') {
+    return undefined;
+  }
+  const measured = photo.sizes
+    .map(size => ({ size, width: (size as unknown as { w?: number }).w ?? 0 }))
+    .filter(entry => entry.width > 0)
+    .sort((left, right) => left.width - right.width);
+
+  return (measured.find(entry => entry.width >= MINIMUM_THUMBNAIL_WIDTH) ?? measured[measured.length - 1])?.size;
+};
+
+/**
+ * A stored peer id, back into something GramJS can resolve.
+ *
+ * tglow stores the *unmarked* id -- toRawMessage's own comment explains why --
+ * and GramJS resolves a bare number as a user. So asking it about a channel's
+ * message with the id tglow has fails with "could not find the input entity",
+ * which reads like a network fault and is really a missing type.
+ *
+ * The marked forms are GramJS's own: a channel is -100 prefixed, a chat is
+ * negated, a user is itself. Built through utils.getPeerId rather than by
+ * string concatenation, so the convention lives in one library rather than in
+ * two places that can disagree.
+ */
+const toMarkedPeer = (opts: { peerId: string; peerType: string }): string => {
+  const id = BigInt(opts.peerId) as unknown as bigInt.BigInteger;
+  switch (opts.peerType) {
+    case 'channel': {
+      return String(utils.getPeerId(new Api.PeerChannel({ channelId: id }), true));
+    }
+    case 'chat': {
+      return String(utils.getPeerId(new Api.PeerChat({ chatId: id }), true));
+    }
+    default: {
+      return opts.peerId;
+    }
+  }
+};
+
 /** Telegram counts in seconds; JavaScript counts in milliseconds. */
 const MILLISECONDS_PER_SECOND = 1000;
 
@@ -745,6 +808,43 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
    * cache replaces wholesale -- and why a message whose last reaction was
    * removed arrives with an empty results list rather than not arriving.
    */
+  /**
+   * The picture on a message, as bytes.
+   *
+   * The message is re-fetched by id rather than kept: a photo's file
+   * reference expires, so one cached at load time would fail to download
+   * later with a FILE_REFERENCE_EXPIRED that reads like a network problem.
+   * Fetching immediately before the download is what keeps it fresh, and it
+   * costs one round trip that the on-disk cache then makes once per picture
+   * rather than once per launch.
+   *
+   * `thumb: -1` asks GramJS for the largest thumbnail rather than the
+   * original -- read from teleproto's own downloads.d.ts, where `thumb` is a
+   * size index and a negative one counts from the end.
+   */
+  downloadThumbnail: async (
+    thumbOpts: { peerId: string; messageId: number; peerType: string },
+  ): Promise<Uint8Array | null> => {
+    const [message] = await opts.client.getMessages(
+      toMarkedPeer({ peerId: thumbOpts.peerId, peerType: thumbOpts.peerType }),
+      { ids: [thumbOpts.messageId] },
+    );
+    if (!message?.media) {
+      return null;
+    }
+
+    // A size object, not an index: indices differ per photo, and the one
+    // negative index that looked like "the largest" returned nothing at all.
+    const thumb = message.media.className === 'MessageMediaPhoto'
+      ? resolveThumbnailSize({ photo: message.media.photo })
+      : undefined;
+    const downloaded = await opts.client.downloadMedia(message, thumb ? { thumb } : {});
+    if (!downloaded || typeof downloaded === 'string') {
+      return null;
+    }
+    return new Uint8Array(downloaded);
+  },
+
   subscribeToReactions: (
     subscribeOpts: {
       onReactions: (change: { peerId: string; messageId: number; reactions: IMessageReaction[] }) => void;

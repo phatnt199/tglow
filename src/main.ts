@@ -25,6 +25,7 @@ import {
   MessageSearchService,
   MessageService,
   SessionStoreService,
+  ThumbnailService,
   TelegramAuthenticationGateway,
   TelegramClientService,
   UpdateService,
@@ -123,6 +124,7 @@ const main = async (): Promise<void> => {
   const dialogService = container.get<DialogService>({ key: BindingKeys.DIALOG_SERVICE });
   const messageService = container.get<MessageService>({ key: BindingKeys.MESSAGE_SERVICE });
   const messageSearchService = container.get<MessageSearchService>({ key: BindingKeys.MESSAGE_SEARCH_SERVICE });
+  const thumbnailService = container.get<ThumbnailService>({ key: BindingKeys.THUMBNAIL_SERVICE });
   const updateService = container.get<UpdateService>({ key: BindingKeys.UPDATE_SERVICE });
   const differenceService = container.get<DifferenceService>({ key: BindingKeys.DIFFERENCE_SERVICE });
 
@@ -308,6 +310,8 @@ const main = async (): Promise<void> => {
         onSendFile: async (opts: { peerId: string; path: string }): Promise<void> => {
           await messageService.sendFile(opts);
         },
+        onThumbnail: async (opts: { peerId: string; messageId: number }): Promise<Uint8Array | null> =>
+          thumbnailService.fetch(opts),
         // A direct pass-through: App already decides *when* a chat has been
         // read (opening one, or the cursor reaching its newest message) and
         // hands over exactly the peerId/maxId markRead needs -- there is

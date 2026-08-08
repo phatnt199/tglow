@@ -12,6 +12,7 @@ export * from './fuzzy-match.ts';
 export * from './logger-provider.ts';
 export * from './message-search.ts';
 export * from './message-service.ts';
+export * from './thumbnail-service.ts';
 export * from './session-store.ts';
 export * from './telegram-client.ts';
 export * from './update-service.ts';

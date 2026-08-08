@@ -206,9 +206,20 @@ line above any caption:
 🎵 Diễm Xưa · 4:05         🎞 GIF · 0:03           📊 Poll · Ăn gì trưa nay?
 ```
 
-A sticker shows the emoji it stands for, which is the closest thing to seeing
-it. Drawing the actual pixels is not implemented yet — but a photo is no longer
-a blank row, which is what it was before.
+**Photos are drawn.** tglow renders them with
+[chafa](https://hpjansson.org/chafa/), which picks the character that best fits
+each cell out of half blocks, quadrants, sextants and braille — so a picture
+comes out as a picture rather than as coloured blocks. The descriptor stays
+above it: it says what the thing is and how big, which a squint at forty cells
+does not.
+
+Thumbnails are fetched once and kept under `~/.local/share/tglow/thumbnails/`.
+A sticker still shows the emoji it stands for — the animated ones carry a video
+where a thumbnail should be, and tglow does not draw video.
+
+This works in any terminal, including ones with no image protocol at all
+(Alacritty, for one). Nothing is required beyond the binary: the chafa
+WebAssembly is compiled into it.
 
 Reactions are tallied under the message: `👍 3  ❤️ 1  [😂] 2`. The brackets mark
 your own, in brackets rather than colour so it survives a terminal without

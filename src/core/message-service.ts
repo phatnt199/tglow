@@ -153,6 +153,21 @@ export interface IMessageAdapter {
   subscribeToReadReceipts(opts: { onReadReceipt: (receipt: IReadReceipt) => void }): () => void;
   subscribeToTyping(opts: { onTyping: (status: ITypingStatus) => void }): () => void;
   /**
+   * The picture on a message, small enough to draw.
+   *
+   * A thumbnail rather than the original: the conversation renders it into a
+   * few dozen terminal cells, so pulling several megabytes to throw almost all
+   * of it away would be a slow way to reach the same picture.
+   *
+   * `peerType` is required, not a nicety: tglow stores unmarked peer ids, and
+   * GramJS resolves a bare number as a *user*. Asking it for a channel's
+   * message by unmarked id fails with "could not find the input entity" --
+   * which reads like a network problem and is really a missing type.
+   *
+   * Null when the message carries no picture, or when it is gone.
+   */
+  downloadThumbnail(opts: { peerId: string; messageId: number; peerType: string }): Promise<Uint8Array | null>;
+  /**
    * Someone reacted to a message, or took a reaction back.
    *
    * Not only your own: a reaction someone else adds arrives here, which is

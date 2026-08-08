@@ -6,6 +6,7 @@ import type { IMessageRow } from '../../core/cache/index.ts';
 import { EntityKinds, type TEntityKind } from '../../core/common/index.ts';
 import { describeMedia } from '../../core/media.ts';
 import { describeReactions } from '../../core/reactions.ts';
+import type { IImageCell } from '../image-renderer.ts';
 import { formatClock } from '../clock.ts';
 import { toStyledSpans, type IStyledSpan } from '../entities.ts';
 import { measureTextWidth, padStartToWidth, padToWidth, toGraphemes, truncateToWidth } from '../text-width.ts';
@@ -59,6 +60,13 @@ export interface IMessageViewProps {
    */
   showGutter?: boolean;
   showTime?: boolean;
+  /**
+   * The drawn picture for a message, by id, when there is one and it has been
+   * fetched. Absent simply means the message shows its descriptor -- which is
+   * what every media message showed before pictures, and is what a photo
+   * still shows while its bytes are on the way.
+   */
+  imagesByMessageId?: Map<number, IImageCell[][]>;
 }
 
 /** Reserved and always blank: the cursorline shows position, not an arrow. */
@@ -141,6 +149,14 @@ interface IRenderedRow {
   marker: string;
   /** True for a row carrying `pre` content -- prefixed with PRE_RULE ahead of `content` at render time. Always false for a quote row. */
   rulePrefix: boolean;
+  /**
+   * One row of a picture, drawn cell by cell instead of as styled text.
+   *
+   * Its own field rather than a kind of content span: a cell carries its own
+   * two colours, where a span's colour comes from its entity kinds, and
+   * squeezing pixels through that would mean inventing an entity per shade.
+   */
+  cells?: IImageCell[];
 }
 
 /**
@@ -472,8 +488,11 @@ const buildRows = (opts: {
   resolveSenderName: (opts: { fromId: string | null }) => string;
   revealedSpoilers: Set<number>;
   readOutboxMaxId: number;
+  imagesByMessageId: Map<number, IImageCell[][]> | undefined;
 }): IRenderedRow[] => {
-  const { messages, cursor, contentWidth, resolveSenderName, revealedSpoilers, readOutboxMaxId } = opts;
+  const {
+    messages, cursor, contentWidth, resolveSenderName, revealedSpoilers, readOutboxMaxId, imagesByMessageId,
+  } = opts;
   const rows: IRenderedRow[] = [];
   // Never below 1: a pane so narrow that contentWidth itself sits at
   // MINIMUM_CONTENT_WIDTH still leaves splitLongWord something to cut into.
@@ -542,6 +561,15 @@ const buildRows = (opts: {
       ? []
       : [[{ text: reactionText, kinds: [], url: null }]];
 
+    // The picture, above the descriptor that names it. Both: the descriptor
+    // says what it is and how big, which a squint at forty cells does not.
+    //
+    // Kept out of the wrapping below, unlike every other row here. A picture
+    // row is already exactly one row wide by construction, and routing it
+    // through the wrapper as an empty line produced no rows at all -- the
+    // picture silently vanished and took its descriptor's position with it.
+    const picture = imagesByMessageId?.get(message.id);
+
     const wrappedRows = [...mediaLine, ...toLogicalSpanLines({ spans: styled }), ...reactionLine]
       .flatMap(line => wrapLogicalLine({ spans: line, contentWidth, preContentWidth }));
 
@@ -559,8 +587,32 @@ const buildRows = (opts: {
       rows: wrappedRows.map(row => row.spans),
     });
 
+    // The picture's own rows, before anything the message says.
+    (picture ?? []).forEach((cells, pictureIndex) => {
+      const opensMessage = pictureIndex === 0;
+      rows.push({
+        key: `${message.id}:picture:${pictureIndex}`,
+        messageIndex: index,
+        kind: 'content',
+        marker: opensMessage && message.pinned === 1 ? PIN_MARKER : MARKER,
+        gutter: opensMessage ? padStartToWidth({ text: gutter, width: GUTTER_WIDTH }) : BLANK_GUTTER,
+        time: opensMessage && opensGroup ? formatClock({ date: message.date }) : BLANK_TIME,
+        sender: opensMessage && opensGroup
+          ? padToWidth({ text: truncateToWidth({ text: senderName, width: SENDER_WIDTH }), width: SENDER_WIDTH })
+          : BLANK_SENDER,
+        tick: opensMessage ? tick : BLANK_TICK,
+        content: [],
+        cells,
+        own,
+        revealed,
+        rulePrefix: false,
+      });
+    });
+
     wrappedRows.forEach(({ spans: rowSpans, isPre }, lineIndex) => {
-      const opensMessage = lineIndex === 0;
+      // The rail's once-per-message fields belong to whichever row is
+      // genuinely first, which is a picture row when there is a picture.
+      const opensMessage = lineIndex === 0 && !picture;
       const rowWidth = isPre ? preContentWidth : contentWidth;
       rows.push({
         key: `${message.id}:${lineIndex}`,
@@ -577,6 +629,9 @@ const buildRows = (opts: {
         // time/sender are -- see resolveTick's own comment above.
         tick: opensMessage ? tick : BLANK_TICK,
         content: padRowContent({ spans: rowSpans, width: rowWidth, indent: isPre ? 0 : blockIndent }),
+        // The first rows of a message with a picture are its picture, one
+        // output row each -- so they scroll, wrap and highlight with the rest
+        // of the message rather than being a separate thing pinned somewhere.
         own,
         revealed,
         rulePrefix: isPre,
@@ -590,7 +645,7 @@ const buildRows = (opts: {
 export const MessageView = (props: IMessageViewProps) => {
   const {
     messages, cursor, focused, tokens, height, width, resolveSenderName, revealedSpoilers, readOutboxMaxId,
-    onMessagePress, onScroll, showGutter = true, showTime = true,
+    onMessagePress, onScroll, showGutter = true, showTime = true, imagesByMessageId,
   } = props;
 
   if (messages.length === 0) {
@@ -602,7 +657,9 @@ export const MessageView = (props: IMessageViewProps) => {
   }
 
   const contentWidth = Math.max(MINIMUM_CONTENT_WIDTH, width - resolveRailWidth({ showGutter, showTime }));
-  const rows = buildRows({ messages, cursor, contentWidth, resolveSenderName, revealedSpoilers, readOutboxMaxId });
+  const rows = buildRows({
+    messages, cursor, contentWidth, resolveSenderName, revealedSpoilers, readOutboxMaxId, imagesByMessageId,
+  });
 
   // A cursor pointing past the end of the history would otherwise anchor the
   // window at -1 and scroll the pane off its own top.
@@ -651,7 +708,20 @@ export const MessageView = (props: IMessageViewProps) => {
             <span fg={tokens.dim}>
               {`${showTime ? `${row.time} ` : ''}${row.sender} ${row.tick} `}
             </span>
-            {row.kind === 'quote' ? (
+            {row.cells ? (
+              // One span per cell: each carries its own two colours, which is
+              // what a picture is. Adjacent cells rarely match in a photo, so
+              // there is nothing to merge and no run to find.
+              row.cells.map((cell, cellIndex) => (
+                <span
+                  key={`${row.key}:cell:${cellIndex}`}
+                  fg={cell.foreground ?? undefined}
+                  bg={cell.background ?? undefined}
+                >
+                  {cell.char}
+                </span>
+              ))
+            ) : row.kind === 'quote' ? (
               <span fg={tokens.dim}>{row.content[0]?.text ?? ''}</span>
             ) : (
               <>

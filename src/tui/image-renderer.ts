@@ -1,3 +1,5 @@
+import { ApplicationLogger } from '@venizia/ignis-helpers';
+
 import initialiseChafa from 'chafa-wasm';
 // Imported as a file asset so `bun build --compile` carries the WebAssembly
 // into the binary. It lands at /$bunfs/root/chafa.wasm, which is exactly where
@@ -132,7 +134,11 @@ export const renderImage = async (opts: {
       foreground: toHexColour({ value: foreground }),
       background: toHexColour({ value: background }),
     })));
-  } catch {
+  } catch (error) {
+    // Logged, not swallowed. A renderer that returns null without saying why
+    // is undiagnosable: the picture simply does not appear, and every layer
+    // above looks equally guilty. This cost a debugging session once already.
+    ApplicationLogger.get('renderImage').error('Could not draw a picture | Reason: %s', error);
     return null;
   }
 };

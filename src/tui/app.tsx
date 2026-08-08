@@ -25,7 +25,9 @@ import { writeToClipboard } from '../core/clipboard.ts';
 import { fuzzyMatch } from '../core/fuzzy-match.ts';
 import { ALL_CHATS_FOLDER_ID, resolveFolderMembership } from '../core/folder-service.ts';
 import { readTypingStatus } from '../core/typing-status.ts';
+import { MediaKinds } from '../core/media.ts';
 import { describePresence, PresenceKinds } from '../core/presence.ts';
+import { renderImage } from './image-renderer.ts';
 import { formatClock } from './clock.ts';
 import { CommandNames, completeCommand, describeUnknown, parseCommand } from './command-line.ts';
 import { resolveReactionKey } from './reaction-picker.ts';
@@ -100,6 +102,8 @@ export interface IAppProps {
   onForward: (opts: { fromPeerId: string; toPeerId: string; messageIds: number[] }) => Promise<void>;
   /** Send a file from disk, with the composer as its caption. */
   onSendFile: (opts: { peerId: string; path: string }) => Promise<void>;
+  /** The picture on a message, as bytes, from the cache or from Telegram. */
+  onThumbnail: (opts: { peerId: string; messageId: number }) => Promise<Uint8Array | null>;
   onQuit: () => void;
   onOpenChat: (opts: { peerId: string }) => Promise<void>;
   /**
@@ -178,6 +182,10 @@ const FRAME_BOTTOM_ROWS = 1;
 const FRAME_DIVIDER_COLUMNS = 1;
 /** Telegram counts in seconds; JavaScript counts in milliseconds. */
 const MILLISECONDS_PER_SECOND = 1000;
+/** The rail beside the conversation, which a picture must not draw over. */
+const IMAGE_RAIL_ALLOWANCE = 28;
+/** How tall a picture may be. Beyond this it stops being an illustration and becomes the whole screen. */
+const MAXIMUM_IMAGE_ROWS = 14;
 
 /**
  * One `<text>` per row, the same one-child-one-row rule the panes follow, so a
@@ -411,7 +419,7 @@ const resolveClipboardText = (opts: {
 export const App = (props: IAppProps) => {
   const {
     store, engine, keymapService, keyNormalizer, messageSearchService, timeoutMilliseconds, tokens, resolveSenderName,
-    onSend, onEdit, onDelete, onPin, onPinChat, onReact, onForward, onSendFile, onLoadOlder, onLogout, onQuit, onOpenChat, onMarkRead,
+    onSend, onEdit, onDelete, onPin, onPinChat, onReact, onForward, onSendFile, onThumbnail, onLoadOlder, onLogout, onQuit, onOpenChat, onMarkRead,
   } = props;
 
   // useSyncExternalStore re-subscribes whenever the `subscribe` argument's
@@ -1612,6 +1620,55 @@ export const App = (props: IAppProps) => {
   /** The one column the divider occupies: past the frame's left border and the sidebar. */
   const dividerColumn = FRAME_LEFT_COLUMNS + paneWidths.sidebar;
 
+  // Pictures for whatever is on screen.
+  //
+  // Driven off the loaded messages rather than the visible slice: working out
+  // which rows are visible needs the rows, which needs the pictures, which is
+  // the circle this avoids. A window is fifty messages and the fetch is
+  // remembered on disk, so the cost is one pass the first time and nothing
+  // after.
+  //
+  // Re-run on width because the size in cells depends on the pane; the bytes
+  // come back off disk, so a resize costs a redraw rather than a download.
+  useEffect(() => {
+    // Photos only. A sticker's own thumbnail is a WebM for the animated ones
+    // and tglow cannot draw video, so the sticker keeps showing the emoji it
+    // stands for -- which is the closest thing to seeing it anyway.
+    const drawable = state.messages.filter(message => message.media?.kind === MediaKinds.PHOTO);
+    if (drawable.length === 0 || state.activePeerId === null) {
+      return;
+    }
+
+    let live = true;
+    const peerId = state.activePeerId;
+    void (async (): Promise<void> => {
+      for (const message of drawable) {
+        const bytes = await onThumbnail({ peerId, messageId: message.id });
+        if (!live || bytes === null) {
+          continue;
+        }
+        const cells = await renderImage({
+          bytes,
+          maximumColumns: Math.max(1, paneWidths.messages - IMAGE_RAIL_ALLOWANCE),
+          maximumRows: MAXIMUM_IMAGE_ROWS,
+        });
+        // Checked again after the await: a chat switched away from mid-render
+        // must not have another conversation's pictures land in it.
+        if (!live || cells === null || store.getState().activePeerId !== peerId) {
+          continue;
+        }
+        const next = new Map(store.getState().imagesByMessageId);
+        next.set(message.id, cells);
+        store.setState({ patch: { imagesByMessageId: next } });
+      }
+    })();
+
+    return (): void => {
+      live = false;
+    };
+  }, [state.messages, state.activePeerId, paneWidths.messages]);
+
+
   // The terminal's own cursor, parked on the composer's caret while typing.
   //
   // Reported by the user: a Vietnamese IME drew its half-typed word over the
@@ -1986,6 +2043,7 @@ export const App = (props: IAppProps) => {
             height={messageHeight}
             resolveSenderName={resolveSenderName}
             revealedSpoilers={state.revealedSpoilers}
+            imagesByMessageId={state.imagesByMessageId}
             readOutboxMaxId={activeDialog?.readOutboxMaxId ?? 0}
             onMessagePress={pressMessage}
             onScroll={({ delta }) => { scrollBy({ unit: 'message', delta }); }}

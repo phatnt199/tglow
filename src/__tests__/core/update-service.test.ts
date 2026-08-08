@@ -79,6 +79,7 @@ const buildAdapter = (): {
         onReactions = null;
       };
     },
+    downloadThumbnail: async (): Promise<Uint8Array | null> => null,
   };
   return {
     // The common case: a message with no pts worth recording, which is what

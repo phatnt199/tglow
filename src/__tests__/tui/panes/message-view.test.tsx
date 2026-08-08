@@ -5,6 +5,7 @@ import type { TestRendererSetup } from '@opentui/core/testing';
 
 import type { IMessageRow } from '../../../core/cache/index.ts';
 import { MediaKinds } from '../../../core/media.ts';
+import type { IImageCell } from '../../../tui/image-renderer.ts';
 import { renderWithKeys } from '../../helpers/render.tsx';
 import { buildTokens } from '../../../tui/theme/index.ts';
 import { MessageView, type IMessageViewProps } from '../../../tui/panes/message-view.tsx';
@@ -977,4 +978,76 @@ test('a media descriptor is plain text, not an entity run', async () => {
 
   expect(spans.length).toBeGreaterThan(0);
   expect(spans.every(span => span.foreground !== tokens.textLink.toLowerCase())).toBe(true);
+});
+
+// ── pictures ──────────────────────────────────────────────────────────────
+
+/** Two rows of flat colour, in the shape chafa's output takes. */
+const swatch = (opts: { rows: number; columns: number }): IImageCell[][] =>
+  Array.from({ length: opts.rows }, (unusedRow, row) =>
+    Array.from({ length: opts.columns }, () => ({
+      char: '▀', foreground: row === 0 ? '#ff0000' : '#00ff00', background: '#0000ff',
+    })));
+
+const photoMessage: IMessageRow[] = [{
+  peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: '', out: 0, entities: [], replyToMessageId: null,
+  media: { kind: MediaKinds.PHOTO, width: 1280, height: 960 },
+}];
+
+// The picture is drawn above the descriptor, and both are shown: the
+// descriptor says what it is and how big, which a squint at forty cells does
+// not.
+test('a picture is drawn above the descriptor that names it', async () => {
+  const renderer = await render({
+    messages: photoMessage,
+    width: 60,
+    imagesByMessageId: new Map([[1, swatch({ rows: 3, columns: 10 })]]),
+  });
+  const rows = readRows(renderer);
+
+  const pictureRow = rows.findIndex(row => row.includes('▀'));
+  const descriptorRow = rows.findIndex(row => row.includes('📷 Photo'));
+  expect(pictureRow).toBeGreaterThanOrEqual(0);
+  expect(descriptorRow).toBe(pictureRow + 3);
+});
+
+// Each cell carries its own two colours -- that is what a picture is, and what
+// the entity styling could never express.
+test('every cell keeps the two colours it was given', async () => {
+  const renderer = await render({
+    messages: photoMessage,
+    width: 60,
+    imagesByMessageId: new Map([[1, swatch({ rows: 2, columns: 6 })]]),
+  });
+  // Adjacent cells of one colour arrive as a single merged span, so this
+  // matches spans that contain the glyph rather than spans that are one cell.
+  const spans = readSpans(renderer, 0).filter(span => span.text.includes('▀'));
+
+  expect(spans.length).toBeGreaterThan(0);
+  expect(spans.every(span => span.foreground === '#ff0000')).toBe(true);
+  expect(spans.every(span => span.background === '#0000ff')).toBe(true);
+});
+
+// A photo whose bytes have not arrived shows its descriptor, which is what
+// every media message showed before pictures existed.
+test('a message with no picture yet still shows its descriptor', async () => {
+  const renderer = await render({ messages: photoMessage, width: 60 });
+
+  expect(renderer.captureCharFrame()).toContain('📷 Photo');
+  expect(renderer.captureCharFrame()).not.toContain('▀');
+});
+
+// The picture's rows belong to its message, so scrolling, wrapping and the
+// cursorline treat it as part of that message rather than as a separate thing.
+test('the picture rows belong to the message they are on', async () => {
+  const renderer = await render({
+    messages: photoMessage,
+    width: 60,
+    cursor: 0,
+    imagesByMessageId: new Map([[1, swatch({ rows: 3, columns: 8 })]]),
+  });
+  // Every row of the message carries the cursorline, picture rows included --
+  // which is what "the picture belongs to this message" means on screen.
+  const pictureRows = readRows(renderer).filter(row => row.includes('▀'));
+  expect(pictureRows).toHaveLength(3);
 });
