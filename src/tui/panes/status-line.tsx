@@ -51,8 +51,14 @@ export interface IStatusLineProps {
   peerKind?: string;
   /** What the other side is doing, already phrased ('typing…'). */
   typing?: string;
-  /** Whether they are online, already phrased ('last seen 3h ago'). */
+  /**
+   * When they were last seen, already phrased ('last seen 3h ago'). Empty
+   * while they are online -- the dot beside the title says that, and the word
+   * would be saying it twice.
+   */
   presence?: string;
+  /** True while the open chat's other side is online: a green dot before the title, where every client puts it. */
+  online?: boolean;
   /** The message under the cursor, for its id, its clock and its flag. */
   messageId?: number | null;
   messageTime?: string;
@@ -77,6 +83,9 @@ const SECTION_GAP = 3;
  * dot beside it reads as a second, smaller mark.
  */
 const LEADING_SEPARATOR = ' ';
+/** The online mark, drawn immediately before the chat's name rather than as a word beside it. */
+const PRESENCE_DOT = '●';
+const PRESENCE_DOT_WIDTH = 2;
 
 const resolveModeColour = (opts: { mode: TVimMode; tokens: ITokens; confirming: boolean }): string => {
   const { mode, tokens, confirming } = opts;
@@ -182,11 +191,7 @@ const buildContext = (props: IStatusLineProps): IStatusSegment[] => {
     // Above the chat's kind and below what is unread: knowing someone is
     // there changes whether you wait for a reply, which is worth more than
     // knowing the chat is a group and less than knowing they have not read you.
-    {
-      text: props.presence ?? '',
-      tone: props.presence === 'online' ? StatusTones.ACCENT : StatusTones.DIM,
-      priority: 45,
-    },
+    { text: props.presence ?? '', tone: StatusTones.DIM, priority: 45 },
     { text: unreadCount > 0 ? `${unreadCount} unread` : '', tone: StatusTones.ACCENT, priority: 55 },
     { text: typing ?? '', tone: StatusTones.ACCENT, priority: 70 },
     { text: unreadChats !== undefined && unreadChats > 0 ? `${unreadChats} chats waiting` : '', tone: StatusTones.DIM, priority: 15 },
@@ -209,7 +214,7 @@ export const StatusLine = (props: IStatusLineProps) => {
   // full. Otherwise it takes what it needs up to half the line: enough that
   // ordinary chat names are never clipped to make room for a clock, and
   // bounded so one long group name cannot push the position off the end.
-  const titleWidth = measureTextWidth({ text: title });
+  const titleWidth = measureTextWidth({ text: title }) + (props.online === true ? PRESENCE_DOT_WIDTH : 0);
   const titleReserve = confirming || warning
     ? titleWidth
     : Math.max(MINIMUM_TITLE_WIDTH, Math.min(titleWidth, Math.floor(width / 2)));
@@ -263,6 +268,7 @@ export const StatusLine = (props: IStatusLineProps) => {
         {spans.map((span, index) => (
           <span key={`lead:${index}`} fg={resolveToneColour({ tone: span.tone, tokens })}>{span.text}</span>
         ))}
+        {props.online === true ? <span fg={tokens.presenceOnline}>{`${PRESENCE_DOT} `}</span> : null}
         <span fg={titleColour}>{shown}</span>
         {after.map((span, index) => (
           <span key={`ctx:${index}`} fg={resolveToneColour({ tone: span.tone, tokens })}>{span.text}</span>

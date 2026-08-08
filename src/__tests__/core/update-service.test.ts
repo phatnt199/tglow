@@ -26,12 +26,14 @@ const buildAdapter = (): {
   emitLive: (live: ILiveMessage) => void;
   emitReadReceipt: (receipt: IReadReceipt) => void;
   emitPresence: (change: { peerId: string; presence: IPresence }) => void;
+  emitReactions: (change: { peerId: string; messageId: number; reactions: IMessageReaction[] }) => void;
   isSubscribed: () => boolean;
 } => {
   let onMessage: ((live: ILiveMessage) => void) | null = null;
   let onReadReceipt: ((receipt: IReadReceipt) => void) | null = null;
   let onTyping: ((status: ITypingStatus) => void) | null = null;
   let onPresence: ((change: { peerId: string; presence: IPresence }) => void) | null = null;
+  let onReactions: ((change: { peerId: string; messageId: number; reactions: IMessageReaction[] }) => void) | null = null;
   const adapter: IMessageAdapter = {
     fetchHistory: async () => [],
     send: async opts => buildRawMessage({ peerId: opts.peerId, text: opts.text }),
@@ -71,6 +73,12 @@ const buildAdapter = (): {
         onPresence = null;
       };
     },
+    subscribeToReactions: subscribeOpts => {
+      onReactions = subscribeOpts.onReactions;
+      return (): void => {
+        onReactions = null;
+      };
+    },
   };
   return {
     // The common case: a message with no pts worth recording, which is what
@@ -79,6 +87,7 @@ const buildAdapter = (): {
     emitLive: (live: ILiveMessage): void => onMessage?.(live),
     emitReadReceipt: (receipt: IReadReceipt): void => onReadReceipt?.(receipt),
     emitPresence: (change: { peerId: string; presence: IPresence }): void => onPresence?.(change),
+    emitReactions: (change: { peerId: string; messageId: number; reactions: IMessageReaction[] }): void => onReactions?.(change),
     // Both subscriptions, so a test can tell that stop() released each of them
     // rather than only the one start() happened to return last.
     isSubscribed: (): boolean => onMessage !== null || onReadReceipt !== null,
@@ -549,4 +558,87 @@ test('an inbox read older than one already applied does not resurrect the badge'
 
   expect(database.listDialogs().find(dialog => dialog.peerId === 'u1')?.unreadCount).toBe(0);
   database.close();
+});
+
+// ── live reactions ────────────────────────────────────────────────────────
+
+/** A started service with its adapter to hand, which is what an emit needs. */
+const buildHarness = (): {
+  adapter: ReturnType<typeof buildAdapter>;
+  database: DatabaseService;
+  store: ApplicationStoreService;
+} => {
+  const adapter = buildAdapter();
+  const { service, database, store } = buildService(adapter.adapter);
+  service.start();
+  return { adapter, database, store };
+};
+
+// Reported: the tally only moved when you touched it. A reaction someone else
+// adds arrives as an update, and without subscribing to it the count on screen
+// was whatever it was when the chat was opened.
+test('a reaction someone else adds lands in the open chat', async () => {
+  const harness = buildHarness();
+  harness.database.upsertPeer({ id: 'u1', type: 'user', accessHash: 'h', title: 'Alice', username: null });
+  harness.database.insertMessages({
+    messages: [{ peerId: 'u1', id: 7, fromId: 'u1', date: 100, text: 'hi', out: 0, entities: [], replyToMessageId: null }],
+  });
+  harness.store.setState({
+    patch: { activePeerId: 'u1', messages: harness.database.listMessages({ peerId: 'u1', limit: 50 }) },
+  });
+
+  harness.adapter.emitReactions({
+    peerId: 'u1', messageId: 7, reactions: [{ emoji: '👍', count: 2, chosen: false }],
+  });
+
+  expect(harness.store.getState().messages[0]!.reactions).toEqual([{ emoji: '👍', count: 2, chosen: false }]);
+  harness.database.close();
+});
+
+// Telegram sends the whole set every time, so a message whose last reaction
+// was removed arrives with an empty list rather than not arriving.
+test('the last reaction being removed clears the tally', async () => {
+  const harness = buildHarness();
+  harness.database.upsertPeer({ id: 'u1', type: 'user', accessHash: 'h', title: 'Alice', username: null });
+  harness.database.insertMessages({
+    messages: [{
+      peerId: 'u1', id: 7, fromId: 'u1', date: 100, text: 'hi', out: 0, entities: [], replyToMessageId: null,
+      reactions: [{ emoji: '👍', count: 1, chosen: false }],
+    }],
+  });
+  harness.store.setState({
+    patch: { activePeerId: 'u1', messages: harness.database.listMessages({ peerId: 'u1', limit: 50 }) },
+  });
+
+  harness.adapter.emitReactions({ peerId: 'u1', messageId: 7, reactions: [] });
+
+  expect(harness.store.getState().messages[0]!.reactions).toEqual([]);
+  harness.database.close();
+});
+
+// A reaction in some other conversation still belongs in the cache -- it will
+// be right when that chat is opened -- but redrawing the one on screen for it
+// would be redrawing something that has not changed.
+test('a reaction in another chat is cached without touching the open one', async () => {
+  const harness = buildHarness();
+  for (const id of ['u1', 'u2']) {
+    harness.database.upsertPeer({ id, type: 'user', accessHash: 'h', title: id, username: null });
+  }
+  harness.database.insertMessages({
+    messages: [
+      { peerId: 'u1', id: 7, fromId: 'u1', date: 100, text: 'here', out: 0, entities: [], replyToMessageId: null },
+      { peerId: 'u2', id: 9, fromId: 'u2', date: 100, text: 'there', out: 0, entities: [], replyToMessageId: null },
+    ],
+  });
+  const shown = harness.database.listMessages({ peerId: 'u1', limit: 50 });
+  harness.store.setState({ patch: { activePeerId: 'u1', messages: shown } });
+
+  harness.adapter.emitReactions({
+    peerId: 'u2', messageId: 9, reactions: [{ emoji: '🎉', count: 1, chosen: false }],
+  });
+
+  expect(harness.store.getState().messages).toBe(shown);
+  expect(harness.database.listMessages({ peerId: 'u2', limit: 50 })[0]!.reactions)
+    .toEqual([{ emoji: '🎉', count: 1, chosen: false }]);
+  harness.database.close();
 });

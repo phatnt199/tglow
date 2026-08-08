@@ -22,6 +22,7 @@
     "@venizia/ignis-inversion": "0.1.1-6",
     "drizzle-orm": "0.45.2",
     "hono": "^4.12.33",
+    "jpeg-js": "^0.4.4",
     "react": "19.2.8",
     "reflect-metadata": "0.2.2",
     "teleproto": "1.228.5"

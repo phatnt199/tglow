@@ -738,6 +738,36 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
    * an UserStatusOnline whose expiry has already passed by the time it lands
    * is genuinely someone who has left.
    */
+  /**
+   * Reaction tallies, as anyone changes them.
+   *
+   * The whole set arrives every time rather than a delta, which is why the
+   * cache replaces wholesale -- and why a message whose last reaction was
+   * removed arrives with an empty results list rather than not arriving.
+   */
+  subscribeToReactions: (
+    subscribeOpts: {
+      onReactions: (change: { peerId: string; messageId: number; reactions: IMessageReaction[] }) => void;
+    },
+  ): (() => void) => {
+    const eventBuilder = new Raw({});
+    const handleUpdate = (update: Api.TypeUpdate): void => {
+      if (!(update instanceof Api.UpdateMessageReactions)) {
+        return;
+      }
+      subscribeOpts.onReactions({
+        peerId: utils.getPeerId(update.peer, false),
+        messageId: update.msgId,
+        reactions: toReactions({ reactions: update.reactions }),
+      });
+    };
+
+    opts.client.addEventHandler(handleUpdate, eventBuilder);
+    return (): void => {
+      opts.client.removeEventHandler(handleUpdate, eventBuilder);
+    };
+  },
+
   subscribeToPresence: (
     subscribeOpts: { onPresence: (change: { peerId: string; presence: IPresence }) => void },
   ): (() => void) => {

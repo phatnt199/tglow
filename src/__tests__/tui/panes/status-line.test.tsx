@@ -221,7 +221,6 @@ test('a wide line carries everything it is given', async () => {
     messagePinned: true,
   }));
 
-  expect(row).toContain('●');
   expect(row).toContain('Work');
   expect(row).toContain('Alice · group · 3 unread · typing…');
   expect(row).toContain('⚑');
@@ -273,11 +272,12 @@ test('a composer past the limit turns the count red', async () => {
     .toBe(tokens.error.toLowerCase());
 });
 
-// The good case must not draw the eye: an always-lit indicator trains people
-// to stop seeing the field, and then it cannot report the bad case either.
-test('a lost connection is marked and coloured, a healthy one only marked', async () => {
-  expect(await colourOf({ connection: 'connected', width: 80 }, '●')).toBe(tokens.dim.toLowerCase());
+// A healthy connection is not drawn at all -- see formatConnection. Only the
+// two states worth interrupting for get a mark.
+test('a lost connection is marked and coloured, a healthy one not drawn', async () => {
+  expect(await colourOf({ connection: 'connected', width: 80 }, '✕')).toBeUndefined();
   expect(await colourOf({ connection: 'offline', width: 80 }, '✕')).toBe(tokens.error.toLowerCase());
+  expect(await colourOf({ connection: 'connecting', width: 80 }, '◐')).toBe(tokens.chatUnread.toLowerCase());
 });
 
 // The reported bug this was found by: a warning is not a chat name. It is a
@@ -299,4 +299,42 @@ test('a warning claims the width it needs, whatever else has to go', async () =>
 
   expect(warned).toContain('Some missed messages could not be saved');
   expect(warned).toContain('1/4');
+});
+
+// ── presence ──────────────────────────────────────────────────────────────
+
+// A dot before the name, where every client puts it -- not a word beside it.
+// Saying both would say it twice.
+test('online is a dot before the name, not a word after it', async () => {
+  const row = readRow(await render({ width: 80, title: 'Alice', online: true, presence: '' }));
+
+  expect(row).toContain('● Alice');
+  expect(row).not.toContain('online');
+});
+
+// The dot cannot say when, so the phrase is what carries last-seen -- and it
+// only appears when there is something the dot is not already saying.
+test('last seen is a phrase, and only when they are not online', async () => {
+  const away = readRow(await render({ width: 80, title: 'Alice', online: false, presence: 'last seen 3h ago' }));
+  expect(away).toContain('Alice · last seen 3h ago');
+  expect(away).not.toContain('●');
+});
+
+// The dot costs columns. Not reserving them pushed the row past its own width,
+// which is the one thing this line must never do.
+test('the row keeps its width with the dot on it', async () => {
+  const row = readRow(await render({
+    width: 60, title: 'a chat with a fairly long name', online: true, position: 4, total: 6, hint: '\\ for keys',
+  }));
+
+  expect(row.length).toBe(60);
+});
+
+// Green, because that is what the dot is in every client that draws one.
+test('the online dot is drawn green', async () => {
+  const renderer = await render({ width: 80, title: 'Alice', online: true });
+  const dot = renderer.captureSpans().lines[0]?.spans.find(span => span.text.includes('●'));
+
+  expect(dot).toBeDefined();
+  expect(rgbToHex(dot!.fg).toLowerCase()).toBe(tokens.presenceOnline.toLowerCase());
 });

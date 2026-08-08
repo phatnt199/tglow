@@ -56,17 +56,23 @@ test('progress stays inside its own scale', () => {
 
 // ── connection ────────────────────────────────────────────────────────────
 
-// The good case must not draw the eye: an always-on green dot trains people to
-// stop seeing the field, and then it cannot report the bad case either.
+// The good case must not draw the eye, and a mark that is always there draws
+// it every time while saying nothing -- so the healthy connection shows
+// nothing at all. It also has to: the online dot is the same glyph and sits
+// right after it, and `● ● Alice` is two identical marks meaning unrelated
+// things.
+test('a healthy connection is not marked at all', () => {
+  expect(formatConnection({ connection: 'connected' }).text).toBe('');
+});
+
 test('only a connection worth noticing is coloured to be noticed', () => {
-  expect(formatConnection({ connection: 'connected' }).tone).toBe(StatusTones.DIM);
   expect(formatConnection({ connection: 'connecting' }).tone).toBe(StatusTones.ACCENT);
   expect(formatConnection({ connection: 'offline' }).tone).toBe(StatusTones.ALERT);
 });
 
 // One column each, or the field would shift the title as the state changed.
-test('every connection mark is one column wide', () => {
-  for (const connection of ['connected', 'connecting', 'offline'] as const) {
+test('every connection mark that is drawn is one column wide', () => {
+  for (const connection of ['connecting', 'offline'] as const) {
     expect([...formatConnection({ connection }).text]).toHaveLength(1);
   }
 });

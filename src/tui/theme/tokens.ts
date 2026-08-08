@@ -27,6 +27,8 @@ export interface ITokens {
   messageCursor: string;
   /** `code`/`pre` entities. */
   textCode: string;
+  /** The dot beside someone who is online. Green, which is what that dot is in every client that draws one. */
+  presenceOnline: string;
   /** `url`/`textUrl`/`mention`/`hashtag` entities. */
   textLink: string;
   error: string;
@@ -58,6 +60,7 @@ export const buildTokens = (opts: { paletteName: string } | { palette: IPalette 
     messageOther: palette.FOREGROUND,
     messageCursor: palette.DARK_03,
     textCode: palette.GREEN,
+    presenceOnline: palette.GREEN,
     textLink: palette.SKY,
     error: palette.RED,
   };

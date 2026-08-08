@@ -152,6 +152,16 @@ export interface IMessageAdapter {
   subscribeToNewMessages(opts: { onMessage: (live: ILiveMessage) => void }): () => void;
   subscribeToReadReceipts(opts: { onReadReceipt: (receipt: IReadReceipt) => void }): () => void;
   subscribeToTyping(opts: { onTyping: (status: ITypingStatus) => void }): () => void;
+  /**
+   * Someone reacted to a message, or took a reaction back.
+   *
+   * Not only your own: a reaction someone else adds arrives here, which is
+   * what makes the tally live rather than a number that only moves when you
+   * touch it.
+   */
+  subscribeToReactions(
+    opts: { onReactions: (change: { peerId: string; messageId: number; reactions: IMessageReaction[] }) => void },
+  ): () => void;
   /** Someone's online state changed. Telegram sends these unprompted for anyone in the chat list. */
   subscribeToPresence(opts: { onPresence: (change: { peerId: string; presence: IPresence }) => void }): () => void;
 }

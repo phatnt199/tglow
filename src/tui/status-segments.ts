@@ -107,16 +107,22 @@ export const formatProgress = (opts: { position: number; total: number }): strin
 };
 
 /**
- * The connection, as one column.
+ * The connection, as one column -- and nothing at all when it is fine.
  *
- * Filled when there is nothing to say, hollow while it is being worked out,
- * crossed when it is gone -- so a glance costs no reading, and the good case
- * is the one that does not draw the eye.
+ * It used to draw a dim `●` for the healthy case, on the reasoning that a
+ * glance should cost no reading. Then the online dot arrived, which is also a
+ * `●` and sits immediately after it, so a connected client talking to someone
+ * online read as `● ● Alice` -- two identical marks meaning unrelated things.
+ *
+ * Showing nothing is the better answer to the rule this already followed: the
+ * good case must not draw the eye, and a mark that is always there draws it
+ * every time while saying nothing. What is left is exactly the two states
+ * worth interrupting for.
  */
 export const formatConnection = (opts: { connection: TConnectionState }): { text: string; tone: TStatusTone } => {
   switch (opts.connection) {
     case 'connected': {
-      return { text: '●', tone: StatusTones.DIM };
+      return { text: '', tone: StatusTones.DIM };
     }
     case 'connecting': {
       return { text: '◐', tone: StatusTones.ACCENT };

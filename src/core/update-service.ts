@@ -6,6 +6,7 @@ import type { ApplicationStoreService, IApplicationState } from './application-s
 import type { DatabaseService, IMessageRow } from './cache/index.ts';
 import { HISTORY_PAGE_SIZE, ReadDirections, type ILiveMessage, type IMessageAdapter, type IRawMessage, type IReadReceipt } from './message-service.ts';
 import type { IPresence } from './presence.ts';
+import type { IMessageReaction } from './reactions.ts';
 import { TYPING_STATUS_TTL_MS, type ITypingStatus } from './typing-status.ts';
 import { advanceChannelPts, advanceUpdateState } from './update-state.ts';
 
@@ -320,6 +321,38 @@ export class UpdateService {
    * becomes "last seen 4m ago" as the clock moves -- the render computes the
    * difference, so it ages correctly with no timer at all.
    */
+  /**
+   * A reaction tally changed, by anyone.
+   *
+   * Republished only when it is the open chat: a reaction on a message in some
+   * other conversation still belongs in the cache -- it will be right when
+   * that chat is opened -- but redrawing the one on screen for it would be
+   * redrawing something that has not changed.
+   */
+  private reactions = (change: { peerId: string; messageId: number; reactions: IMessageReaction[] }): void => {
+    try {
+      this._database.setMessageReactions({
+        peerId: change.peerId, id: change.messageId, reactions: change.reactions,
+      });
+      const state = this._store.getState();
+      if (change.peerId !== state.activePeerId) {
+        return;
+      }
+      this._store.setState({
+        patch: {
+          messages: this.forDisplay({
+            rows: this._database.listMessages({
+              peerId: change.peerId,
+              limit: resolveRefreshLimit({ loaded: state.messages.length }),
+            }),
+          }),
+        },
+      });
+    } catch (error) {
+      this._logger.for('reactions').error('Could not record a reaction change | Reason: %s', error);
+    }
+  };
+
   private presence = (change: { peerId: string; presence: IPresence }): void => {
     try {
       this._database.setPeerPresence(change);
@@ -336,11 +369,13 @@ export class UpdateService {
     const stopReceipts = this._adapter.subscribeToReadReceipts({ onReadReceipt: this.readReceipt });
     const stopTyping = this._adapter.subscribeToTyping({ onTyping: this.typing });
     const stopPresence = this._adapter.subscribeToPresence({ onPresence: this.presence });
+    const stopReactions = this._adapter.subscribeToReactions({ onReactions: this.reactions });
     return (): void => {
       stopMessages();
       stopReceipts();
       stopTyping();
       stopPresence();
+      stopReactions();
       for (const timer of this._typingTimers.values()) {
         clearTimeout(timer);
       }

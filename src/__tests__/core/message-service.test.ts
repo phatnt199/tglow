@@ -35,6 +35,7 @@ const buildAdapter = (overrides: Partial<IMessageAdapter> = {}): IMessageAdapter
   subscribeToReadReceipts: () => (): void => {},
   subscribeToTyping: () => (): void => {},
   subscribeToPresence: () => (): void => {},
+  subscribeToReactions: () => (): void => {},
   ...overrides,
 });
 

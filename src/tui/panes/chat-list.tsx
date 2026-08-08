@@ -190,7 +190,7 @@ export const ChatList = (props: IChatListProps) => {
           >
             <text height={1} flexShrink={0} bg={background}>
               <span fg={tokens.chatActive}>{marker}</span>
-              <span fg={online === ' ' ? tokens.dim : tokens.modeNormal}>{online}</span>
+              <span fg={tokens.presenceOnline}>{online}</span>
               <span fg={tokens.foreground}>{`${name} `}</span>
               <span fg={tokens.dim}>{time}</span>
             </text>

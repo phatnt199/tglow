@@ -1869,6 +1869,11 @@ export const App = (props: IAppProps) => {
   // business holding, and none of it changes what the line does -- only what
   // it has to say.
   const cursorMessage = state.messages[state.messageCursor];
+  // The open chat's presence, resolved once: the status line wants both the
+  // dot and the phrase, and they must agree about which state they describe.
+  const activePresence = (state.activePeerId === null
+    ? null
+    : state.presenceByPeer.get(state.activePeerId)) ?? { kind: PresenceKinds.UNKNOWN, seenAt: null };
   // Named only when the user has narrowed to one. "All chats" says the same
   // thing as an empty folder field and costs nine columns to say it.
   const statusFolder = hasFolders && activeFolder !== null && activeFolder.id !== ALL_CHATS_FOLDER_ID
@@ -2099,12 +2104,10 @@ export const App = (props: IAppProps) => {
         folder={statusFolder}
         peerKind={formatPeerKind({ kind: state.activePeerId === null ? undefined : state.peerKinds.get(state.activePeerId) })}
         typing={activeTyping?.phrase ?? ''}
-        presence={state.activePeerId === null
+        online={activePresence.kind === PresenceKinds.ONLINE}
+        presence={activePresence.kind === PresenceKinds.ONLINE
           ? ''
-          : describePresence({
-            presence: state.presenceByPeer.get(state.activePeerId) ?? { kind: PresenceKinds.UNKNOWN, seenAt: null },
-            now: Math.floor(now / MILLISECONDS_PER_SECOND),
-          })}
+          : describePresence({ presence: activePresence, now: Math.floor(now / MILLISECONDS_PER_SECOND) })}
         messageId={cursorMessage?.id ?? null}
         messageTime={cursorMessage === undefined ? '' : formatClock({ date: cursorMessage.date })}
         messagePinned={cursorMessage?.pinned === 1}

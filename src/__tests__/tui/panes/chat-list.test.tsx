@@ -5,6 +5,7 @@ import type { TestRendererSetup } from '@opentui/core/testing';
 
 import type { IDialogRow } from '../../../core/cache/index.ts';
 import { renderWithKeys } from '../../helpers/render.tsx';
+import { PresenceKinds, type IPresence, type TPresenceKind } from '../../../core/presence.ts';
 import { buildTokens } from '../../../tui/theme/index.ts';
 import { measureTextWidth } from '../../../tui/text-width.ts';
 import { ChatList, type IChatListProps } from '../../../tui/panes/chat-list.tsx';
@@ -289,4 +290,47 @@ test('the visible window is measured in chats, not rows', async () => {
   expect(rows[NAME_ROW(0)]!).toContain('chat37');
   expect(rows[NAME_ROW(1)]!).toContain('chat38');
   expect(rows[NAME_ROW(2)]!).toContain('chat39');
+});
+
+// ── presence ──────────────────────────────────────────────────────────────
+
+// Before the name, where every client puts it -- next to who the person is,
+// not next to when they last spoke.
+test('an online chat carries a green dot before its name', async () => {
+  const presenceByPeer = new Map<string, IPresence>([['u1', { kind: PresenceKinds.ONLINE, seenAt: null }]]);
+  const renderer = await render({ presenceByPeer });
+  const row = renderer.captureCharFrame().split('\n').find(line => line.includes('Alice'))!;
+
+  expect(row).toContain('●');
+  expect(row.indexOf('●')).toBeLessThan(row.indexOf('Alice'));
+
+  const dot = renderer.captureSpans().lines
+    .flatMap(line => line.spans)
+    .find(span => span.text.includes('●'));
+  expect(rgbToHex(dot!.fg).toLowerCase()).toBe(tokens.presenceOnline.toLowerCase());
+});
+
+// Only the certain case. A dot for "recently" would read as a weaker online
+// rather than as "we are not being told".
+test('a vague or absent status carries no dot', async () => {
+  const quiet: TPresenceKind[] = [PresenceKinds.RECENTLY, PresenceKinds.OFFLINE, PresenceKinds.UNKNOWN];
+  for (const kind of quiet) {
+    const renderer = await render({ presenceByPeer: new Map<string, IPresence>([['u1', { kind, seenAt: null }]]) });
+    expect(renderer.captureCharFrame()).not.toContain('●');
+  }
+  expect((await render({})).captureCharFrame()).not.toContain('●');
+});
+
+// The column is always spent: one that appeared and disappeared would shift
+// every name in the list as people came and went.
+test('names line up whether or not anyone is online', async () => {
+  const columnOf = (frame: string): number =>
+    frame.split('\n').find(line => line.includes('Alice'))!.indexOf('Alice');
+
+  const quiet = columnOf((await render({})).captureCharFrame());
+  const busy = columnOf((await render({
+    presenceByPeer: new Map<string, IPresence>([['u1', { kind: PresenceKinds.ONLINE, seenAt: null }]]),
+  })).captureCharFrame());
+
+  expect(busy).toBe(quiet);
 });

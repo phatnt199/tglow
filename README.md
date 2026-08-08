@@ -124,7 +124,7 @@ example:
 FOREGROUND = "#E6E6E6"   # body text
 BACKGROUND = "#080808"   # the window itself
 RED        = "#AF5F5F"   # errors, and the mode block while confirming
-GREEN      = "#87AFAF"   # inline code
+GREEN      = "#87AFAF"   # inline code, and the online dot
 BLUE       = "#7590AF"
 ORANGE     = "#D59572"
 YELLOW     = "#E5B567"
@@ -181,7 +181,8 @@ One row, lualine's shape, and as much of this as the terminal has columns for:
 | Field | Says |
 | --- | --- |
 | `NORMAL` | the mode, and red while a delete is waiting on `y`/`n` |
-| `●` `◐` `✕` | connected, connecting, offline |
+| `◐` `✕` | connecting, offline — a healthy connection is not drawn at all |
+| `●` | the other side is online, in green, immediately before their name |
 | `Work` | the active folder, when you have narrowed to one |
 | `Alice · group` | the open chat and what kind it is — a plain DM gets no tag |
 | `3 unread · typing…` | what is waiting in it, and what the other side is doing |
@@ -213,8 +214,9 @@ Reactions are tallied under the message: `👍 3  ❤️ 1  [😂] 2`. The brack
 your own, in brackets rather than colour so it survives a terminal without
 colour and survives being copied out of one.
 
-A dot beside a name in the chat list means that person is online, and the
-status line says when they were last seen. Telegram is deliberately vague for
+A green dot before a name — in the chat list and before the open chat's own
+title — means that person is online. The status line says when they were last
+seen instead, for anyone who is not. Telegram is deliberately vague for
 anyone who hides their exact time — "recently", "within a week" — and tglow
 does not sharpen it into a time it does not have.
 
