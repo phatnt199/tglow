@@ -1051,3 +1051,52 @@ test('the picture rows belong to the message they are on', async () => {
   const pictureRows = readRows(renderer).filter(row => row.includes('▀'));
   expect(pictureRows).toHaveLength(3);
 });
+
+// When the terminal is handed the real photograph, drawing chafa underneath
+// only shows at the edges -- where the image's shape and the cell grid
+// disagree -- which reads as stray colour around the picture.
+test('the cells are left blank when the terminal draws the picture itself', async () => {
+  const renderer = await render({
+    messages: photoMessage,
+    width: 60,
+    imagesByMessageId: new Map([[1, swatch({ rows: 2, columns: 6 })]]),
+    imagesDrawnByTerminal: true,
+  });
+
+  expect(renderer.captureCharFrame()).not.toContain('▀');
+  // Still there, still the same height: the layout must not depend on which
+  // terminal this is.
+  expect(renderer.captureCharFrame()).toContain('📷 Photo');
+});
+
+// The rows a picture occupies are reported so a caller can put the real image
+// exactly over them -- which is the only way it lines up with the text.
+test('the pane reports where each picture landed', async () => {
+  const placements: unknown[] = [];
+  await render({
+    messages: photoMessage,
+    width: 60,
+    imagesByMessageId: new Map([[1, swatch({ rows: 3, columns: 9 })]]),
+    onImageRows: rows => { placements.push(...rows); },
+  });
+
+  expect(placements).toEqual([
+    { messageId: 1, paneRow: 0, paneColumn: 26, rows: 3, columns: 9 },
+  ]);
+});
+
+// A picture scrolled half off must report only its visible rows: the terminal
+// fits the image to what it is given, so this is what makes it crop by being
+// drawn smaller rather than spilling past the pane.
+test('only the visible rows of a picture are reported', async () => {
+  const placements: { rows: number }[] = [];
+  await render({
+    messages: photoMessage,
+    width: 60,
+    height: 3,
+    imagesByMessageId: new Map([[1, swatch({ rows: 8, columns: 9 })]]),
+    onImageRows: rows => { placements.push(...rows); },
+  });
+
+  expect(placements[0]!.rows).toBeLessThanOrEqual(3);
+});

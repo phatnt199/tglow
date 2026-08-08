@@ -68,6 +68,17 @@ export interface IMessageViewProps {
    */
   imagesByMessageId?: Map<number, IImageCell[][]>;
   /**
+   * True when the terminal is being handed the real picture, so the drawing
+   * underneath is not worth drawing.
+   *
+   * The rows still exist and are still the same height -- the layout must not
+   * depend on which terminal this is -- but they are left blank. Drawing chafa
+   * under a real image only shows at the edges, where the image's own shape
+   * and the cell grid disagree, which is exactly the stray colour it looks
+   * like.
+   */
+  imagesDrawnByTerminal?: boolean;
+  /**
    * Called with where each picture ended up, in cells relative to this pane's
    * own top-left, so a caller that can hand the terminal the real image knows
    * exactly which cells to put it over.
@@ -666,6 +677,7 @@ export const MessageView = (props: IMessageViewProps) => {
   const {
     messages, cursor, focused, tokens, height, width, resolveSenderName, revealedSpoilers, readOutboxMaxId,
     onMessagePress, onScroll, showGutter = true, showTime = true, imagesByMessageId, onImageRows,
+    imagesDrawnByTerminal = false,
   } = props;
 
   if (messages.length === 0) {
@@ -761,7 +773,12 @@ export const MessageView = (props: IMessageViewProps) => {
             <span fg={tokens.dim}>
               {`${showTime ? `${row.time} ` : ''}${row.sender} ${row.tick} `}
             </span>
-            {row.cells ? (
+            {row.cells && imagesDrawnByTerminal ? (
+              // Reserved, not drawn: the terminal is putting the photograph
+              // over these cells and anything here would show through at its
+              // edges.
+              <span>{' '.repeat(row.cells.length)}</span>
+            ) : row.cells ? (
               // One span per cell: each carries its own two colours, which is
               // what a picture is. Adjacent cells rarely match in a photo, so
               // there is nothing to merge and no run to find.

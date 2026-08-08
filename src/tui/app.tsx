@@ -187,8 +187,18 @@ const FRAME_DIVIDER_COLUMNS = 1;
 const MILLISECONDS_PER_SECOND = 1000;
 /** The rail beside the conversation, which a picture must not draw over. */
 const IMAGE_RAIL_ALLOWANCE = 28;
-/** How tall a picture may be. Beyond this it stops being an illustration and becomes the whole screen. */
+/**
+ * How tall a picture may be, by what it is.
+ *
+ * A photo is worth looking at, so it gets room. A sticker is an aside -- it
+ * stands in for a facial expression -- and one taking a third of the pane
+ * pushes the conversation off screen to say something an emoji says in one
+ * cell. Small enough to read as punctuation, large enough to tell which
+ * sticker it is.
+ */
 const MAXIMUM_IMAGE_ROWS = 14;
+const MAXIMUM_STICKER_ROWS = 6;
+const MAXIMUM_STICKER_COLUMNS = 18;
 
 /**
  * One `<text>` per row, the same one-child-one-row rule the panes follow, so a
@@ -1727,10 +1737,12 @@ export const App = (props: IAppProps) => {
           process.stdout.write(transmit({ id: message.id, bytes }));
         }
 
+        const sticker = message.media?.kind === MediaKinds.STICKER;
+        const available = Math.max(1, paneWidths.messages - IMAGE_RAIL_ALLOWANCE);
         const cells = await renderImage({
           bytes,
-          maximumColumns: Math.max(1, paneWidths.messages - IMAGE_RAIL_ALLOWANCE),
-          maximumRows: MAXIMUM_IMAGE_ROWS,
+          maximumColumns: sticker ? Math.min(available, MAXIMUM_STICKER_COLUMNS) : available,
+          maximumRows: sticker ? MAXIMUM_STICKER_ROWS : MAXIMUM_IMAGE_ROWS,
         });
         // Checked again after the await: a chat switched away from mid-render
         // must not have another conversation's pictures land in it.
@@ -2125,6 +2137,7 @@ export const App = (props: IAppProps) => {
             revealedSpoilers={state.revealedSpoilers}
             imagesByMessageId={state.imagesByMessageId}
             onImageRows={placeImages}
+            imagesDrawnByTerminal={graphicsCapable}
             readOutboxMaxId={activeDialog?.readOutboxMaxId ?? 0}
             onMessagePress={pressMessage}
             onScroll={({ delta }) => { scrollBy({ unit: 'message', delta }); }}

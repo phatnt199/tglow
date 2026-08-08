@@ -79,7 +79,14 @@ const toMatrix = async (opts: {
   new Promise((resolve, reject) => {
     opts.module.imageToMatrix(
       opts.image,
-      { width: opts.size.columns, height: opts.size.rows },
+      {
+        width: opts.size.columns,
+        height: opts.size.rows,
+        // Every glyph chafa knows, not the default subset. Measured on a real
+        // thumbnail: 59 distinct characters against 37, which is the
+        // difference between a picture and a mosaic at these sizes.
+        symbols: 'all',
+      },
       (error, result) => (error ? reject(error instanceof Error ? error : new Error(String(error))) : resolve(result.matrix)),
     );
   });
