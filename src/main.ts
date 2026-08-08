@@ -302,6 +302,9 @@ const main = async (): Promise<void> => {
         onReact: async (opts: { peerId: string; messageId: number; emoji: string }): Promise<void> => {
           await messageService.react(opts);
         },
+        onForward: async (opts: { fromPeerId: string; toPeerId: string; messageIds: number[] }): Promise<void> => {
+          await messageService.forward(opts);
+        },
         // A direct pass-through: App already decides *when* a chat has been
         // read (opening one, or the cursor reaching its newest message) and
         // hands over exactly the peerId/maxId markRead needs -- there is

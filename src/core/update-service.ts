@@ -6,7 +6,7 @@ import type { ApplicationStoreService, IApplicationState } from './application-s
 import type { DatabaseService, IMessageRow } from './cache/index.ts';
 import { HISTORY_PAGE_SIZE, ReadDirections, type ILiveMessage, type IMessageAdapter, type IRawMessage, type IReadReceipt } from './message-service.ts';
 import { TYPING_STATUS_TTL_MS, type ITypingStatus } from './typing-status.ts';
-import { advanceUpdateState } from './update-state.ts';
+import { advanceChannelPts, advanceUpdateState } from './update-state.ts';
 
 /**
  * How much of the chat a live arrival republishes: everything already on
@@ -176,7 +176,22 @@ export class UpdateService {
    */
   private receive = (live: ILiveMessage): void => {
     const applied = this.apply({ message: live.message, origin: MessageOrigins.LIVE });
-    if (!applied || live.pts === null) {
+    if (!applied) {
+      return;
+    }
+
+    // A channel's own pts, in its own row. This is what lets the next launch
+    // ask updates.getChannelDifference where it left off rather than never
+    // backfilling that channel at all.
+    if (live.channelPts !== null) {
+      try {
+        advanceChannelPts({ database: this._database, ...live.channelPts });
+      } catch (error) {
+        this._logger.for(this.receive.name).error('Could not record the channel pts | Reason: %s', error);
+      }
+    }
+
+    if (live.pts === null) {
       return;
     }
 

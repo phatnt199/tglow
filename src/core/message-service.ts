@@ -63,6 +63,15 @@ export interface IRawMessage {
 export interface ILiveMessage {
   message: IRawMessage;
   pts: number | null;
+  /**
+   * The channel's *own* pts, when the message came from one.
+   *
+   * Kept apart from `pts` above rather than folded into it: a channel numbers
+   * its own sequence, so this belongs in a per-channel row and would send the
+   * next account-wide getDifference to a position that account never reached.
+   * Null for anything that is not a channel message.
+   */
+  channelPts: { peerId: string; pts: number } | null;
 }
 
 export class ReadDirections {
@@ -115,6 +124,8 @@ export interface IMessageAdapter {
    * other people react between your press and its reply.
    */
   react(opts: { peerId: string; messageId: number; emoji: string }): Promise<IMessageReaction[]>;
+  /** Copy messages into another chat. Telegram calls this forwarding; the copies are new messages in the target. */
+  forward(opts: { fromPeerId: string; toPeerId: string; messageIds: number[] }): Promise<void>;
   subscribeToNewMessages(opts: { onMessage: (live: ILiveMessage) => void }): () => void;
   subscribeToReadReceipts(opts: { onReadReceipt: (receipt: IReadReceipt) => void }): () => void;
   subscribeToTyping(opts: { onTyping: (status: ITypingStatus) => void }): () => void;
@@ -386,6 +397,33 @@ export class MessageService {
       this._store.setState({
         patch: { statusMessage: `Reacted, but could not update the local cache: ${toError(error).message}` },
       });
+    }
+  };
+
+  /**
+   * Forward messages into another chat.
+   *
+   * Nothing is republished on success: the copies land in the *target* chat,
+   * which is not the one on screen, and the live update stream delivers them
+   * there the same way it delivers anything else. Republishing here would
+   * redraw the chat the user is still looking at, which has not changed.
+   */
+  forward = async (opts: { fromPeerId: string; toPeerId: string; messageIds: number[] }): Promise<void> => {
+    if (opts.messageIds.length === 0) {
+      return;
+    }
+    try {
+      await this._adapter.forward(opts);
+      this._store.setState({
+        patch: {
+          statusMessage: opts.messageIds.length === 1
+            ? 'Forwarded'
+            : `Forwarded ${opts.messageIds.length} messages`,
+        },
+      });
+    } catch (error) {
+      this._logger.for(this.forward.name).error('Forward failed | Reason: %s', error);
+      this._store.setState({ patch: { statusMessage: `Forward failed: ${toError(error).message}` } });
     }
   };
 

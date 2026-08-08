@@ -28,7 +28,7 @@ import { readTypingStatus } from '../core/typing-status.ts';
 import { formatClock } from './clock.ts';
 import { CommandNames, completeCommand, describeUnknown, parseCommand } from './command-line.ts';
 import { resolveReactionKey } from './reaction-picker.ts';
-import { toGraphemes } from './text-width.ts';
+import { measureTextWidth, toGraphemes } from './text-width.ts';
 import { formatPeerKind } from './status-segments.ts';
 // Type-only: App receives a MessageSearchService instance through props
 // (constructed and DI-wired by main.ts) and only ever calls the instance
@@ -53,7 +53,7 @@ import {
   buildTopEdge,
   resolvePaneWidths,
 } from './pane-frame.ts';
-import { ChatList, Composer, FolderRail, MessageView, StatusLine } from './panes/index.ts';
+import { ChatList, Composer, COMPOSER_PROMPT_WIDTH, FolderRail, MessageView, StatusLine } from './panes/index.ts';
 import type { ITokens } from './theme/index.ts';
 
 export interface IAppProps {
@@ -95,6 +95,8 @@ export interface IAppProps {
   onPinChat: (opts: { peerId: string }) => Promise<void>;
   /** React to a message, or take the reaction back by choosing the same one again. */
   onReact: (opts: { peerId: string; messageId: number; emoji: string }) => Promise<void>;
+  /** Copy messages into another chat. */
+  onForward: (opts: { fromPeerId: string; toPeerId: string; messageIds: number[] }) => Promise<void>;
   onQuit: () => void;
   onOpenChat: (opts: { peerId: string }) => Promise<void>;
   /**
@@ -167,6 +169,10 @@ const SCROLL_ROWS_PER_NOTCH = 3;
 const FRAME_LEFT_COLUMNS = 1;
 /** The frame's top border, which the folder rail starts under. */
 const FRAME_TOP_ROWS = 1;
+/** The frame's bottom border, under the panes and above the status line. */
+const FRAME_BOTTOM_ROWS = 1;
+/** The vertical rule between the sidebar and the conversation. */
+const FRAME_DIVIDER_COLUMNS = 1;
 
 /**
  * One `<text>` per row, the same one-child-one-row rule the panes follow, so a
@@ -235,6 +241,22 @@ const TAB_TOKEN = '<tab>';
  * ctrlp.vim and fzf both use. Search (Task 9) has no result list of its own
  * to move a selection through, so it has no equivalent of these two.
  */
+/**
+ * Everything the chat picker owns, cleared.
+ *
+ * One constant rather than the same four keys written at each way out of it.
+ * The picker closes from three places -- escape, Enter-to-open, and
+ * Enter-to-forward -- and adding `chatPickerPurpose` was enough to leave two
+ * of them stale, so a cancelled forward left the next <C-p> forwarding
+ * instead of opening.
+ */
+const CLEARED_CHAT_PICKER = {
+  chatPickerQuery: '',
+  chatPickerCursor: 0,
+  chatPickerPurpose: 'open',
+  forwardMessageId: null,
+} satisfies Partial<IApplicationState>;
+
 const CHAT_PICKER_NEXT_TOKENS: readonly string[] = ['<C-n>', 'j'];
 const CHAT_PICKER_PREVIOUS_TOKENS: readonly string[] = ['<C-p>', 'k'];
 
@@ -384,7 +406,7 @@ const resolveClipboardText = (opts: {
 export const App = (props: IAppProps) => {
   const {
     store, engine, keymapService, keyNormalizer, messageSearchService, timeoutMilliseconds, tokens, resolveSenderName,
-    onSend, onEdit, onDelete, onPin, onPinChat, onReact, onLoadOlder, onLogout, onQuit, onOpenChat, onMarkRead,
+    onSend, onEdit, onDelete, onPin, onPinChat, onReact, onForward, onLoadOlder, onLogout, onQuit, onOpenChat, onMarkRead,
   } = props;
 
   // useSyncExternalStore re-subscribes whenever the `subscribe` argument's
@@ -1025,7 +1047,7 @@ export const App = (props: IAppProps) => {
       const pickerToken = keyNormalizer.toCanonicalString({ key });
 
       if (pickerToken === OVERLAY_ESCAPE_TOKEN) {
-        store.setState({ patch: { overlay: null, chatPickerQuery: '', chatPickerCursor: 0 } });
+        store.setState({ patch: { overlay: null, ...CLEARED_CHAT_PICKER } });
         return;
       }
 
@@ -1046,6 +1068,23 @@ export const App = (props: IAppProps) => {
         if (!selected) {
           return;
         }
+        // Same picker, same keys, different outcome. The message is the one
+        // the picker was opened on (forwardMessageId), not the one the cursor
+        // is on now -- the cursor can still move while an overlay is up.
+        if (current.chatPickerPurpose === 'forward') {
+          const { forwardMessageId } = current;
+          store.setState({
+            patch: { overlay: null, ...CLEARED_CHAT_PICKER },
+          });
+          if (forwardMessageId !== null && current.activePeerId !== null) {
+            void onForward({
+              fromPeerId: current.activePeerId,
+              toPeerId: selected.peerId,
+              messageIds: [forwardMessageId],
+            }).catch(error => { logRejection({ method: 'onForward', error }); });
+          }
+          return;
+        }
         // Reuses CHAT_OPEN's own side effect (commitResolution's switch case
         // below) rather than duplicating the onOpenChat/onMarkRead chain --
         // chatCursor moves to match the picked chat as part of the same
@@ -1060,7 +1099,7 @@ export const App = (props: IAppProps) => {
             actions: [{ type: ActionTypes.CHAT_OPEN }, { type: ActionTypes.FOCUS_SET, context: VimContexts.MESSAGES }],
             status: 'resolved',
           },
-          initialPatch: { chatCursor: targetIndex, overlay: null, chatPickerQuery: '', chatPickerCursor: 0 },
+          initialPatch: { chatCursor: targetIndex, overlay: null, ...CLEARED_CHAT_PICKER },
         });
         return;
       }
@@ -1555,6 +1594,45 @@ export const App = (props: IAppProps) => {
 
   /** The one column the divider occupies: past the frame's left border and the sidebar. */
   const dividerColumn = FRAME_LEFT_COLUMNS + paneWidths.sidebar;
+
+  // The terminal's own cursor, parked on the composer's caret while typing.
+  //
+  // Reported by the user: a Vietnamese IME drew its half-typed word over the
+  // status line, and it only appeared in the composer once committed. An IME
+  // renders its composition at the *terminal* cursor, outside the application
+  // entirely -- so with the cursor hidden and left wherever the last write
+  // put it, the preedit had nowhere sensible to go. Nothing tglow draws
+  // changes; what changes is where the terminal thinks the caret is.
+  //
+  // Only in insert mode: a visible block sitting in the conversation in normal
+  // mode would compete with the cursorline, which is what shows position
+  // there.
+  useEffect(() => {
+    const typing = state.engine.mode === VimModes.INSERT;
+    if (!typing) {
+      renderer.setCursorPosition(0, 0, false);
+      return;
+    }
+    // The prompt row: the frame's bottom border and the status line sit under
+    // it, and the composer's own extra rows (a pending reply, an edit) push it
+    // no further because they are drawn above the prompt, not below it.
+    const caretRow = height - STATUS_LINE_HEIGHT - FRAME_BOTTOM_ROWS - 1;
+    const promptStart = dividerColumn + FRAME_DIVIDER_COLUMNS + COMPOSER_PROMPT_WIDTH;
+    // What the composer actually shows: it keeps the tail of a line too long
+    // for the pane, so the caret is at the end of what is visible rather than
+    // at the end of the text.
+    const room = Math.max(0, paneWidths.messages - COMPOSER_PROMPT_WIDTH - 1);
+    const typed = Math.min(measureTextWidth({ text: state.composerText }), room);
+    // One-based, which is what setCursorPosition takes -- OpenTUI's own
+    // editor adds the same +1 to its screen coordinates before calling it
+    // (renderCursor, @opentui/core). Passing zero-based put the caret a row
+    // above the composer, which is exactly where the IME would then have
+    // drawn.
+    renderer.setCursorPosition(promptStart + typed + 1, caretRow + 1, true);
+  }, [
+    state.engine.mode, state.composerText, height, paneWidths.sidebar, paneWidths.messages, renderer,
+  ]);
+
 
   const menuItems = state.contextMenu === null
     ? []

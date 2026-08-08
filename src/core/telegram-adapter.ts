@@ -6,7 +6,7 @@ import type { NewMessageEvent } from 'teleproto/events';
 
 import { EntityKinds, type ITelegramEntity, type TEntityKind } from './common/index.ts';
 import type { IDialogAdapter, IRawDialog } from './dialog-service.ts';
-import type { IDifferenceAdapter, IDifferenceResult } from './difference-service.ts';
+import type { IChannelDifferenceResult, IDifferenceAdapter, IDifferenceResult } from './difference-service.ts';
 import { ReadDirections, type ILiveMessage, type IMessageAdapter, type IRawMessage, type IReadReceipt } from './message-service.ts';
 import type { IFolderAdapter, IRawFolder } from './folder-service.ts';
 import { MediaKinds, type IMessageMedia } from './media.ts';
@@ -274,10 +274,9 @@ const toRawMessages = (opts: { messages: Api.TypeMessage[] }): IRawMessage[] => 
  * `UpdateNewChannelMessage` is the fourth branch and is deliberately absent:
  * its pts numbers that one channel's own sequence, so storing it in the
  * account-wide `sync_state` row would send the next `updates.getDifference` to
- * a position that account never reached. Channels need
- * `updates.getChannelDifference` and a per-channel row, which tglow does not
- * have yet -- so their pts is reported as null and nothing is written, which
- * costs a re-delivery rather than a corrupted state.
+ * a position that account never reached. It is reported separately, as
+ * ILiveMessage.channelPts, and stored in a row of that channel's own --
+ * see toChannelPts below and DifferenceService.catchUpChannels.
  */
 const COMMON_PTS_UPDATE_CLASSES: readonly string[] = [
   'UpdateNewMessage',
@@ -292,6 +291,56 @@ const toCommonPts = (opts: { update: { className: string } }): number | null => 
   const { pts } = opts.update as { pts?: number };
   return typeof pts === 'number' ? pts : null;
 };
+
+/**
+ * A channel message's own pts, paired with the channel it counts for.
+ *
+ * `UpdateNewChannelMessage` is the only class here: the short forms above are
+ * account-wide by construction, and a channel's sequence only ever advances
+ * through its own updates.
+ */
+const toChannelPts = (opts: { update: { className: string }; peerId: string }): { peerId: string; pts: number } | null => {
+  if (opts.update.className !== 'UpdateNewChannelMessage') {
+    return null;
+  }
+  const { pts } = opts.update as { pts?: number };
+  return typeof pts === 'number' ? { peerId: opts.peerId, pts } : null;
+};
+
+/**
+ * The messages a channel difference carries, whichever shape it came back in.
+ *
+ * ChannelDifferenceTooLong has no newMessages at all -- it carries a Dialog
+ * and the channel's newest messages instead -- so it reports `tooLong` and
+ * lets the caller refetch rather than pretending to have recovered a range.
+ */
+const toChannelDifferenceResult = (
+  opts: { difference: Api.updates.TypeChannelDifference },
+): IChannelDifferenceResult => {
+  const { difference } = opts;
+  switch (difference.className) {
+    case 'updates.ChannelDifference': {
+      return {
+        messages: toRawMessages({ messages: difference.newMessages }),
+        pts: difference.pts,
+        final: difference.final ?? true,
+        tooLong: false,
+      };
+    }
+    case 'updates.ChannelDifferenceTooLong': {
+      // `dialog` carries the channel's current pts; a Dialog (not
+      // DialogFolder) is the only member that has one.
+      const pts = difference.dialog.className === 'Dialog' ? difference.dialog.pts ?? 0 : 0;
+      return { messages: [], pts, final: true, tooLong: true };
+    }
+    default: {
+      return { messages: [], pts: difference.pts, final: true, tooLong: false };
+    }
+  }
+};
+
+/** How many messages one channel difference call asks for. Telegram's own cap for a non-bot account. */
+const CHANNEL_DIFFERENCE_LIMIT = 100;
 
 const toUpdateState = (opts: { state: Api.updates.State }): IUpdateState => {
   const { state } = opts;
@@ -411,6 +460,20 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
     return changed ? toReactions({ reactions: changed.reactions }) : [];
   },
 
+  /**
+   * GramJS's forwardMessages takes the target first and the source in the
+   * options, which is the opposite order to the TL call it builds -- read
+   * from node_modules/teleproto/client/messages.d.ts rather than guessed,
+   * since the two peers are the same type and swapping them would forward the
+   * wrong way with no error at all.
+   */
+  forward: async (forwardOpts: { fromPeerId: string; toPeerId: string; messageIds: number[] }): Promise<void> => {
+    await opts.client.forwardMessages(forwardOpts.toPeerId, {
+      messages: forwardOpts.messageIds,
+      fromPeer: forwardOpts.fromPeerId,
+    });
+  },
+
   // GramJS's own SendMessageParams names this `replyTo`, not `replyToMessageId`
   // -- read from node_modules/telegram/client/messages.d.ts rather than
   // guessed, since a wrong name here sends an ordinary message with no error
@@ -503,9 +566,11 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
     // such field. Declared on NewMessageEvent at
     // node_modules/telegram/events/NewMessage.d.ts.
     const handleEvent = (event: NewMessageEvent): void => {
+      const message = toRawMessage({ message: event.message });
       subscribeOpts.onMessage({
-        message: toRawMessage({ message: event.message }),
+        message,
         pts: toCommonPts({ update: event.originalUpdate }),
+        channelPts: toChannelPts({ update: event.originalUpdate, peerId: message.peerId }),
       });
     };
 
@@ -671,6 +736,26 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
  *   tells DifferenceService this is not a caught-up state.
  */
 export const buildDifferenceAdapter = (opts: { client: TelegramClient }): IDifferenceAdapter => ({
+  /**
+   * One channel's difference, from that channel's own pts.
+   *
+   * ChannelMessagesFilterEmpty asks for everything: tglow caches a channel's
+   * messages the same way it caches any other chat's, so filtering here would
+   * mean a cache that silently disagrees with the server about what the
+   * channel contains.
+   */
+  getChannelDifference: async (
+    channelOpts: { peerId: string; pts: number },
+  ): Promise<IChannelDifferenceResult> => {
+    const difference = await opts.client.invoke(new Api.updates.GetChannelDifference({
+      channel: await opts.client.getInputEntity(channelOpts.peerId),
+      filter: new Api.ChannelMessagesFilterEmpty(),
+      pts: channelOpts.pts,
+      limit: CHANNEL_DIFFERENCE_LIMIT,
+    }));
+    return toChannelDifferenceResult({ difference });
+  },
+
   getState: async (): Promise<IUpdateState> => {
     return toUpdateState({ state: await opts.client.invoke(new Api.updates.GetState()) });
   },

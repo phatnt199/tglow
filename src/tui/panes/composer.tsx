@@ -33,6 +33,17 @@ export interface IComposerProps {
 }
 
 const PROMPT = '❯ ';
+/**
+ * The prompt's width, exported so App can put the *terminal's* real cursor
+ * exactly where the composer draws its own.
+ *
+ * That matters for input methods. A Vietnamese, Chinese or Japanese IME draws
+ * its in-progress composition at the terminal cursor -- not through the
+ * application at all -- so with the cursor hidden and parked wherever the last
+ * write left it, the half-typed word appeared over the status line and only
+ * jumped into the composer once it was committed.
+ */
+export const COMPOSER_PROMPT_WIDTH = measureTextWidth({ text: PROMPT });
 const CURSOR = '█';
 const HINT = 'press i to write…';
 const RULE = '─';

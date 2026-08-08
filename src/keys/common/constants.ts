@@ -83,6 +83,7 @@ export class ActionTypes {
   static readonly DISPLAY_TOGGLE = 'display.toggle';
   /** Pin or unpin the message under the cursor. Performed by App, like send and delete. */
   static readonly PIN_TOGGLE = 'pin.toggle';
+  static readonly FORWARD_START = 'forward.start';
 }
 
 const SUPPORTED_MODES: readonly string[] = [

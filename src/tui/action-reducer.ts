@@ -226,6 +226,8 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
         overlay: state.overlay === action.overlay ? null : action.overlay,
         chatPickerQuery: '',
         chatPickerCursor: 0,
+        chatPickerPurpose: 'open',
+        forwardMessageId: null,
         searchQuery: '',
         commandQuery: '',
         // Only the transition INTO 'search' needs this snapshot -- and this
@@ -404,6 +406,24 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
     }
 
     // Side-effecting actions are App's to perform; the reducer has no patch.
+    // Opens the picker <C-p> opens, aimed at a different outcome. The target
+    // message is snapshotted here rather than read when a chat is chosen: the
+    // cursor can still move under an open overlay, and forwarding whatever it
+    // ended up on would be a different message than the one the user meant.
+    case ActionTypes.FORWARD_START: {
+      const target = state.messages[state.messageCursor];
+      if (!target) {
+        return {};
+      }
+      return {
+        overlay: 'chatpicker',
+        chatPickerQuery: '',
+        chatPickerCursor: 0,
+        chatPickerPurpose: 'forward',
+        forwardMessageId: target.id,
+      };
+    }
+
     case ActionTypes.CHAT_OPEN:
     case ActionTypes.COMPOSER_SEND:
     case ActionTypes.PIN_TOGGLE:

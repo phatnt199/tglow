@@ -126,6 +126,12 @@ export class KeymapService {
       context: '*', mode: VimModes.NORMAL, keys: '<S-p>', description: 'Pin or unpin the message',
       action: () => [{ type: ActionTypes.PIN_TOGGLE }],
     },
+    // Forward. Opens the same chat picker <C-p> does, aimed at a different
+    // outcome -- choosing a chat forwards into it rather than opening it.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: '<S-f>', description: 'Forward the message to another chat',
+      action: () => [{ type: ActionTypes.FORWARD_START }],
+    },
     // React. `r` is reply, so `R` is the shifted neighbour of it -- the two
     // are the same gesture aimed at the same message.
     {

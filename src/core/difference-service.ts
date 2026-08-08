@@ -5,7 +5,7 @@ import { BindingKeys } from '../common/index.ts';
 import type { ApplicationStoreService } from './application-store.ts';
 import type { DatabaseService } from './cache/index.ts';
 import type { IMessageAdapter, IRawMessage } from './message-service.ts';
-import { readUpdateState, writeUpdateState, type IUpdateState } from './update-state.ts';
+import { advanceChannelPts, readChannelPts, readUpdateState, writeUpdateState, type IUpdateState } from './update-state.ts';
 import { MessageOrigins, type UpdateService } from './update-service.ts';
 
 export interface IDifferenceResult {
@@ -22,6 +22,22 @@ export interface IDifferenceResult {
 export interface IDifferenceAdapter {
   getState(): Promise<IUpdateState>;
   getDifference(opts: { state: IUpdateState }): Promise<IDifferenceResult>;
+  /**
+   * One channel's own difference, from its own pts.
+   *
+   * `tooLong` means the gap is past what a difference can express; the caller
+   * refetches that channel's recent history instead. `final` false means the
+   * server has more to give and the call should be repeated from the returned
+   * pts.
+   */
+  getChannelDifference(opts: { peerId: string; pts: number }): Promise<IChannelDifferenceResult>;
+}
+
+export interface IChannelDifferenceResult {
+  messages: IRawMessage[];
+  pts: number;
+  final: boolean;
+  tooLong: boolean;
 }
 
 /**
@@ -33,6 +49,16 @@ export interface IDifferenceAdapter {
  * of the first frame.
  */
 const TOO_LONG_REFETCH_CHATS = 20;
+/**
+ * How many times one channel's difference is asked for before giving up.
+ *
+ * A difference can come back short of the gap, and the only way to the rest is
+ * to ask again from where it stopped. Bounded so a channel that never reports
+ * `final` cannot hold the launch open indefinitely -- what is left recovers on
+ * the next run, or the moment the chat is opened.
+ */
+const CHANNEL_DIFFERENCE_ROUNDS = 5;
+
 const TOO_LONG_REFETCH_LIMIT = 50;
 
 /**
@@ -111,7 +137,106 @@ export class DifferenceService {
    * either stores a state whose messages are already written, or stores
    * nothing at all.
    */
-  catchUp = async (): Promise<void> => {
+  /**
+   * Every channel this account has heard from, recovered from its own pts.
+   *
+   * Channels are why `updates.getDifference` alone was never enough: each one
+   * numbers its own sequence, so the account-wide difference does not carry
+   * their messages at all and a channel was simply never backfilled -- close
+   * tglow, and whatever a channel posted while it was shut was missing until
+   * something else happened to refetch that chat.
+   *
+   * Only channels with a stored pts are asked about. Without one there is no
+   * gap to reason about, and asking from zero would replay the channel's
+   * entire history; the first live message from it records the mark that
+   * makes the *next* launch recoverable, exactly as the account-wide state
+   * bootstraps itself.
+   *
+   * Never rejects, and never lets one channel's failure stop the next: a
+   * partial recovery is strictly better than none, which is the same rule
+   * refetchHistoryAfterTooLong already follows.
+   */
+  private catchUpChannels = async (): Promise<number> => {
+    const channels = [...this._database.listPeerKinds()]
+      .filter(([, kind]) => kind.type === 'channel')
+      .map(([peerId]) => peerId);
+
+    let missed = 0;
+    for (const peerId of channels) {
+      const stored = readChannelPts({ database: this._database, peerId });
+      if (stored === null) {
+        continue;
+      }
+
+      try {
+        let pts = stored;
+        // A difference can come back short of the gap ("final: false"), and
+        // the only way to the rest is to ask again from where it stopped.
+        // Bounded so a channel that never reports final cannot spin here.
+        for (let round = 0; round < CHANNEL_DIFFERENCE_ROUNDS; round += 1) {
+          const result = await this._adapter.getChannelDifference({ peerId, pts });
+
+          if (result.tooLong) {
+            // Past what a difference can express. The channel's recent history
+            // is refetched instead, and its pts moves to the server's so the
+            // next launch measures from there rather than from a mark that is
+            // now meaningless.
+            missed += await this.refetchChannel({ peerId });
+            advanceChannelPts({ database: this._database, peerId, pts: result.pts });
+            break;
+          }
+
+          for (const message of result.messages) {
+            if (!this._updateService.apply({ message, origin: MessageOrigins.BACKFILL })) {
+              missed += 1;
+            }
+          }
+
+          // Only past what actually landed: advancing over a message the cache
+          // refused loses it permanently, since a difference runs forward only.
+          if (missed === 0) {
+            advanceChannelPts({ database: this._database, peerId, pts: result.pts });
+          }
+          pts = result.pts;
+
+          if (result.final) {
+            break;
+          }
+        }
+      } catch (error) {
+        this._logger.for('catchUpChannels').error('Channel %s could not be recovered | Reason: %s', peerId, error);
+      }
+    }
+    return missed;
+  };
+
+  /** One channel's recent history, straight from the server, after a too-long gap. */
+  private refetchChannel = async (opts: { peerId: string }): Promise<number> => {
+    try {
+      const fetched = await this._messageAdapter.fetchHistory({
+        peerId: opts.peerId,
+        limit: TOO_LONG_REFETCH_LIMIT,
+      });
+      return fetched.reduce(
+        (lost, message) =>
+          lost + (this._updateService.apply({ message, origin: MessageOrigins.BACKFILL }) ? 0 : 1),
+        0,
+      );
+    } catch (error) {
+      this._logger.for('refetchChannel').error('Channel %s could not be refetched | Reason: %s', opts.peerId, error);
+      return 0;
+    }
+  };
+
+  /**
+   * The account-wide difference: everything that is not a channel.
+   *
+   * Split out from catchUp so the channel pass below cannot be skipped. It
+   * returns early on several paths -- no stored state, nothing missed, a
+   * cache that refused a message -- and a call placed after its try block ran
+   * on none of them.
+   */
+  private catchUpCommon = async (): Promise<void> => {
     try {
       const stored = readUpdateState({ database: this._database });
 
@@ -183,7 +308,27 @@ export class DifferenceService {
         });
       }
     } catch (error) {
-      this._logger.for(this.catchUp.name).error('Could not recover the update difference | Reason: %s', error);
+      this._logger.for('catchUpCommon').error('Could not recover the update difference | Reason: %s', error);
+    }
+  };
+
+  /**
+   * Everything missed while tglow was closed: the account-wide difference,
+   * then every channel from its own pts.
+   *
+   * Both run whatever the other did. A channel is recovered from a mark of its
+   * own and does not depend on the account-wide pass having succeeded, so a
+   * network failure that lost the common difference should still let every
+   * channel try.
+   */
+  catchUp = async (): Promise<void> => {
+    await this.catchUpCommon();
+
+    const missedInChannels = await this.catchUpChannels();
+    if (missedInChannels > 0) {
+      this._store.setState({
+        patch: { integrityWarning: 'Some missed messages could not be saved; tglow will try again next time' },
+      });
     }
   };
 }

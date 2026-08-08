@@ -127,6 +127,19 @@ export interface IApplicationState {
   chatPickerQuery: string;
   chatPickerCursor: number;
   /**
+   * What choosing a chat in the picker does: open it, or forward the message
+   * under the cursor into it.
+   *
+   * One picker rather than two: choosing a chat is the same gesture with the
+   * same fuzzy match and the same keys, and a second overlay that looked
+   * identical would be a second place for those to drift. Reset to 'open'
+   * whenever any overlay opens or closes, so a cancelled forward cannot leave
+   * the next <C-p> forwarding instead of opening.
+   */
+  chatPickerPurpose: 'open' | 'forward';
+  /** The message a forward is about, snapshotted when the picker opened -- the cursor can move under a still-open overlay. */
+  forwardMessageId: number | null;
+  /**
    * The text typed into the `/` search overlay while it is open (M1b-2
    * Task 9). Meaningless while `overlay !== 'search'`; reset to '' whenever
    * any overlay opens or closes (mirroring chatPickerQuery's own reset),
@@ -228,6 +241,8 @@ const INITIAL_STATE: IApplicationState = {
   overlay: null,
   chatPickerQuery: '',
   chatPickerCursor: 0,
+  chatPickerPurpose: 'open',
+  forwardMessageId: null,
   searchQuery: '',
   searchMatchIds: [],
   searchCursorBeforeOpen: null,

@@ -42,6 +42,7 @@ const buildAdapter = (): {
     markRead: async (): Promise<void> => {},
     pinMessage: async (): Promise<void> => {},
   react: async (): Promise<IMessageReaction[]> => [],
+  forward: async (): Promise<void> => {},
     subscribeToNewMessages: subscribeOpts => {
       onMessage = subscribeOpts.onMessage;
       return (): void => {
@@ -64,7 +65,7 @@ const buildAdapter = (): {
   return {
     // The common case: a message with no pts worth recording, which is what
     // every test written before the live path persisted state was asserting.
-    emit: (message: IRawMessage): void => onMessage?.({ message, pts: null }),
+    emit: (message: IRawMessage): void => onMessage?.({ message, pts: null, channelPts: null }),
     emitLive: (live: ILiveMessage): void => onMessage?.(live),
     emitReadReceipt: (receipt: IReadReceipt): void => onReadReceipt?.(receipt),
     // Both subscriptions, so a test can tell that stop() released each of them

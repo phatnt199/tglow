@@ -4,7 +4,7 @@ import { Api } from 'teleproto';
 
 import { ApplicationStoreService } from '../../core/application-store.ts';
 import { DatabaseService } from '../../core/cache/index.ts';
-import { DifferenceService, type IDifferenceAdapter, type IDifferenceResult } from '../../core/difference-service.ts';
+import { DifferenceService, type IChannelDifferenceResult, type IDifferenceAdapter, type IDifferenceResult } from '../../core/difference-service.ts';
 import { MessageService, type ILiveMessage, type IMessageAdapter, type IRawMessage } from '../../core/message-service.ts';
 import { buildDifferenceAdapter } from '../../core/telegram-adapter.ts';
 import type { IUpdateState } from '../../core/update-state.ts';
@@ -33,6 +33,8 @@ interface IHarness {
   emitLive: (live: ILiveMessage) => void;
   /** The same adapter DifferenceService re-fetches through, so a test can hand it to a real MessageService. */
   messageAdapter: IMessageAdapter;
+  /** Every (peerId, pts) a channel difference was asked for, in order. */
+  channelDifferences: Array<{ peerId: string; pts: number }>;
 }
 
 const build = (
@@ -74,6 +76,7 @@ const build = (
     markRead: async (): Promise<void> => {},
     pinMessage: async (): Promise<void> => {},
   react: async (): Promise<IMessageReaction[]> => [],
+  forward: async (): Promise<void> => {},
   } satisfies IMessageAdapter;
 
   // A real UpdateService, not a stand-in: "a backfilled message and a live one
@@ -87,9 +90,15 @@ const build = (
     return apply(applyOpts);
   };
   updateService.start();
+  const channelDifferences: Array<{ peerId: string; pts: number }> = [];
 
   const adapter: IDifferenceAdapter = {
     getState: overrides.getState ?? (async (): Promise<IUpdateState> => SERVER_STATE),
+    getChannelDifference: overrides.getChannelDifference
+      ?? (async (channelOpts: { peerId: string; pts: number }): Promise<IChannelDifferenceResult> => {
+        channelDifferences.push(channelOpts);
+        return { messages: [], pts: channelOpts.pts, final: true, tooLong: false };
+      }),
     getDifference: async (differenceOpts: { state: IUpdateState }): Promise<IDifferenceResult> => {
       fetched.push(differenceOpts.state);
       if (!overrides.getDifference) {
@@ -109,6 +118,7 @@ const build = (
     refetched,
     emitLive: (live: ILiveMessage): void => { onMessage?.(live); },
     messageAdapter,
+    channelDifferences,
   };
 };
 
@@ -183,8 +193,8 @@ test('a second catch-up after live traffic resumes from the live pts, re-deliver
   expect(harness.database.getSyncState({ key: 'pts' })).toBe(120);
 
   // A session's worth of live traffic, each update carrying its own pts.
-  harness.emitLive({ message: buildRawMessage({ id: 3, peerId: 'u1', date: 300, text: 'live one' }), pts: 121 });
-  harness.emitLive({ message: buildRawMessage({ id: 4, peerId: 'u1', date: 400, text: 'live two' }), pts: 122 });
+  harness.emitLive({ message: buildRawMessage({ id: 3, peerId: 'u1', date: 300, text: 'live one' }), pts: 121, channelPts: null });
+  harness.emitLive({ message: buildRawMessage({ id: 4, peerId: 'u1', date: 400, text: 'live two' }), pts: 122, channelPts: null });
 
   expect(harness.database.getSyncState({ key: 'pts' })).toBe(122);
 
@@ -208,7 +218,7 @@ test('a live update with no common pts leaves the stored state where it was', as
   // A channel update's pts belongs to that channel's own sequence; writing it
   // into the account-wide row would send the next difference somewhere the
   // server cannot follow. The adapter reports null rather than guessing.
-  harness.emitLive({ message: buildRawMessage({ id: 3, peerId: 'u1', date: 300 }), pts: null });
+  harness.emitLive({ message: buildRawMessage({ id: 3, peerId: 'u1', date: 300 }), pts: null, channelPts: null });
 
   expect(harness.database.getSyncState({ key: 'pts' })).toBe(100);
   harness.database.close();
@@ -218,7 +228,7 @@ test('a live pts behind the stored one never rewinds the stored state', async ()
   const harness = build();
   harness.database.setSyncState({ key: 'pts', value: 500 });
 
-  harness.emitLive({ message: buildRawMessage({ id: 3, peerId: 'u1', date: 300 }), pts: 400 });
+  harness.emitLive({ message: buildRawMessage({ id: 3, peerId: 'u1', date: 300 }), pts: 400, channelPts: null });
 
   expect(harness.database.getSyncState({ key: 'pts' })).toBe(500);
   harness.database.close();
@@ -233,7 +243,7 @@ test('a live message that could not be cached does not advance the stored pts', 
   const harness = build();
   harness.database.setSyncState({ key: 'pts', value: 100 });
 
-  harness.emitLive({ message: buildRawMessage({ id: 3, peerId: 'ghost', date: 300 }), pts: 130 });
+  harness.emitLive({ message: buildRawMessage({ id: 3, peerId: 'ghost', date: 300 }), pts: 130, channelPts: null });
 
   expect(harness.database.getSyncState({ key: 'pts' })).toBe(100);
   harness.database.close();
@@ -242,7 +252,7 @@ test('a live message that could not be cached does not advance the stored pts', 
 test('a live update before any stored state exists does not invent one', async () => {
   const harness = build();
 
-  harness.emitLive({ message: buildRawMessage({ id: 3, peerId: 'u1', date: 300 }), pts: 130 });
+  harness.emitLive({ message: buildRawMessage({ id: 3, peerId: 'u1', date: 300 }), pts: 130, channelPts: null });
 
   // Claiming pts 130 would assert everything below it had been consumed, when
   // catch-up has not run at all -- the first run's own getState is the only
@@ -763,4 +773,107 @@ test('an endless run of slices stops at the cap and reports how far it actually 
   // catch-up resumes exactly where this one stopped instead of starting over.
   expect(result.state.pts).toBe(100 + requests.length);
   expect(result.messages).toHaveLength(requests.length);
+});
+
+// ── channels ──────────────────────────────────────────────────────────────
+
+/** A cached channel with a pts already recorded, which is what makes it recoverable. */
+const seedChannel = (harness: IHarness, opts: { peerId: string; pts: number | null }): void => {
+  harness.database.upsertPeer({ id: opts.peerId, type: 'channel', accessHash: 'h', title: 'Channel', username: null });
+  if (opts.pts !== null) {
+    harness.database.setSyncState({ key: `channel_pts:${opts.peerId}`, value: opts.pts });
+  }
+};
+
+// Channels are why getDifference alone was never enough: each numbers its own
+// sequence, so the account-wide difference does not carry their messages at
+// all and a channel was simply never backfilled.
+test('a channel is recovered from its own pts', async () => {
+  const harness = build({});
+  seedChannel(harness, { peerId: 'c1', pts: 40 });
+
+  await harness.service.catchUp();
+
+  expect(harness.channelDifferences).toEqual([{ peerId: 'c1', pts: 40 }]);
+});
+
+// Without a stored pts there is no gap to reason about, and asking from zero
+// would replay the channel's entire history.
+test('a channel with no recorded pts is left alone', async () => {
+  const harness = build({});
+  seedChannel(harness, { peerId: 'c1', pts: null });
+
+  await harness.service.catchUp();
+
+  expect(harness.channelDifferences).toEqual([]);
+});
+
+// Only channels: an ordinary chat is already covered by the account-wide
+// difference, and asking about it separately would be a wasted round trip.
+test('ordinary chats are not asked for a channel difference', async () => {
+  const harness = build({});
+  harness.database.upsertPeer({ id: 'u9', type: 'user', accessHash: 'h', title: 'Alice', username: null });
+  harness.database.setSyncState({ key: 'channel_pts:u9', value: 12 });
+
+  await harness.service.catchUp();
+
+  expect(harness.channelDifferences).toEqual([]);
+});
+
+// A difference that comes back short of the gap has to be asked again from
+// where it stopped, or the rest of it is simply never recovered.
+test('a difference that is not final is asked again from where it stopped', async () => {
+  const seen: number[] = [];
+  const harness = build({
+    getChannelDifference: async (opts: { peerId: string; pts: number }): Promise<IChannelDifferenceResult> => {
+      seen.push(opts.pts);
+      return seen.length < 3
+        ? { messages: [], pts: opts.pts + 10, final: false, tooLong: false }
+        : { messages: [], pts: opts.pts + 10, final: true, tooLong: false };
+    },
+  });
+  seedChannel(harness, { peerId: 'c1', pts: 40 });
+
+  await harness.service.catchUp();
+
+  expect(seen).toEqual([40, 50, 60]);
+});
+
+// One channel failing must not stop the next: a partial recovery is strictly
+// better than none.
+test('one channel failing does not stop the others', async () => {
+  const asked: string[] = [];
+  const harness = build({
+    getChannelDifference: async (opts: { peerId: string; pts: number }): Promise<IChannelDifferenceResult> => {
+      asked.push(opts.peerId);
+      if (opts.peerId === 'c1') {
+        throw new Error('CHANNEL_PRIVATE');
+      }
+      return { messages: [], pts: opts.pts, final: true, tooLong: false };
+    },
+  });
+  seedChannel(harness, { peerId: 'c1', pts: 10 });
+  seedChannel(harness, { peerId: 'c2', pts: 20 });
+
+  await harness.service.catchUp();
+
+  expect(asked).toEqual(['c1', 'c2']);
+});
+
+// The pts only moves past what actually landed: a difference runs forward
+// only, so advancing over a message the cache refused loses it permanently.
+test('a channel pts advances only when every message landed', async () => {
+  const harness = build({
+    getChannelDifference: async (opts: { peerId: string; pts: number }): Promise<IChannelDifferenceResult> => ({
+      messages: [buildRawMessage({ id: 5, peerId: opts.peerId })],
+      pts: opts.pts + 5,
+      final: true,
+      tooLong: false,
+    }),
+  });
+  seedChannel(harness, { peerId: 'c1', pts: 40 });
+
+  await harness.service.catchUp();
+
+  expect(harness.database.getSyncState({ key: 'channel_pts:c1' })).toBe(45);
 });

@@ -236,6 +236,10 @@ const mount = async (opts: {
   const onReact = async (request: { peerId: string; messageId: number; emoji: string }): Promise<void> => {
     reacted.push(request);
   };
+  const forwarded: Array<{ fromPeerId: string; toPeerId: string; messageIds: number[] }> = [];
+  const onForward = async (request: { fromPeerId: string; toPeerId: string; messageIds: number[] }): Promise<void> => {
+    forwarded.push(request);
+  };
   const pinnedChats: string[] = [];
   const onPinChat = async (request: { peerId: string }): Promise<void> => {
     pinnedChats.push(request.peerId);
@@ -282,6 +286,7 @@ const mount = async (opts: {
       onLogout={onLogout}
       onPinChat={onPinChat}
       onReact={onReact}
+      onForward={onForward}
       onQuit={() => { quit.push(true); }}
       onOpenChat={onOpenChat}
       onMarkRead={onMarkRead}
@@ -289,7 +294,7 @@ const mount = async (opts: {
     { width: opts.width ?? TERMINAL_WIDTH, height: opts.height ?? TERMINAL_HEIGHT },
   );
   await renderer.flush();
-  return { renderer, store, sent, composerAtSend, edited, deleted, pinned, pinnedChats, reacted, olderRequests, loggedOut, opened, marked, quit, database };
+  return { renderer, store, sent, composerAtSend, edited, deleted, pinned, pinnedChats, reacted, forwarded, olderRequests, loggedOut, opened, marked, quit, database };
 };
 
 test('starts in NORMAL mode with both panes on screen', async () => {
@@ -3514,4 +3519,128 @@ test('the picker marks the reaction you already chose', async () => {
   await renderer.flush();
 
   expect(renderer.captureCharFrame()).toContain('🔥✓');
+});
+
+// ── forwarding ────────────────────────────────────────────────────────────
+
+// One picker, not two: choosing a chat is the same gesture with the same
+// fuzzy match and the same keys, so F borrows <C-p>'s rather than adding a
+// second overlay that looked identical and could drift from it.
+test('F opens the chat picker and forwards into whatever is chosen', async () => {
+  const { renderer, store, forwarded, opened } = await mount({ dialogs: manyDialogs });
+  opened.length = 0;
+
+  await act(async () => { renderer.mockInput.pressKey('F'); });
+  await renderer.flush();
+  expect(store.getState().overlay).toBe('chatpicker');
+  expect(store.getState().chatPickerPurpose).toBe('forward');
+
+  await act(async () => { renderer.mockInput.pressKey('j'); });
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+
+  expect(forwarded).toEqual([{
+    fromPeerId: 'u1', toPeerId: manyDialogs[1]!.peerId, messageIds: [1],
+  }]);
+  // Forwarding is not opening: the chat under the cursor stays where it was.
+  expect(opened).toEqual([]);
+  expect(store.getState().overlay).toBeNull();
+});
+
+// The cursor can still move while an overlay is up, so the message is the one
+// the picker was opened on rather than whatever it ends up on.
+test('the forwarded message is the one F was pressed on', async () => {
+  const { renderer, store, forwarded } = await mount({ dialogs: manyDialogs });
+
+  await act(async () => { renderer.mockInput.pressKey('G'); });
+  await renderer.flush();
+  const chosen = store.getState().messages[store.getState().messageCursor]!.id;
+
+  await act(async () => { renderer.mockInput.pressKey('F'); });
+  await act(async () => { store.setState({ patch: { messageCursor: 0 } }); });
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+
+  expect(forwarded[0]!.messageIds).toEqual([chosen]);
+});
+
+// A cancelled forward must not leave the next <C-p> forwarding instead of
+// opening -- the purpose is reset with everything else the picker owns.
+test('cancelling a forward leaves the picker opening again', async () => {
+  const { renderer, store, forwarded, opened } = await mount({ dialogs: manyDialogs });
+  opened.length = 0;
+
+  await act(async () => { renderer.mockInput.pressKey('F'); });
+  await pressEscape(renderer);
+  expect(store.getState().chatPickerPurpose).toBe('open');
+  expect(forwarded).toEqual([]);
+
+  await act(async () => { renderer.mockInput.pressKey('\x10'); });
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+
+  expect(forwarded).toEqual([]);
+  expect(opened).toHaveLength(1);
+});
+
+// ── the terminal's own cursor ─────────────────────────────────────────────
+
+// Reported: a Vietnamese IME drew its half-typed word over the status line,
+// and it only appeared in the composer once committed. An IME renders its
+// composition at the *terminal* cursor, outside the application entirely, so
+// where that cursor sits is the whole fix.
+test('the terminal cursor follows the composer caret while typing', async () => {
+  const { renderer } = await mount();
+  const placed: Array<{ x: number; y: number; visible: boolean }> = [];
+  renderer.renderer.setCursorPosition = (x: number, y: number, visible?: boolean): void => {
+    placed.push({ x, y, visible: visible === true });
+  };
+
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await renderer.flush();
+  const entered = placed[placed.length - 1]!;
+  expect(entered.visible).toBe(true);
+
+  await act(async () => { renderer.mockInput.pressKey('a'); });
+  await act(async () => { renderer.mockInput.pressKey('b'); });
+  await renderer.flush();
+  const typed = placed[placed.length - 1]!;
+
+  // Two characters typed, two columns further along, same row.
+  expect(typed.y).toBe(entered.y);
+  expect(typed.x).toBe(entered.x + 2);
+});
+
+// A visible block sitting in the conversation would compete with the
+// cursorline, which is what shows position there.
+test('the terminal cursor is hidden outside insert mode', async () => {
+  const { renderer } = await mount();
+  const placed: Array<{ visible: boolean }> = [];
+  renderer.renderer.setCursorPosition = (unusedX: number, unusedY: number, visible?: boolean): void => {
+    placed.push({ visible: visible === true });
+  };
+
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await renderer.flush();
+  expect(placed[placed.length - 1]!.visible).toBe(true);
+
+  await pressEscape(renderer);
+  expect(placed[placed.length - 1]!.visible).toBe(false);
+});
+
+// A wide character is two columns, and an IME that puts its preedit one column
+// short of the caret is the same bug in a smaller form.
+test('the caret accounts for the width of what is typed, not its length', async () => {
+  const { renderer, store } = await mount();
+  const placed: Array<{ x: number }> = [];
+  renderer.renderer.setCursorPosition = (x: number): void => { placed.push({ x }); };
+
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await renderer.flush();
+  const start = placed[placed.length - 1]!.x;
+
+  await act(async () => { store.setState({ patch: { composerText: '😀' } }); });
+  await renderer.flush();
+
+  expect(placed[placed.length - 1]!.x).toBe(start + 2);
 });

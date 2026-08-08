@@ -21,6 +21,29 @@ export class SyncStateKeys {
 }
 
 /**
+ * A channel's own pts row.
+ *
+ * Prefixed and per-peer because a channel numbers its own sequence: there is
+ * no single number that describes where this account is in every channel, and
+ * storing one channel's position in the account-wide row would send the next
+ * getDifference somewhere that account has never been.
+ */
+export const channelPtsKey = (opts: { peerId: string }): string => `channel_pts:${opts.peerId}`;
+
+/** Monotonic, like the account-wide state: a difference only ever runs forward, and a pts that went backwards would replay messages already applied. */
+export const advanceChannelPts = (opts: { database: DatabaseService; peerId: string; pts: number }): void => {
+  const key = channelPtsKey({ peerId: opts.peerId });
+  const stored = opts.database.getSyncState({ key });
+  if (stored !== null && stored >= opts.pts) {
+    return;
+  }
+  opts.database.setSyncState({ key, value: opts.pts });
+};
+
+export const readChannelPts = (opts: { database: DatabaseService; peerId: string }): number | null =>
+  opts.database.getSyncState({ key: channelPtsKey({ peerId: opts.peerId }) });
+
+/**
  * Every read and write of the `sync_state` rows, in one module rather than on
  * one service, because two different paths consume the update stream and both
  * have to record what they consumed: DifferenceService recovers the gap at

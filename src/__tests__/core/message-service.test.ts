@@ -26,6 +26,7 @@ const buildAdapter = (overrides: Partial<IMessageAdapter> = {}): IMessageAdapter
   markRead: async (): Promise<void> => {},
   pinMessage: async (): Promise<void> => {},
   react: async (): Promise<IMessageReaction[]> => [],
+  forward: async (): Promise<void> => {},
   // MessageService never calls this -- UpdateService (src/__tests__/core/update-service.test.ts)
   // is what exercises it -- but IMessageAdapter requires it, so a stub keeps this fake whole.
   subscribeToNewMessages: () => (): void => {},
