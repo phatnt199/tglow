@@ -1,6 +1,8 @@
 import 'reflect-metadata';
 
+import { spawn } from 'node:child_process';
 import { rmSync } from 'node:fs';
+import { basename } from 'node:path';
 
 import { createElement } from 'react';
 
@@ -312,6 +314,24 @@ const main = async (): Promise<void> => {
         },
         onThumbnail: async (opts: { peerId: string; messageId: number }): Promise<Uint8Array | null> =>
           thumbnailService.fetch(opts),
+        // The real picture, in whatever the desktop opens pictures with.
+        // Detached and with its streams discarded: a viewer that writes to
+        // stdout would otherwise draw over the alternate screen, and one that
+        // outlives tglow should not keep it alive.
+        onOpenMedia: async (opts: { peerId: string; messageId: number }): Promise<void> => {
+          store.setState({ patch: { statusMessage: 'Opening…' } });
+          const path = await thumbnailService.materialise(opts);
+          if (path === null) {
+            store.setState({ patch: { statusMessage: 'Nothing to open on this message' } });
+            return;
+          }
+          const viewer = spawn('xdg-open', [path], { detached: true, stdio: 'ignore' });
+          viewer.on('error', () => {
+            store.setState({ patch: { statusMessage: `Saved to ${path} -- no viewer to open it` } });
+          });
+          viewer.unref();
+          store.setState({ patch: { statusMessage: `Opened ${basename(path)}` } });
+        },
         // A direct pass-through: App already decides *when* a chat has been
         // read (opening one, or the cursor reaching its newest message) and
         // hands over exactly the peerId/maxId markRead needs -- there is

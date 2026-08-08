@@ -168,6 +168,11 @@ export interface IMessageAdapter {
    */
   downloadThumbnail(opts: { peerId: string; messageId: number; peerType: string }): Promise<Uint8Array | null>;
   /**
+   * The picture at its own size, not a thumbnail -- what a viewer outside the
+   * terminal should be given, where the pixels are real pixels.
+   */
+  downloadMedia(opts: { peerId: string; messageId: number; peerType: string }): Promise<Uint8Array | null>;
+  /**
    * Someone reacted to a message, or took a reaction back.
    *
    * Not only your own: a reaction someone else adds arrives here, which is

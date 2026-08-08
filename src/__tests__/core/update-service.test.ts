@@ -80,6 +80,7 @@ const buildAdapter = (): {
       };
     },
     downloadThumbnail: async (): Promise<Uint8Array | null> => null,
+    downloadMedia: async (): Promise<Uint8Array | null> => null,
   };
   return {
     // The common case: a message with no pts worth recording, which is what

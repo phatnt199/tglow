@@ -21,6 +21,7 @@ export class CommandNames {
   static readonly GOTO = 'goto';
   static readonly LOGOUT = 'logout';
   static readonly SEND_FILE = 'send-file';
+  static readonly OPEN_MEDIA = 'open-media';
 }
 
 export type TCommandName = (typeof CommandNames)[Exclude<keyof typeof CommandNames, 'prototype'>];
@@ -49,6 +50,11 @@ export const COMMANDS: readonly ICommandSpec[] = [
     name: CommandNames.SEND_FILE,
     spellings: ['send', 'upload'],
     description: 'Send a file: :send ~/photo.jpg (the composer becomes its caption)',
+  },
+  {
+    name: CommandNames.OPEN_MEDIA,
+    spellings: ['view', 'open'],
+    description: 'Open the picture under the cursor in an image viewer',
   },
   {
     name: CommandNames.LOGOUT,

@@ -217,9 +217,22 @@ Thumbnails are fetched once and kept under `~/.local/share/tglow/thumbnails/`.
 A sticker still shows the emoji it stands for — the animated ones carry a video
 where a thumbnail should be, and tglow does not draw video.
 
-This works in any terminal, including ones with no image protocol at all
-(Alacritty, for one). Nothing is required beyond the binary: the chafa
-WebAssembly is compiled into it.
+This works in any terminal, because it is text. Nothing is required beyond the
+binary — the chafa WebAssembly is compiled into it.
+
+### Seeing the real picture
+
+A drawing made of characters is a drawing, not the photograph. For the actual
+pixels, press `O` (or `:view`): tglow downloads the picture at full size and
+hands it to whatever your desktop opens pictures with.
+
+That indirection is not a shortcut — it is the only route on some terminals.
+**Alacritty cannot display images at all**: no Sixel, no Kitty graphics
+protocol, no iTerm2 inline images. It is a deliberate, long-standing decision
+of that project, and no library can work around a terminal that has no
+mechanism to receive image data. Terminals that *can* show a picture inline —
+kitty, WezTerm, Ghostty, Konsole, foot — are worth switching to if that matters
+to you.
 
 Reactions are tallied under the message: `👍 3  ❤️ 1  [😂] 2`. The brackets mark
 your own, in brackets rather than colour so it survives a terminal without
@@ -265,6 +278,7 @@ half-typed word could still become.
 | `:read` | mark the open chat read |
 | `:pin` / `:unpin` | pin or unpin the message under the cursor |
 | `:e` `:reload` | reload the open chat from Telegram |
+| `:view` `:open` | open the picture under the cursor at full size, in an image viewer |
 | `:send <path>` `:upload` | send a file — the composer becomes its caption, and `~` works |
 | `:logout` | sign out on Telegram, erase the local session and cache, and quit — asks `y`/`n` first |
 
@@ -324,6 +338,7 @@ by accident.
 | `P` | pin or unpin — the message under the cursor, or the chat when the chat list has focus |
 | `R` | react to the message: `R` then the key beside the emoji |
 | `F` | forward the message to a chat, chosen from the same picker `<C-p>` uses |
+| `O` | open the message's picture at full size, in an image viewer |
 | `d{motion}` / `dd` / `3dd` | delete the message under the cursor, or a range (asks `y`/`n` first, and says how many) |
 | `y{motion}` / `yy` | yank the message(s) under the cursor into a register |
 | `c{motion}` / `cc` | edit (change) the message under the cursor, same as `e` |

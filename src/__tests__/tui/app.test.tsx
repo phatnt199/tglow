@@ -11,6 +11,7 @@ import { BindingKeys } from '../../common/index.ts';
 // Concrete module, not the core/ barrel -- see src/tui/action-reducer.ts for why.
 import { ApplicationStoreService } from '../../core/application-store.ts';
 import { DatabaseService, type IDialogRow, type IFolderRow, type IMessageRow } from '../../core/cache/index.ts';
+import { MediaKinds } from '../../core/media.ts';
 // Concrete module, not the core/ barrel -- same reasoning as
 // ApplicationStoreService above (src/tui/action-reducer.ts explains why):
 // a value import (mount() below constructs one), off the root barrel's
@@ -247,6 +248,10 @@ const mount = async (opts: {
   // No pictures: the renderer needs two megabytes of WebAssembly, and no test
   // here is about what a photo looks like -- message-view's own tests are.
   const onThumbnail = async (): Promise<Uint8Array | null> => null;
+  const openedMedia: Array<{ peerId: string; messageId: number }> = [];
+  const onOpenMedia = async (request: { peerId: string; messageId: number }): Promise<void> => {
+    openedMedia.push(request);
+  };
   const pinnedChats: string[] = [];
   const onPinChat = async (request: { peerId: string }): Promise<void> => {
     pinnedChats.push(request.peerId);
@@ -296,6 +301,7 @@ const mount = async (opts: {
       onForward={onForward}
       onSendFile={onSendFile}
       onThumbnail={onThumbnail}
+      onOpenMedia={onOpenMedia}
       onQuit={() => { quit.push(true); }}
       onOpenChat={onOpenChat}
       onMarkRead={onMarkRead}
@@ -303,7 +309,7 @@ const mount = async (opts: {
     { width: opts.width ?? TERMINAL_WIDTH, height: opts.height ?? TERMINAL_HEIGHT },
   );
   await renderer.flush();
-  return { renderer, store, sent, composerAtSend, edited, deleted, pinned, pinnedChats, reacted, forwarded, filesSent, olderRequests, loggedOut, opened, marked, quit, database };
+  return { renderer, store, sent, composerAtSend, edited, deleted, pinned, pinnedChats, reacted, forwarded, filesSent, openedMedia, olderRequests, loggedOut, opened, marked, quit, database };
 };
 
 test('starts in NORMAL mode with both panes on screen', async () => {
@@ -3687,4 +3693,48 @@ test(':send with no path says how to use it', async () => {
 
   expect(filesSent).toEqual([]);
   expect(store.getState().statusMessage).toBe('Usage: :send <path>');
+});
+
+// ── opening a picture properly ────────────────────────────────────────────
+
+// A terminal that cannot display an image cannot be made to, so the real
+// pixels live outside it: O hands the file to whatever the desktop opens
+// pictures with.
+test('O opens the picture on the message under the cursor', async () => {
+  const photo: IMessageRow[] = [{
+    peerId: 'u1', id: 5, fromId: 'u1', date: 100, text: '', out: 0, entities: [], replyToMessageId: null,
+    media: { kind: MediaKinds.PHOTO },
+  }];
+  const { renderer, openedMedia } = await mount({ messages: photo });
+
+  await act(async () => { renderer.mockInput.pressKey('O'); });
+  await renderer.flush();
+
+  expect(openedMedia).toEqual([{ peerId: 'u1', messageId: 5 }]);
+});
+
+// A message with nothing on it says so rather than opening a viewer on
+// nothing, which is what a silent no-op would look like from the outside.
+test('O on a message with no picture says there is nothing to open', async () => {
+  const { renderer, store, openedMedia } = await mount();
+
+  await act(async () => { renderer.mockInput.pressKey('O'); });
+  await renderer.flush();
+
+  expect(openedMedia).toEqual([]);
+  expect(store.getState().statusMessage).toBe('Nothing to open on this message');
+});
+
+test(':view reaches the same place the key does', async () => {
+  const photo: IMessageRow[] = [{
+    peerId: 'u1', id: 5, fromId: 'u1', date: 100, text: '', out: 0, entities: [], replyToMessageId: null,
+    media: { kind: MediaKinds.PHOTO },
+  }];
+  const { renderer, openedMedia } = await mount({ messages: photo });
+
+  await typeCommand(renderer, 'view');
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+
+  expect(openedMedia).toEqual([{ peerId: 'u1', messageId: 5 }]);
 });

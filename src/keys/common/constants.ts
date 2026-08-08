@@ -84,6 +84,7 @@ export class ActionTypes {
   /** Pin or unpin the message under the cursor. Performed by App, like send and delete. */
   static readonly PIN_TOGGLE = 'pin.toggle';
   static readonly FORWARD_START = 'forward.start';
+  static readonly MEDIA_OPEN = 'media.open';
 }
 
 const SUPPORTED_MODES: readonly string[] = [

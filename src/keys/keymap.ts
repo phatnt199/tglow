@@ -126,6 +126,13 @@ export class KeymapService {
       context: '*', mode: VimModes.NORMAL, keys: '<S-p>', description: 'Pin or unpin the message',
       action: () => [{ type: ActionTypes.PIN_TOGGLE }],
     },
+    // Open the picture properly. A terminal that cannot display an image
+    // cannot be made to, so this hands the real file to whatever the desktop
+    // uses to open pictures -- which is where the actual pixels are.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: '<S-o>', description: 'Open the picture in a viewer',
+      action: () => [{ type: ActionTypes.MEDIA_OPEN }],
+    },
     // Forward. Opens the same chat picker <C-p> does, aimed at a different
     // outcome -- choosing a chat forwards into it rather than opening it.
     {

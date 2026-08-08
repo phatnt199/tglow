@@ -426,6 +426,7 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
 
     case ActionTypes.CHAT_OPEN:
     case ActionTypes.COMPOSER_SEND:
+    case ActionTypes.MEDIA_OPEN:
     case ActionTypes.PIN_TOGGLE:
     case ActionTypes.APPLICATION_QUIT: {
       return {};

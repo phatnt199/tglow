@@ -67,6 +67,7 @@ const build = (
     subscribeToPresence: (): (() => void) => (): void => {},
     subscribeToReactions: (): (() => void) => (): void => {},
     downloadThumbnail: async (): Promise<Uint8Array | null> => null,
+    downloadMedia: async (): Promise<Uint8Array | null> => null,
     subscribeToTyping: (): (() => void) => (): void => {},
     // Stubs for the rest of IMessageAdapter. They exist so this fake can be
     // typed rather than cast: the previous `as IMessageAdapter` hid the fact

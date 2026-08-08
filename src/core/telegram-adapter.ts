@@ -365,17 +365,34 @@ const MINIMUM_THUMBNAIL_WIDTH = 320;
  * whole debugging session, so this picks a size object and hands that over,
  * which says exactly what it means.
  */
-const resolveThumbnailSize = (opts: { photo: Api.TypePhoto | undefined }): Api.TypePhotoSize | undefined => {
-  const { photo } = opts;
-  if (!photo || photo.className !== 'Photo') {
-    return undefined;
-  }
-  const measured = photo.sizes
+const chooseSize = (opts: { sizes: readonly Api.TypePhotoSize[] }): Api.TypePhotoSize | undefined => {
+  const measured = opts.sizes
     .map(size => ({ size, width: (size as unknown as { w?: number }).w ?? 0 }))
     .filter(entry => entry.width > 0)
     .sort((left, right) => left.width - right.width);
 
   return (measured.find(entry => entry.width >= MINIMUM_THUMBNAIL_WIDTH) ?? measured[measured.length - 1])?.size;
+};
+
+/**
+ * Which size to ask for, for whatever kind of media this is.
+ *
+ * A photo carries its sizes directly. A sticker is a *document* -- often a
+ * Lottie animation or a WebM, neither of which tglow can draw -- but it also
+ * carries `thumbs`, and the still in there is an ordinary WebP that chafa
+ * reads happily. Asking for the document itself got the animation: 57KB of
+ * gzip that decodes to nothing drawable, which is why stickers stayed as
+ * their emoji while photos appeared.
+ */
+const resolveThumbnailSize = (opts: { media: Api.TypeMessageMedia }): Api.TypePhotoSize | undefined => {
+  const { media } = opts;
+  if (media.className === 'MessageMediaPhoto') {
+    return media.photo?.className === 'Photo' ? chooseSize({ sizes: media.photo.sizes }) : undefined;
+  }
+  if (media.className === 'MessageMediaDocument' && media.document?.className === 'Document') {
+    return chooseSize({ sizes: media.document.thumbs ?? [] });
+  }
+  return undefined;
 };
 
 /**
@@ -835,10 +852,26 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
 
     // A size object, not an index: indices differ per photo, and the one
     // negative index that looked like "the largest" returned nothing at all.
-    const thumb = message.media.className === 'MessageMediaPhoto'
-      ? resolveThumbnailSize({ photo: message.media.photo })
-      : undefined;
+    const thumb = resolveThumbnailSize({ media: message.media });
     const downloaded = await opts.client.downloadMedia(message, thumb ? { thumb } : {});
+    if (!downloaded || typeof downloaded === 'string') {
+      return null;
+    }
+    return new Uint8Array(downloaded);
+  },
+
+  /** The original, for opening outside the terminal. Same message lookup as the thumbnail path, without picking a size. */
+  downloadMedia: async (
+    mediaOpts: { peerId: string; messageId: number; peerType: string },
+  ): Promise<Uint8Array | null> => {
+    const [message] = await opts.client.getMessages(
+      toMarkedPeer({ peerId: mediaOpts.peerId, peerType: mediaOpts.peerType }),
+      { ids: [mediaOpts.messageId] },
+    );
+    if (!message?.media) {
+      return null;
+    }
+    const downloaded = await opts.client.downloadMedia(message, {});
     if (!downloaded || typeof downloaded === 'string') {
       return null;
     }

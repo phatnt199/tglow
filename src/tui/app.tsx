@@ -104,6 +104,8 @@ export interface IAppProps {
   onSendFile: (opts: { peerId: string; path: string }) => Promise<void>;
   /** The picture on a message, as bytes, from the cache or from Telegram. */
   onThumbnail: (opts: { peerId: string; messageId: number }) => Promise<Uint8Array | null>;
+  /** Open the message's picture at full size, outside the terminal. */
+  onOpenMedia: (opts: { peerId: string; messageId: number }) => Promise<void>;
   onQuit: () => void;
   onOpenChat: (opts: { peerId: string }) => Promise<void>;
   /**
@@ -419,7 +421,7 @@ const resolveClipboardText = (opts: {
 export const App = (props: IAppProps) => {
   const {
     store, engine, keymapService, keyNormalizer, messageSearchService, timeoutMilliseconds, tokens, resolveSenderName,
-    onSend, onEdit, onDelete, onPin, onPinChat, onReact, onForward, onSendFile, onThumbnail, onLoadOlder, onLogout, onQuit, onOpenChat, onMarkRead,
+    onSend, onEdit, onDelete, onPin, onPinChat, onReact, onForward, onSendFile, onThumbnail, onOpenMedia, onLoadOlder, onLogout, onQuit, onOpenChat, onMarkRead,
   } = props;
 
   // useSyncExternalStore re-subscribes whenever the `subscribe` argument's
@@ -545,6 +547,20 @@ export const App = (props: IAppProps) => {
         // reducer is pure. It asks nothing first -- pinning is undone by the
         // same key that did it, and the one confirmation in this application
         // exists for the one thing that cannot be taken back.
+        case ActionTypes.MEDIA_OPEN: {
+          const target = accumulated.messages[accumulated.messageCursor];
+          if (!target || accumulated.activePeerId === null) {
+            break;
+          }
+          if (!target.media) {
+            store.setState({ patch: { statusMessage: 'Nothing to open on this message' } });
+            break;
+          }
+          void onOpenMedia({ peerId: accumulated.activePeerId, messageId: target.id })
+            .catch(error => { logRejection({ method: 'onOpenMedia', error }); });
+          break;
+        }
+
         case ActionTypes.PIN_TOGGLE: {
           // One key, two things to pin, told apart by which pane has focus --
           // the same way j and k already mean "next chat" or "next message"
@@ -871,6 +887,13 @@ export const App = (props: IAppProps) => {
         }
         void onSendFile({ peerId: state.activePeerId, path: argument })
           .catch(error => { logRejection({ method: 'onSendFile', error }); });
+        return;
+      }
+      case CommandNames.OPEN_MEDIA: {
+        commitResolution({
+          current: state,
+          result: { state: state.engine, actions: [{ type: ActionTypes.MEDIA_OPEN }], status: 'resolved' },
+        });
         return;
       }
       case CommandNames.LOGOUT: {
@@ -1631,10 +1654,12 @@ export const App = (props: IAppProps) => {
   // Re-run on width because the size in cells depends on the pane; the bytes
   // come back off disk, so a resize costs a redraw rather than a download.
   useEffect(() => {
-    // Photos only. A sticker's own thumbnail is a WebM for the animated ones
-    // and tglow cannot draw video, so the sticker keeps showing the emoji it
-    // stands for -- which is the closest thing to seeing it anyway.
-    const drawable = state.messages.filter(message => message.media?.kind === MediaKinds.PHOTO);
+    // Photos and stickers. A sticker's *document* is often an animation tglow
+    // cannot draw, but the still in its `thumbs` is an ordinary image -- so
+    // what gets drawn is one frame of it, which is what a sticker looks like
+    // anywhere it is not moving.
+    const drawable = state.messages.filter(message =>
+      message.media?.kind === MediaKinds.PHOTO || message.media?.kind === MediaKinds.STICKER);
     if (drawable.length === 0 || state.activePeerId === null) {
       return;
     }

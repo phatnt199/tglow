@@ -19,12 +19,12 @@ import type { IMessageAdapter } from './message-service.ts';
  * file that can never be drawn out of the cache, and says so in the log
  * rather than failing silently one layer down.
  */
-const IMAGE_SIGNATURES: readonly { name: string; bytes: readonly number[]; offset: number }[] = [
-  { name: 'JPEG', bytes: [0xff, 0xd8, 0xff], offset: 0 },
-  { name: 'PNG', bytes: [0x89, 0x50, 0x4e, 0x47], offset: 0 },
+const IMAGE_SIGNATURES: readonly { name: string; extension: string; bytes: readonly number[]; offset: number }[] = [
+  { name: 'JPEG', extension: 'jpg', bytes: [0xff, 0xd8, 0xff], offset: 0 },
+  { name: 'PNG', extension: 'png', bytes: [0x89, 0x50, 0x4e, 0x47], offset: 0 },
   // RIFF....WEBP -- the four size bytes between are not part of the signature.
-  { name: 'WebP', bytes: [0x57, 0x45, 0x42, 0x50], offset: 8 },
-  { name: 'GIF', bytes: [0x47, 0x49, 0x46], offset: 0 },
+  { name: 'WebP', extension: 'webp', bytes: [0x57, 0x45, 0x42, 0x50], offset: 8 },
+  { name: 'GIF', extension: 'gif', bytes: [0x47, 0x49, 0x46], offset: 0 },
 ];
 
 const isDrawableImage = (opts: { bytes: Uint8Array }): boolean =>
@@ -122,6 +122,47 @@ export class ThumbnailService {
     } finally {
       this._inFlight.delete(key);
     }
+  };
+
+  /**
+   * The picture at full size, written somewhere a viewer can open it.
+   *
+   * Because a terminal that cannot display images cannot be made to. Alacritty
+   * has no Sixel and no Kitty graphics protocol -- verified against the binary
+   * rather than assumed -- so the drawn version is the best that fits *in* the
+   * window, and this is the way to the real thing: hand the file to whatever
+   * the desktop uses to open pictures.
+   *
+   * Returns the path, or null when there was nothing to write.
+   */
+  materialise = async (opts: { peerId: string; messageId: number }): Promise<string | null> => {
+    const { peerId, messageId } = opts;
+    const peerType = this._database.listPeerKinds().get(peerId)?.type ?? 'user';
+
+    let bytes: Uint8Array | null;
+    try {
+      bytes = await this._adapter.downloadMedia({ peerId, messageId, peerType });
+    } catch (error) {
+      this._logger.for('materialise').error('Could not download %s:%s | Reason: %s', peerId, messageId, error);
+      return null;
+    }
+    if (bytes === null || bytes.length === 0) {
+      return null;
+    }
+
+    // Named by what it is, so the viewer picks the right application: a file
+    // called .bin opens in a text editor, or in nothing at all.
+    const extension = IMAGE_SIGNATURES.find(({ bytes: signature, offset }) =>
+      signature.every((byte, index) => bytes[offset + index] === byte))?.extension ?? 'bin';
+    const path = join(this._configuration.thumbnailDirectory, `${peerId}-${messageId}-full.${extension}`);
+    try {
+      mkdirSync(this._configuration.thumbnailDirectory, { recursive: true, mode: THUMBNAIL_DIRECTORY_MODE });
+      writeFileSync(path, bytes, { mode: THUMBNAIL_FILE_MODE });
+    } catch (error) {
+      this._logger.for('materialise').error('Could not write %s | Reason: %s', path, error);
+      return null;
+    }
+    return path;
   };
 
   private download = async (opts: { peerId: string; messageId: number; key: string }): Promise<Uint8Array | null> => {
