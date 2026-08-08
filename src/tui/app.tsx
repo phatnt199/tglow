@@ -25,6 +25,7 @@ import { writeToClipboard } from '../core/clipboard.ts';
 import { fuzzyMatch } from '../core/fuzzy-match.ts';
 import { ALL_CHATS_FOLDER_ID, resolveFolderMembership } from '../core/folder-service.ts';
 import { readTypingStatus } from '../core/typing-status.ts';
+import { describePresence, PresenceKinds } from '../core/presence.ts';
 import { formatClock } from './clock.ts';
 import { CommandNames, completeCommand, describeUnknown, parseCommand } from './command-line.ts';
 import { resolveReactionKey } from './reaction-picker.ts';
@@ -97,6 +98,8 @@ export interface IAppProps {
   onReact: (opts: { peerId: string; messageId: number; emoji: string }) => Promise<void>;
   /** Copy messages into another chat. */
   onForward: (opts: { fromPeerId: string; toPeerId: string; messageIds: number[] }) => Promise<void>;
+  /** Send a file from disk, with the composer as its caption. */
+  onSendFile: (opts: { peerId: string; path: string }) => Promise<void>;
   onQuit: () => void;
   onOpenChat: (opts: { peerId: string }) => Promise<void>;
   /**
@@ -173,6 +176,8 @@ const FRAME_TOP_ROWS = 1;
 const FRAME_BOTTOM_ROWS = 1;
 /** The vertical rule between the sidebar and the conversation. */
 const FRAME_DIVIDER_COLUMNS = 1;
+/** Telegram counts in seconds; JavaScript counts in milliseconds. */
+const MILLISECONDS_PER_SECOND = 1000;
 
 /**
  * One `<text>` per row, the same one-child-one-row rule the panes follow, so a
@@ -406,7 +411,7 @@ const resolveClipboardText = (opts: {
 export const App = (props: IAppProps) => {
   const {
     store, engine, keymapService, keyNormalizer, messageSearchService, timeoutMilliseconds, tokens, resolveSenderName,
-    onSend, onEdit, onDelete, onPin, onPinChat, onReact, onForward, onLoadOlder, onLogout, onQuit, onOpenChat, onMarkRead,
+    onSend, onEdit, onDelete, onPin, onPinChat, onReact, onForward, onSendFile, onLoadOlder, onLogout, onQuit, onOpenChat, onMarkRead,
   } = props;
 
   // useSyncExternalStore re-subscribes whenever the `subscribe` argument's
@@ -761,7 +766,7 @@ export const App = (props: IAppProps) => {
    * does to state cannot be undone by a stale patch landing after it.
    */
   const runCommand = (opts: { input: string }): void => {
-    const { spec, lineNumber } = parseCommand({ input: opts.input });
+    const { spec, argument, lineNumber } = parseCommand({ input: opts.input });
     const current = store.getState();
     const closed: Partial<IApplicationState> = { overlay: null, commandQuery: '' };
 
@@ -846,6 +851,18 @@ export const App = (props: IAppProps) => {
           void onOpenChat({ peerId: state.activePeerId })
             .catch(error => { logRejection({ method: 'onOpenChat', error }); });
         }
+        return;
+      }
+      case CommandNames.SEND_FILE: {
+        if (state.activePeerId === null) {
+          return;
+        }
+        if (argument === '') {
+          store.setState({ patch: { statusMessage: 'Usage: :send <path>' } });
+          return;
+        }
+        void onSendFile({ peerId: state.activePeerId, path: argument })
+          .catch(error => { logRejection({ method: 'onSendFile', error }); });
         return;
       }
       case CommandNames.LOGOUT: {
@@ -2082,6 +2099,12 @@ export const App = (props: IAppProps) => {
         folder={statusFolder}
         peerKind={formatPeerKind({ kind: state.activePeerId === null ? undefined : state.peerKinds.get(state.activePeerId) })}
         typing={activeTyping?.phrase ?? ''}
+        presence={state.activePeerId === null
+          ? ''
+          : describePresence({
+            presence: state.presenceByPeer.get(state.activePeerId) ?? { kind: PresenceKinds.UNKNOWN, seenAt: null },
+            now: Math.floor(now / MILLISECONDS_PER_SECOND),
+          })}
         messageId={cursorMessage?.id ?? null}
         messageTime={cursorMessage === undefined ? '' : formatClock({ date: cursorMessage.date })}
         messagePinned={cursorMessage?.pinned === 1}

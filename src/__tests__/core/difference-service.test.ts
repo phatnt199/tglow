@@ -64,6 +64,7 @@ const build = (
     // UpdateService.start() calls it, so a stub is the difference between this
     // suite running and throwing on the first build().
     subscribeToReadReceipts: (): (() => void) => (): void => {},
+    subscribeToPresence: (): (() => void) => (): void => {},
     subscribeToTyping: (): (() => void) => (): void => {},
     // Stubs for the rest of IMessageAdapter. They exist so this fake can be
     // typed rather than cast: the previous `as IMessageAdapter` hid the fact
@@ -77,6 +78,7 @@ const build = (
     pinMessage: async (): Promise<void> => {},
   react: async (): Promise<IMessageReaction[]> => [],
   forward: async (): Promise<void> => {},
+  sendFile: async (opts): Promise<IRawMessage> => buildRawMessage({ id: 98, peerId: opts.peerId, text: opts.caption, out: 1 }),
   } satisfies IMessageAdapter;
 
   // A real UpdateService, not a stand-in: "a backfilled message and a live one

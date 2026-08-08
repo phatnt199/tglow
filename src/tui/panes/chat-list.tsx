@@ -1,11 +1,18 @@
 import type { IDialogRow } from '../../core/cache/index.ts';
 import type { IActiveTyping } from '../../core/typing-status.ts';
 import { formatClock } from '../clock.ts';
+import { presenceMark, type IPresence } from '../../core/presence.ts';
 import type { ITokens } from '../theme/index.ts';
 import { padStartToWidth, padToWidth, truncateToWidth } from '../text-width.ts';
 import { resolveVisibleRange } from '../viewport.ts';
 
 export interface IChatListProps {
+  /**
+   * Who is online. A one-column mark beside the name, and only for the
+   * certain case -- see presenceMark, which is where "recently" is
+   * deliberately given no dot.
+   */
+  presenceByPeer?: Map<string, IPresence>;
   dialogs: IDialogRow[];
   cursor: number;
   focused: boolean;
@@ -52,6 +59,8 @@ const ACTIVE_MARKER = '▎';
  * a sidebar this narrow.
  */
 const ROWS_PER_CHAT = 2;
+/** The presence dot beside a name. Always spent, blank when there is nothing to say -- a column that came and went would shift every name as people arrive and leave. */
+const PRESENCE_WIDTH = 1;
 /** `HH:MM`. */
 const TIME_WIDTH = 5;
 
@@ -87,7 +96,7 @@ const formatBadge = (opts: { unreadCount: number }): string => {
 
 export const ChatList = (props: IChatListProps) => {
   const {
-    dialogs, cursor, focused, tokens, width, height, activePeerId, typingByPeer, now = 0,
+    dialogs, cursor, focused, tokens, width, height, activePeerId, typingByPeer, presenceByPeer, now = 0,
     onChatPress, onScroll,
   } = props;
 
@@ -134,9 +143,18 @@ export const ChatList = (props: IChatListProps) => {
         const background = highlighted ? tokens.messageCursor : undefined;
         const marker = dialog.peerId === activePeerId ? ACTIVE_MARKER : ' ';
 
+        // A dot before the name, where every graphical client puts it -- next
+        // to who the person is, not next to when they last spoke. It costs the
+        // name one column, which is cheaper than a column reserved on every
+        // row of a list that is mostly groups and channels with no presence at
+        // all... except that a column that appears and disappears would shift
+        // every name as people come and go, so it is always spent and simply
+        // blank when there is nothing to say.
+        const presence = presenceByPeer?.get(dialog.peerId);
+        const online = presence ? presenceMark({ presence }) : ' ';
         const name = padToWidth({
-          text: truncateToWidth({ text: dialog.title, width: nameWidth }),
-          width: nameWidth,
+          text: truncateToWidth({ text: dialog.title, width: Math.max(0, nameWidth - PRESENCE_WIDTH) }),
+          width: Math.max(0, nameWidth - PRESENCE_WIDTH),
         });
         const time = padStartToWidth({
           text: formatTime({ at: dialog.lastMessageAt }),
@@ -172,6 +190,7 @@ export const ChatList = (props: IChatListProps) => {
           >
             <text height={1} flexShrink={0} bg={background}>
               <span fg={tokens.chatActive}>{marker}</span>
+              <span fg={online === ' ' ? tokens.dim : tokens.modeNormal}>{online}</span>
               <span fg={tokens.foreground}>{`${name} `}</span>
               <span fg={tokens.dim}>{time}</span>
             </text>

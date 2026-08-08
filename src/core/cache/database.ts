@@ -6,6 +6,7 @@ import { drizzle } from 'drizzle-orm/bun-sqlite';
 import type { ITelegramEntity } from '../common/index.ts';
 import { describeMedia, type IMessageMedia, type TMediaKind } from '../media.ts';
 import type { IMessageReaction } from '../reactions.ts';
+import { PresenceKinds, type IPresence, type TPresenceKind } from '../presence.ts';
 import { runMigrations } from './migrate.ts';
 import { dialogFilters, dialogs, messages, peers, syncState } from './schema.ts';
 
@@ -15,6 +16,8 @@ export interface IPeerInput {
   accessHash: string | null;
   title: string;
   username: string | null;
+  /** Omitted leaves whatever is stored alone -- most callers upsert a peer without knowing anything about its presence. */
+  presence?: IPresence;
 }
 
 export interface IDialogInput {
@@ -228,6 +231,10 @@ export class DatabaseService {
         accessHash: peer.accessHash,
         title: peer.title,
         username: peer.username,
+        // Only when the caller actually knows: most upserts are a chat-list
+        // sync that carries no status, and writing null would erase what a
+        // live update had just recorded.
+        ...(peer.presence ? { status: peer.presence.kind, statusSeenAt: peer.presence.seenAt } : {}),
         updatedAt,
       })
       .onConflictDoUpdate({
@@ -237,6 +244,7 @@ export class DatabaseService {
           accessHash: peer.accessHash,
           title: peer.title,
           username: peer.username,
+          ...(peer.presence ? { status: peer.presence.kind, statusSeenAt: peer.presence.seenAt } : {}),
           updatedAt,
         },
       })
@@ -276,6 +284,27 @@ export class DatabaseService {
    * DialogService.sync()'s first fetch -- matches zero rows and is a no-op,
    * not an error.
    */
+  /** A direct UPDATE, and a no-op for a peer that is not cached: a status for someone tglow has never seen is nothing to remember. */
+  setPeerPresence = (opts: { peerId: string; presence: IPresence }): void => {
+    this.require('setPeerPresence')
+      .update(peers)
+      .set({ status: opts.presence.kind, statusSeenAt: opts.presence.seenAt })
+      .where(eq(peers.id, opts.peerId))
+      .run();
+  };
+
+  /** Every cached peer's presence, for the store. Peers with none read back as UNKNOWN rather than being absent. */
+  listPresence = (): Map<string, IPresence> => {
+    const rows = this.require('listPresence')
+      .select({ id: peers.id, status: peers.status, statusSeenAt: peers.statusSeenAt })
+      .from(peers)
+      .all();
+    return new Map(rows.map(row => [
+      row.id,
+      { kind: (row.status ?? PresenceKinds.UNKNOWN) as TPresenceKind, seenAt: row.statusSeenAt },
+    ]));
+  };
+
   /** A direct UPDATE, the same shape clearUnreadCount uses -- and a no-op for a chat the dialog list has never carried. */
   setDialogPinned = (opts: { peerId: string; pinned: number }): void => {
     this.require('setDialogPinned')

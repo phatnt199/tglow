@@ -2,6 +2,7 @@ import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
 
 import { INITIAL_ENGINE_STATE, type IEngineState, type TOverlay } from '../keys/common/index.ts';
 import type { IDialogRow, IFolderRow, IMessageRow } from './cache/index.ts';
+import type { IPresence } from './presence.ts';
 import type { IActiveTyping } from './typing-status.ts';
 
 export type TConnectionState = 'offline' | 'connecting' | 'connected';
@@ -73,6 +74,14 @@ export interface IApplicationState {
    * quietly become false.
    */
   typingByPeer: Map<string, IActiveTyping>;
+  /**
+   * Who is online, and when each was last seen.
+   *
+   * Alongside the dialogs rather than on them: presence changes far more often
+   * than a chat's own row does, and a live status update should not have to
+   * rewrite the chat list to be seen.
+   */
+  presenceByPeer: Map<string, IPresence>;
   messages: IMessageRow[];
   /**
    * True while an older page is in flight.
@@ -225,6 +234,7 @@ const INITIAL_STATE: IApplicationState = {
   contextMenu: null,
   peerKinds: new Map(),
   typingByPeer: new Map(),
+  presenceByPeer: new Map(),
   messages: [],
   loadingOlder: false,
   reachedOldest: false,

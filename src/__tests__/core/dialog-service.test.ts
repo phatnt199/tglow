@@ -2,11 +2,13 @@ import { test, expect } from 'bun:test';
 
 import { ApplicationStoreService } from '../../core/application-store.ts';
 import { DatabaseService } from '../../core/cache/index.ts';
+import { PresenceKinds } from '../../core/presence.ts';
 import { DialogService, type IDialogAdapter, type IRawDialog } from '../../core/dialog-service.ts';
 
 const buildRawDialog = (overrides: Partial<IRawDialog> = {}): IRawDialog => ({
   peerId: 'u1', type: 'user', accessHash: 'h', title: 'Alice', username: 'alice',
-  pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 1, readOutboxMaxId: 0, ...overrides,
+  pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 1, readOutboxMaxId: 0,
+  presence: { kind: PresenceKinds.UNKNOWN, seenAt: null }, ...overrides,
 });
 
 /** Fills in whatever the test does not care about, so a method added to the adapter needs no edit here. */

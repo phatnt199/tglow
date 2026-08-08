@@ -240,6 +240,10 @@ const mount = async (opts: {
   const onForward = async (request: { fromPeerId: string; toPeerId: string; messageIds: number[] }): Promise<void> => {
     forwarded.push(request);
   };
+  const filesSent: Array<{ peerId: string; path: string }> = [];
+  const onSendFile = async (request: { peerId: string; path: string }): Promise<void> => {
+    filesSent.push(request);
+  };
   const pinnedChats: string[] = [];
   const onPinChat = async (request: { peerId: string }): Promise<void> => {
     pinnedChats.push(request.peerId);
@@ -287,6 +291,7 @@ const mount = async (opts: {
       onPinChat={onPinChat}
       onReact={onReact}
       onForward={onForward}
+      onSendFile={onSendFile}
       onQuit={() => { quit.push(true); }}
       onOpenChat={onOpenChat}
       onMarkRead={onMarkRead}
@@ -294,7 +299,7 @@ const mount = async (opts: {
     { width: opts.width ?? TERMINAL_WIDTH, height: opts.height ?? TERMINAL_HEIGHT },
   );
   await renderer.flush();
-  return { renderer, store, sent, composerAtSend, edited, deleted, pinned, pinnedChats, reacted, forwarded, olderRequests, loggedOut, opened, marked, quit, database };
+  return { renderer, store, sent, composerAtSend, edited, deleted, pinned, pinnedChats, reacted, forwarded, filesSent, olderRequests, loggedOut, opened, marked, quit, database };
 };
 
 test('starts in NORMAL mode with both panes on screen', async () => {
@@ -3643,4 +3648,39 @@ test('the caret accounts for the width of what is typed, not its length', async 
   await renderer.flush();
 
   expect(placed[placed.length - 1]!.x).toBe(start + 2);
+});
+
+// ── sending a file ────────────────────────────────────────────────────────
+
+test(':send hands the path over, and the composer becomes the caption', async () => {
+  const { renderer, filesSent } = await mount();
+
+  await typeCommand(renderer, 'send ~/photo.jpg');
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+
+  expect(filesSent).toEqual([{ peerId: 'u1', path: '~/photo.jpg' }]);
+});
+
+// A path with spaces in it is one path, not a command and three arguments.
+test(':send keeps a path that has spaces in it whole', async () => {
+  const { renderer, filesSent } = await mount();
+
+  await typeCommand(renderer, 'send /tmp/my holiday.jpg');
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+
+  expect(filesSent).toEqual([{ peerId: 'u1', path: '/tmp/my holiday.jpg' }]);
+});
+
+// Bare `:send` is a half-typed command, not a request to send nothing.
+test(':send with no path says how to use it', async () => {
+  const { renderer, store, filesSent } = await mount();
+
+  await typeCommand(renderer, 'send');
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+
+  expect(filesSent).toEqual([]);
+  expect(store.getState().statusMessage).toBe('Usage: :send <path>');
 });

@@ -4,6 +4,7 @@ import { ApplicationLogger, toError, type ILogger } from '@venizia/ignis-helpers
 import { BindingKeys } from '../common/index.ts';
 import type { ApplicationStoreService } from './application-store.ts';
 import type { DatabaseService, IDialogRow } from './cache/index.ts';
+import type { IPresence } from './presence.ts';
 
 export interface IRawDialog {
   peerId: string;
@@ -17,6 +18,8 @@ export interface IRawDialog {
   topMessageId: number;
   /** See IDialogInput.readOutboxMaxId (src/core/cache/database.ts). */
   readOutboxMaxId: number;
+  /** Whether the other person is online, and when they were last seen. UNKNOWN for a group or a channel, which have no such thing. */
+  presence: IPresence;
 }
 
 export interface IDialogAdapter {
@@ -85,6 +88,7 @@ export class DialogService {
           accessHash: dialog.accessHash,
           title: dialog.title,
           username: dialog.username,
+          presence: dialog.presence,
         });
         this._database.upsertDialog({
           peerId: dialog.peerId,
@@ -96,7 +100,13 @@ export class DialogService {
         });
       }
 
-      this._store.setState({ patch: { dialogs: this._database.listDialogs(), statusMessage: null } });
+      this._store.setState({
+        patch: {
+          dialogs: this._database.listDialogs(),
+          presenceByPeer: this._database.listPresence(),
+          statusMessage: null,
+        },
+      });
     } catch (error) {
       this._logger.for(this.sync.name).error('Could not refresh chats | Reason: %s', error);
 

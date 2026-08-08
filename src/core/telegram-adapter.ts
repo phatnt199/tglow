@@ -10,6 +10,7 @@ import type { IChannelDifferenceResult, IDifferenceAdapter, IDifferenceResult } 
 import { ReadDirections, type ILiveMessage, type IMessageAdapter, type IRawMessage, type IReadReceipt } from './message-service.ts';
 import type { IFolderAdapter, IRawFolder } from './folder-service.ts';
 import { MediaKinds, type IMessageMedia } from './media.ts';
+import { PresenceKinds, type IPresence } from './presence.ts';
 import { CUSTOM_REACTION_PLACEHOLDER, type IMessageReaction } from './reactions.ts';
 import { resolveTypingPhrase, type ITypingStatus } from './typing-status.ts';
 import type { IUpdateState } from './update-state.ts';
@@ -342,6 +343,46 @@ const toChannelDifferenceResult = (
 /** How many messages one channel difference call asks for. Telegram's own cap for a non-bot account. */
 const CHANNEL_DIFFERENCE_LIMIT = 100;
 
+/** Telegram counts in seconds; JavaScript counts in milliseconds. */
+const MILLISECONDS_PER_SECOND = 1000;
+
+/**
+ * A user's status, as tglow stores it.
+ *
+ * `UserStatusOnline.expires` is when the online state runs out, not when it
+ * began -- so an "online" whose expiry is already past is really offline, and
+ * saying otherwise would leave a green dot beside someone who left. Read from
+ * teleproto's own UserStatusOnline rather than assumed to be a "since".
+ */
+const toPresence = (opts: { status: Api.TypeUserStatus | undefined; now: number }): IPresence => {
+  const { status, now } = opts;
+  switch (status?.className) {
+    case 'UserStatusOnline': {
+      return status.expires > now
+        ? { kind: PresenceKinds.ONLINE, seenAt: null }
+        : { kind: PresenceKinds.OFFLINE, seenAt: status.expires };
+    }
+    case 'UserStatusOffline': {
+      return { kind: PresenceKinds.OFFLINE, seenAt: status.wasOnline };
+    }
+    case 'UserStatusRecently': {
+      return { kind: PresenceKinds.RECENTLY, seenAt: null };
+    }
+    case 'UserStatusLastWeek': {
+      return { kind: PresenceKinds.LAST_WEEK, seenAt: null };
+    }
+    case 'UserStatusLastMonth': {
+      return { kind: PresenceKinds.LAST_MONTH, seenAt: null };
+    }
+    case 'UserStatusEmpty': {
+      return { kind: PresenceKinds.LONG_AGO, seenAt: null };
+    }
+    default: {
+      return { kind: PresenceKinds.UNKNOWN, seenAt: null };
+    }
+  }
+};
+
 const toUpdateState = (opts: { state: Api.updates.State }): IUpdateState => {
   const { state } = opts;
   return { pts: state.pts, qts: state.qts, date: state.date, seq: state.seq };
@@ -391,9 +432,14 @@ export const buildDialogAdapter = (opts: { client: TelegramClient }): IDialogAda
 
   fetchDialogs: async (): Promise<IRawDialog[]> => {
     const dialogs = await opts.client.getDialogs({ limit: DIALOG_FETCH_LIMIT });
+    // One clock for the whole batch: an "online" that expires mid-loop would
+    // otherwise read differently for two chats fetched in the same call.
+    const now = Math.floor(Date.now() / MILLISECONDS_PER_SECOND);
 
     return dialogs.map(dialog => {
-      const entity = dialog.entity as { id: unknown; accessHash?: unknown; className: string };
+      const entity = dialog.entity as {
+        id: unknown; accessHash?: unknown; className: string; status?: Api.TypeUserStatus;
+      };
       return {
         peerId: String(entity.id),
         type: resolvePeerType({ className: entity.className }),
@@ -411,6 +457,7 @@ export const buildDialogAdapter = (opts: { client: TelegramClient }): IDialogAda
         // which has no such field, versus node_modules/telegram/tl/api.d.ts's
         // `class Dialog`, which declares `readOutboxMaxId: int` at line 2455).
         readOutboxMaxId: dialog.dialog.readOutboxMaxId ?? 0,
+        presence: toPresence({ status: entity.status, now }),
       };
     });
   },
@@ -482,6 +529,27 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
     const sent = await opts.client.sendMessage(sendOpts.peerId, {
       message: sendOpts.text,
       replyTo: sendOpts.replyToMessageId,
+    });
+    return toRawMessage({ message: sent });
+  },
+
+  /**
+   * A file from disk. GramJS decides photo-or-document from the extension
+   * unless forceDocument is set, which is why a .jpg arrives as a picture and
+   * a .pdf as an attachment -- read from
+   * node_modules/teleproto/client/uploads.d.ts (SendFileInterface).
+   *
+   * An empty caption is passed as undefined rather than '': GramJS sends the
+   * empty string as a caption, which Telegram then stores, and a photo with a
+   * zero-length caption is not the same thing as a photo with none.
+   */
+  sendFile: async (
+    fileOpts: { peerId: string; path: string; caption: string; replyToMessageId?: number },
+  ): Promise<IRawMessage> => {
+    const sent = await opts.client.sendFile(fileOpts.peerId, {
+      file: fileOpts.path,
+      caption: fileOpts.caption === '' ? undefined : fileOpts.caption,
+      replyTo: fileOpts.replyToMessageId,
     });
     return toRawMessage({ message: sent });
   },
@@ -662,6 +730,37 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
   //
   // The last two carry the chat and the actor separately, which is what lets a
   // group say *who* is typing rather than just that someone is.
+  /**
+   * Online-state changes, which Telegram pushes unprompted for anyone in the
+   * chat list.
+   *
+   * `now` is read per update rather than once: these arrive minutes apart, and
+   * an UserStatusOnline whose expiry has already passed by the time it lands
+   * is genuinely someone who has left.
+   */
+  subscribeToPresence: (
+    subscribeOpts: { onPresence: (change: { peerId: string; presence: IPresence }) => void },
+  ): (() => void) => {
+    const eventBuilder = new Raw({});
+    const handleUpdate = (update: Api.TypeUpdate): void => {
+      if (!(update instanceof Api.UpdateUserStatus)) {
+        return;
+      }
+      subscribeOpts.onPresence({
+        peerId: String(update.userId),
+        presence: toPresence({
+          status: update.status,
+          now: Math.floor(Date.now() / MILLISECONDS_PER_SECOND),
+        }),
+      });
+    };
+
+    opts.client.addEventHandler(handleUpdate, eventBuilder);
+    return (): void => {
+      opts.client.removeEventHandler(handleUpdate, eventBuilder);
+    };
+  },
+
   subscribeToTyping: (subscribeOpts: { onTyping: (status: ITypingStatus) => void }): (() => void) => {
     const eventBuilder = new Raw({});
 

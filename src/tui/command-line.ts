@@ -20,6 +20,7 @@ export class CommandNames {
   static readonly RELOAD = 'reload';
   static readonly GOTO = 'goto';
   static readonly LOGOUT = 'logout';
+  static readonly SEND_FILE = 'send-file';
 }
 
 export type TCommandName = (typeof CommandNames)[Exclude<keyof typeof CommandNames, 'prototype'>];
@@ -44,6 +45,11 @@ export const COMMANDS: readonly ICommandSpec[] = [
   { name: CommandNames.PIN, spellings: ['pin'], description: 'Pin the message under the cursor' },
   { name: CommandNames.UNPIN, spellings: ['unpin'], description: 'Unpin the message under the cursor' },
   { name: CommandNames.RELOAD, spellings: ['reload', 'e'], description: 'Reload the open chat from Telegram' },
+  {
+    name: CommandNames.SEND_FILE,
+    spellings: ['send', 'upload'],
+    description: 'Send a file: :send ~/photo.jpg (the composer becomes its caption)',
+  },
   {
     name: CommandNames.LOGOUT,
     spellings: ['logout'],

@@ -8,6 +8,7 @@ import { ReadDirections, type ILiveMessage, type IMessageAdapter, type IRawMessa
 import type { ITypingStatus } from '../../core/typing-status.ts';
 import { buildMessageAdapter } from '../../core/telegram-adapter.ts';
 import type { IMessageReaction } from '../../core/reactions.ts';
+import type { IPresence } from '../../core/presence.ts';
 import { MessageOrigins, UpdateService } from '../../core/update-service.ts';
 
 const buildRawMessage = (overrides: Partial<IRawMessage> = {}): IRawMessage => ({
@@ -24,11 +25,13 @@ const buildAdapter = (): {
   emit: (message: IRawMessage) => void;
   emitLive: (live: ILiveMessage) => void;
   emitReadReceipt: (receipt: IReadReceipt) => void;
+  emitPresence: (change: { peerId: string; presence: IPresence }) => void;
   isSubscribed: () => boolean;
 } => {
   let onMessage: ((live: ILiveMessage) => void) | null = null;
   let onReadReceipt: ((receipt: IReadReceipt) => void) | null = null;
   let onTyping: ((status: ITypingStatus) => void) | null = null;
+  let onPresence: ((change: { peerId: string; presence: IPresence }) => void) | null = null;
   const adapter: IMessageAdapter = {
     fetchHistory: async () => [],
     send: async opts => buildRawMessage({ peerId: opts.peerId, text: opts.text }),
@@ -43,6 +46,7 @@ const buildAdapter = (): {
     pinMessage: async (): Promise<void> => {},
   react: async (): Promise<IMessageReaction[]> => [],
   forward: async (): Promise<void> => {},
+  sendFile: async (opts): Promise<IRawMessage> => buildRawMessage({ id: 98, peerId: opts.peerId, text: opts.caption, out: 1 }),
     subscribeToNewMessages: subscribeOpts => {
       onMessage = subscribeOpts.onMessage;
       return (): void => {
@@ -61,6 +65,12 @@ const buildAdapter = (): {
         onTyping = null;
       };
     },
+    subscribeToPresence: subscribeOpts => {
+      onPresence = subscribeOpts.onPresence;
+      return (): void => {
+        onPresence = null;
+      };
+    },
   };
   return {
     // The common case: a message with no pts worth recording, which is what
@@ -68,6 +78,7 @@ const buildAdapter = (): {
     emit: (message: IRawMessage): void => onMessage?.({ message, pts: null, channelPts: null }),
     emitLive: (live: ILiveMessage): void => onMessage?.(live),
     emitReadReceipt: (receipt: IReadReceipt): void => onReadReceipt?.(receipt),
+    emitPresence: (change: { peerId: string; presence: IPresence }): void => onPresence?.(change),
     // Both subscriptions, so a test can tell that stop() released each of them
     // rather than only the one start() happened to return last.
     isSubscribed: (): boolean => onMessage !== null || onReadReceipt !== null,

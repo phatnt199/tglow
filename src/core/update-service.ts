@@ -5,6 +5,7 @@ import { BindingKeys } from '../common/index.ts';
 import type { ApplicationStoreService, IApplicationState } from './application-store.ts';
 import type { DatabaseService, IMessageRow } from './cache/index.ts';
 import { HISTORY_PAGE_SIZE, ReadDirections, type ILiveMessage, type IMessageAdapter, type IRawMessage, type IReadReceipt } from './message-service.ts';
+import type { IPresence } from './presence.ts';
 import { TYPING_STATUS_TTL_MS, type ITypingStatus } from './typing-status.ts';
 import { advanceChannelPts, advanceUpdateState } from './update-state.ts';
 
@@ -307,14 +308,39 @@ export class UpdateService {
     }
   };
 
+  /**
+   * Someone's online state changed.
+   *
+   * Cached as well as published: presence is the one thing a restart should
+   * not forget entirely -- "last seen 2h ago" stays true across a restart,
+   * where showing nothing would read as "we have never heard of them".
+   *
+   * No expiry timer, unlike typing. An online state is replaced by the next
+   * update rather than going stale on its own, and "last seen 3m ago" simply
+   * becomes "last seen 4m ago" as the clock moves -- the render computes the
+   * difference, so it ages correctly with no timer at all.
+   */
+  private presence = (change: { peerId: string; presence: IPresence }): void => {
+    try {
+      this._database.setPeerPresence(change);
+      const next = new Map(this._store.getState().presenceByPeer);
+      next.set(change.peerId, change.presence);
+      this._store.setState({ patch: { presenceByPeer: next } });
+    } catch (error) {
+      this._logger.for('presence').error('Could not record a presence change | Reason: %s', error);
+    }
+  };
+
   start = (): (() => void) => {
     const stopMessages = this._adapter.subscribeToNewMessages({ onMessage: this.receive });
     const stopReceipts = this._adapter.subscribeToReadReceipts({ onReadReceipt: this.readReceipt });
     const stopTyping = this._adapter.subscribeToTyping({ onTyping: this.typing });
+    const stopPresence = this._adapter.subscribeToPresence({ onPresence: this.presence });
     return (): void => {
       stopMessages();
       stopReceipts();
       stopTyping();
+      stopPresence();
       for (const timer of this._typingTimers.values()) {
         clearTimeout(timer);
       }

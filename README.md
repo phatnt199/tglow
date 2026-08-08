@@ -213,6 +213,11 @@ Reactions are tallied under the message: `👍 3  ❤️ 1  [😂] 2`. The brack
 your own, in brackets rather than colour so it survives a terminal without
 colour and survives being copied out of one.
 
+A dot beside a name in the chat list means that person is online, and the
+status line says when they were last seen. Telegram is deliberately vague for
+anyone who hides their exact time — "recently", "within a week" — and tglow
+does not sharpen it into a time it does not have.
+
 Emoji are typed like any other character. Anything built from more than one
 code point — a skin tone, a flag, a family, `❤️` — used to be dropped silently
 on the way to the composer, as was decomposed Vietnamese from an input method
@@ -247,6 +252,7 @@ half-typed word could still become.
 | `:read` | mark the open chat read |
 | `:pin` / `:unpin` | pin or unpin the message under the cursor |
 | `:e` `:reload` | reload the open chat from Telegram |
+| `:send <path>` `:upload` | send a file — the composer becomes its caption, and `~` works |
 | `:logout` | sign out on Telegram, erase the local session and cache, and quit — asks `y`/`n` first |
 
 Everything here is also a key, or is something no key should be: `:q` is

@@ -1,11 +1,16 @@
 import { inject } from '@venizia/ignis-inversion';
 import { ApplicationLogger, toError, type ILogger } from '@venizia/ignis-helpers';
 
+import { statSync, type Stats } from 'node:fs';
+import { homedir } from 'node:os';
+import { basename, join } from 'node:path';
+
 import { BindingKeys } from '../common/index.ts';
 import type { ApplicationStoreService, IApplicationState } from './application-store.ts';
 import type { DatabaseService, IMessageRow } from './cache/index.ts';
 import type { ITelegramEntity } from './common/index.ts';
 import type { IMessageMedia } from './media.ts';
+import type { IPresence } from './presence.ts';
 import type { IMessageReaction } from './reactions.ts';
 import type { ITypingStatus } from './typing-status.ts';
 
@@ -30,6 +35,18 @@ const REPUBLISH_LIMIT = HISTORY_PAGE_SIZE;
 // resting on the newest message would otherwise call markRead on every
 // keystroke and earn a self-inflicted FLOOD_WAIT.
 const MARK_READ_DEBOUNCE_MILLISECONDS = 2000;
+
+/**
+ * `~` at the start of a path, expanded.
+ *
+ * The shell does this before a command ever sees it, so a path typed into
+ * tglow's own command line reaches here unexpanded and would otherwise be
+ * looked up as a directory literally named "~".
+ */
+const expandHome = (opts: { path: string }): string =>
+  opts.path.startsWith('~/') || opts.path === '~'
+    ? join(homedir(), opts.path.slice(1))
+    : opts.path;
 
 export interface IRawMessage {
   id: number;
@@ -114,6 +131,12 @@ export interface IMessageAdapter {
    */
   fetchHistory(opts: { peerId: string; limit: number; beforeId?: number }): Promise<IRawMessage[]>;
   send(opts: { peerId: string; text: string; replyToMessageId?: number }): Promise<IRawMessage>;
+  /**
+   * Send a file from disk. Telegram decides photo-or-document from the
+   * extension, which is what every client does and what makes a .jpg arrive
+   * as a picture rather than an attachment.
+   */
+  sendFile(opts: { peerId: string; path: string; caption: string; replyToMessageId?: number }): Promise<IRawMessage>;
   edit(opts: { peerId: string; messageId: number; text: string }): Promise<IRawMessage>;
   delete(opts: { peerId: string; messageIds: number[]; forEveryone: boolean }): Promise<void>;
   markRead(opts: { peerId: string; maxId: number }): Promise<void>;
@@ -129,6 +152,8 @@ export interface IMessageAdapter {
   subscribeToNewMessages(opts: { onMessage: (live: ILiveMessage) => void }): () => void;
   subscribeToReadReceipts(opts: { onReadReceipt: (receipt: IReadReceipt) => void }): () => void;
   subscribeToTyping(opts: { onTyping: (status: ITypingStatus) => void }): () => void;
+  /** Someone's online state changed. Telegram sends these unprompted for anyone in the chat list. */
+  subscribeToPresence(opts: { onPresence: (change: { peerId: string; presence: IPresence }) => void }): () => void;
 }
 
 export class MessageService {
@@ -424,6 +449,75 @@ export class MessageService {
     } catch (error) {
       this._logger.for(this.forward.name).error('Forward failed | Reason: %s', error);
       this._store.setState({ patch: { statusMessage: `Forward failed: ${toError(error).message}` } });
+    }
+  };
+
+  /**
+   * Send a file, with whatever is in the composer as its caption.
+   *
+   * The file is checked here rather than left to Telegram: a path that does
+   * not exist, or is a directory, comes back from the server as a generic
+   * upload failure minutes later, where the local check is instant and says
+   * which path it could not read.
+   *
+   * The composer is cleared on success like an ordinary send, and kept on
+   * failure for the same reason -- losing what someone typed is the worst
+   * outcome, and a caption is typed.
+   */
+  sendFile = async (opts: { peerId: string; path: string }): Promise<void> => {
+    const { peerId, path } = opts;
+    if (path.trim() === '') {
+      return;
+    }
+
+    const resolved = expandHome({ path: path.trim() });
+    let readable: Stats;
+    try {
+      readable = statSync(resolved);
+    } catch {
+      this._store.setState({ patch: { statusMessage: `No such file: ${resolved}` } });
+      return;
+    }
+    if (!readable.isFile()) {
+      this._store.setState({ patch: { statusMessage: `Not a file: ${resolved}` } });
+      return;
+    }
+
+    const { composerText, replyToMessageId } = this._store.getState();
+    this._store.setState({ patch: { statusMessage: `Sending ${basename(resolved)}…` } });
+
+    let sent: IRawMessage;
+    try {
+      sent = await this._adapter.sendFile({
+        peerId,
+        path: resolved,
+        caption: composerText,
+        replyToMessageId: replyToMessageId ?? undefined,
+      });
+    } catch (error) {
+      this._logger.for(this.sendFile.name).error('Send failed | Reason: %s', error);
+      this._store.setState({ patch: { statusMessage: `Send failed: ${toError(error).message}` } });
+      return;
+    }
+
+    const stillUnchanged = this._store.getState().composerText === composerText;
+    try {
+      this._database.insertMessages({ messages: this.toCacheRows({ messages: [sent] }) });
+      const patch: Partial<IApplicationState> = {
+        messages: this.readWindow({ peerId, extra: 1 }),
+        activePeerId: peerId,
+        statusMessage: null,
+      };
+      if (stillUnchanged) {
+        patch.composerText = '';
+        patch.replyToMessageId = null;
+      }
+      this._store.setState({ patch });
+    } catch (error) {
+      this._logger.for(this.sendFile.name).error('Sent but could not cache | Reason: %s', error);
+      this._store.setState({
+        patch: { statusMessage: `Sent, but could not update the local cache: ${toError(error).message}` },
+      });
     }
   };
 

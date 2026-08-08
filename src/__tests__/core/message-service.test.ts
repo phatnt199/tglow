@@ -3,6 +3,7 @@ import { test, expect } from 'bun:test';
 import { ApplicationStoreService } from '../../core/application-store.ts';
 import { DatabaseService } from '../../core/cache/index.ts';
 import { HISTORY_PAGE_SIZE, MessageService, type IMessageAdapter, type IRawMessage } from '../../core/message-service.ts';
+import { MediaKinds } from '../../core/media.ts';
 import type { IMessageReaction } from '../../core/reactions.ts';
 import { MessageOrigins, UpdateService } from '../../core/update-service.ts';
 
@@ -27,11 +28,13 @@ const buildAdapter = (overrides: Partial<IMessageAdapter> = {}): IMessageAdapter
   pinMessage: async (): Promise<void> => {},
   react: async (): Promise<IMessageReaction[]> => [],
   forward: async (): Promise<void> => {},
+  sendFile: async (opts): Promise<IRawMessage> => buildRawMessage({ id: 98, peerId: opts.peerId, text: opts.caption, out: 1 }),
   // MessageService never calls this -- UpdateService (src/__tests__/core/update-service.test.ts)
   // is what exercises it -- but IMessageAdapter requires it, so a stub keeps this fake whole.
   subscribeToNewMessages: () => (): void => {},
   subscribeToReadReceipts: () => (): void => {},
   subscribeToTyping: () => (): void => {},
+  subscribeToPresence: () => (): void => {},
   ...overrides,
 });
 
@@ -871,5 +874,59 @@ test('a page that lands after the chat changed is dropped', async () => {
 
   expect(store.getState().activePeerId).toBe('u2');
   expect(store.getState().messages).toEqual([]);
+  database.close();
+});
+
+// ── sending a file ────────────────────────────────────────────────────────
+
+// Checked here rather than left to Telegram: a path that does not exist comes
+// back from the server as a generic upload failure minutes later, where the
+// local check is instant and names the path it could not read.
+test('a path that is not a file is refused before any upload', async () => {
+  let attempts = 0;
+  const { service, store, database } = buildService(buildAdapter({
+    sendFile: async opts => { attempts += 1; return buildRawMessage({ id: 98, peerId: opts.peerId }); },
+  }));
+
+  await service.sendFile({ peerId: 'u1', path: '/definitely/not/here.jpg' });
+  expect(attempts).toBe(0);
+  expect(store.getState().statusMessage).toContain('No such file');
+
+  await service.sendFile({ peerId: 'u1', path: '/tmp' });
+  expect(attempts).toBe(0);
+  expect(store.getState().statusMessage).toContain('Not a file');
+  database.close();
+});
+
+// A caption is typed, and losing what someone typed is the worst outcome --
+// the same rule an ordinary send follows.
+test('a failed file send keeps the caption', async () => {
+  const { service, store, database } = buildService(buildAdapter({
+    sendFile: async () => { throw new Error('FILE_PARTS_INVALID'); },
+  }));
+  store.setState({ patch: { composerText: 'ăn trưa nha' } });
+
+  await service.sendFile({ peerId: 'u1', path: import.meta.path });
+
+  expect(store.getState().composerText).toBe('ăn trưa nha');
+  expect(store.getState().statusMessage).toContain('FILE_PARTS_INVALID');
+  database.close();
+});
+
+test('a sent file clears the composer and lands in the view', async () => {
+  const { service, store, database } = buildService(buildAdapter({
+    sendFile: async opts => buildRawMessage({
+      id: 98, peerId: opts.peerId, text: opts.caption, out: 1, date: 999,
+      media: { kind: MediaKinds.PHOTO },
+    }),
+  }));
+  store.setState({ patch: { activePeerId: 'u1', composerText: 'ăn trưa nha' } });
+
+  await service.sendFile({ peerId: 'u1', path: import.meta.path });
+
+  const shown = store.getState().messages;
+  expect(shown[shown.length - 1]!.media?.kind).toBe(MediaKinds.PHOTO);
+  expect(shown[shown.length - 1]!.text).toBe('ăn trưa nha');
+  expect(store.getState().composerText).toBe('');
   database.close();
 });

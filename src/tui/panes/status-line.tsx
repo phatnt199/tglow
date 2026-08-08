@@ -51,6 +51,8 @@ export interface IStatusLineProps {
   peerKind?: string;
   /** What the other side is doing, already phrased ('typing…'). */
   typing?: string;
+  /** Whether they are online, already phrased ('last seen 3h ago'). */
+  presence?: string;
   /** The message under the cursor, for its id, its clock and its flag. */
   messageId?: number | null;
   messageTime?: string;
@@ -177,6 +179,14 @@ const buildContext = (props: IStatusLineProps): IStatusSegment[] => {
 
   return [
     { text: peerKind ?? '', tone: StatusTones.DIM, priority: 25 },
+    // Above the chat's kind and below what is unread: knowing someone is
+    // there changes whether you wait for a reply, which is worth more than
+    // knowing the chat is a group and less than knowing they have not read you.
+    {
+      text: props.presence ?? '',
+      tone: props.presence === 'online' ? StatusTones.ACCENT : StatusTones.DIM,
+      priority: 45,
+    },
     { text: unreadCount > 0 ? `${unreadCount} unread` : '', tone: StatusTones.ACCENT, priority: 55 },
     { text: typing ?? '', tone: StatusTones.ACCENT, priority: 70 },
     { text: unreadChats !== undefined && unreadChats > 0 ? `${unreadChats} chats waiting` : '', tone: StatusTones.DIM, priority: 15 },
