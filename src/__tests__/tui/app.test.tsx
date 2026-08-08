@@ -223,6 +223,12 @@ const mount = async (opts: {
     olderRequests.push(request.peerId);
     await opts.onLoadOlder?.(request);
   };
+  // Counted rather than performed: the real one signs out on Telegram and
+  // erases the session and the cache, which a test must never actually do.
+  const loggedOut: number[] = [];
+  const onLogout = async (): Promise<void> => {
+    loggedOut.push(1);
+  };
   const pinned: Array<{ peerId: string; messageId: number }> = [];
   const onPin = async (target: { peerId: string; messageId: number }): Promise<void> => {
     pinned.push(target);
@@ -262,6 +268,7 @@ const mount = async (opts: {
       onDelete={onDelete}
       onPin={onPin}
       onLoadOlder={onLoadOlder}
+      onLogout={onLogout}
       onQuit={() => { quit.push(true); }}
       onOpenChat={onOpenChat}
       onMarkRead={onMarkRead}
@@ -269,7 +276,7 @@ const mount = async (opts: {
     { width: opts.width ?? TERMINAL_WIDTH, height: opts.height ?? TERMINAL_HEIGHT },
   );
   await renderer.flush();
-  return { renderer, store, sent, composerAtSend, edited, deleted, pinned, olderRequests, opened, marked, quit, database };
+  return { renderer, store, sent, composerAtSend, edited, deleted, pinned, olderRequests, loggedOut, opened, marked, quit, database };
 };
 
 test('starts in NORMAL mode with both panes on screen', async () => {
@@ -3013,4 +3020,224 @@ test('a search for something already on screen loads nothing', async () => {
   const state = store.getState();
   expect(state.messages[state.messageCursor]!.text).toBe('msg038');
   expect(olderRequests).toEqual([]);
+});
+
+// ── the command line ──────────────────────────────────────────────────────
+
+/** Types `:` then the given text, without pressing Enter. */
+const typeCommand = async (renderer: TestRendererSetup, text: string): Promise<void> => {
+  await act(async () => { renderer.mockInput.pressKey(':'); });
+  for (const character of text) {
+    await act(async () => { renderer.mockInput.pressKey(character); });
+  }
+  await renderer.flush();
+};
+
+test('the command line opens on : and shows what is typed', async () => {
+  const { renderer, store } = await mount();
+
+  await typeCommand(renderer, 'quit');
+
+  expect(store.getState().overlay).toBe('command');
+  expect(store.getState().commandQuery).toBe('quit');
+  expect(renderer.captureCharFrame()).toContain(':quit');
+});
+
+// It stands in for the status line rather than adding a row, so pressing `:`
+// must not resize a single pane. This is the whole reason it is drawn there.
+test('opening the command line does not move anything else', async () => {
+  const { renderer } = await mount();
+  const before = renderer.captureCharFrame().split('\n');
+
+  await typeCommand(renderer, 'q');
+  const after = renderer.captureCharFrame().split('\n');
+
+  expect(after).toHaveLength(before.length);
+  // Every row but the last -- the one it replaced -- is untouched.
+  expect(after.slice(0, -2)).toEqual(before.slice(0, -2));
+});
+
+// The command line owns every key while it is open, including `:` itself,
+// which is a character to type rather than a second command line to open.
+test('keys do not fall through the command line to the pane underneath', async () => {
+  const { renderer, store } = await mount();
+
+  await typeCommand(renderer, 'i:j');
+
+  expect(store.getState().commandQuery).toBe('i:j');
+  expect(store.getState().engine.mode).toBe(VimModes.NORMAL);
+  expect(store.getState().messageCursor).toBe(0);
+});
+
+test('escape closes the command line without running anything', async () => {
+  const { renderer, store, quit } = await mount();
+
+  await typeCommand(renderer, 'quit');
+  await pressEscape(renderer);
+
+  expect(store.getState().overlay).toBeNull();
+  expect(store.getState().commandQuery).toBe('');
+  expect(quit).toHaveLength(0);
+});
+
+// vim closes its command line when you backspace past the prompt: the `:` is
+// the overlay's own, and there is nothing left to be editing without it.
+test('backspacing past the prompt closes it', async () => {
+  const { renderer, store } = await mount();
+
+  await typeCommand(renderer, 'q');
+  await act(async () => { renderer.mockInput.pressKey('\x7f'); });
+  await renderer.flush();
+  expect(store.getState().overlay).toBe('command');
+  expect(store.getState().commandQuery).toBe('');
+
+  await act(async () => { renderer.mockInput.pressKey('\x7f'); });
+  await renderer.flush();
+  expect(store.getState().overlay).toBeNull();
+});
+
+test('tab completes a half-typed command', async () => {
+  const { renderer, store } = await mount();
+
+  await typeCommand(renderer, 'log');
+  await act(async () => { renderer.mockInput.pressKey('\t'); });
+  await renderer.flush();
+
+  expect(store.getState().commandQuery).toBe('logout');
+});
+
+test(':q quits, the same as <C-c>', async () => {
+  const { renderer, quit } = await mount();
+
+  await typeCommand(renderer, 'q');
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+
+  expect(quit).toHaveLength(1);
+});
+
+// A number is vim's own :{number} -- jump to that message, 1-based.
+test(':{number} jumps to that message', async () => {
+  const { renderer, store } = await mount();
+
+  await typeCommand(renderer, '3');
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+
+  expect(store.getState().messageCursor).toBe(2);
+  expect(store.getState().overlay).toBeNull();
+});
+
+// Clamped rather than refused: a large number has always meant "the end" in
+// vim, and refusing it would be a error message where a jump was wanted.
+test(':{number} past the end lands on the last message', async () => {
+  const { renderer, store } = await mount();
+
+  await typeCommand(renderer, '9999');
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+
+  expect(store.getState().messageCursor).toBe(store.getState().messages.length - 1);
+});
+
+test('an unknown command says so and changes nothing', async () => {
+  const { renderer, store, quit } = await mount();
+
+  await typeCommand(renderer, 'qq');
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+
+  expect(store.getState().statusMessage).toBe('Not a command: qq');
+  expect(store.getState().overlay).toBeNull();
+  expect(quit).toHaveLength(0);
+});
+
+// The rule the whole command line is built on, and the one that matters most
+// here: a command is another way to reach an action, never a way around a
+// confirmation.
+test(':logout asks before it does anything', async () => {
+  const { renderer, store, loggedOut } = await mount();
+
+  await typeCommand(renderer, 'logout');
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+
+  expect(loggedOut).toHaveLength(0);
+  expect(store.getState().pendingConfirmation).toEqual({ kind: 'logout' });
+  expect(renderer.captureCharFrame()).toContain('y/n');
+
+  await act(async () => { renderer.mockInput.pressKey('n'); });
+  await renderer.flush();
+  expect(loggedOut).toHaveLength(0);
+  expect(store.getState().pendingConfirmation).toBeNull();
+});
+
+test(':logout signs out once the question is answered yes', async () => {
+  const { renderer, store, loggedOut } = await mount();
+
+  await typeCommand(renderer, 'logout');
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await act(async () => { renderer.mockInput.pressKey('y'); });
+  await renderer.flush();
+
+  expect(loggedOut).toHaveLength(1);
+  expect(store.getState().pendingConfirmation).toBeNull();
+});
+
+// Two confirmations through one field: answering yes must run the question
+// that was actually asked. A delete that logged out would be the worst
+// possible version of this.
+test('the y/n answer runs the question that was asked', async () => {
+  const { renderer, store, loggedOut, deleted } = await mount();
+
+  await act(async () => { renderer.mockInput.pressKey('d'); });
+  await act(async () => { renderer.mockInput.pressKey('d'); });
+  await act(async () => { renderer.mockInput.pressKey('y'); });
+  await renderer.flush();
+
+  expect(deleted).toHaveLength(1);
+  expect(loggedOut).toHaveLength(0);
+  expect(store.getState().pendingConfirmation).toBeNull();
+});
+
+// PIN_TOGGLE does the opposite of whatever the message currently is, so a
+// `:pin` that ran it on something already pinned would say one thing and do
+// another.
+test(':pin and :unpin each refuse the case they do not mean', async () => {
+  const pinnedMessage: IMessageRow[] = [
+    { peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'held', out: 0, entities: [], replyToMessageId: null, pinned: 1 },
+  ];
+  const { renderer, store, pinned } = await mount({ messages: pinnedMessage });
+
+  await typeCommand(renderer, 'pin');
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+  expect(pinned).toHaveLength(0);
+  expect(store.getState().statusMessage).toBe('Already pinned');
+
+  await typeCommand(renderer, 'unpin');
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+  expect(pinned).toEqual([{ peerId: 'u1', messageId: 1 }]);
+});
+
+test(':reload reopens the chat', async () => {
+  const { renderer, opened } = await mount();
+  opened.length = 0;
+
+  await typeCommand(renderer, 'reload');
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+
+  expect(opened).toEqual(['u1']);
+});
+
+test(':help opens the key bindings', async () => {
+  const { renderer, store } = await mount();
+
+  await typeCommand(renderer, 'help');
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+
+  expect(store.getState().overlay).toBe('whichkey');
 });

@@ -26,6 +26,7 @@ import { fuzzyMatch } from '../core/fuzzy-match.ts';
 import { ALL_CHATS_FOLDER_ID, resolveFolderMembership } from '../core/folder-service.ts';
 import { readTypingStatus } from '../core/typing-status.ts';
 import { formatClock } from './clock.ts';
+import { CommandNames, completeCommand, describeUnknown, parseCommand } from './command-line.ts';
 import { formatPeerKind } from './status-segments.ts';
 // Type-only: App receives a MessageSearchService instance through props
 // (constructed and DI-wired by main.ts) and only ever calls the instance
@@ -38,7 +39,7 @@ import {
 } from '../keys/common/index.ts';
 import type { KeyNormalizerService, KeymapService, VimEngineService } from '../keys/index.ts';
 import { applyAction, resolveSearchMatchIndices } from './action-reducer.ts';
-import { ChatPicker, ContextMenu, resolveChatPickerHeight, resolveWhichKeyHeight, SEARCH_OVERLAY_HEIGHT, SearchOverlay, WhichKey } from './overlays/index.ts';
+import { ChatPicker, CommandLine, ContextMenu, resolveChatPickerHeight, resolveWhichKeyHeight, SEARCH_OVERLAY_HEIGHT, SearchOverlay, WhichKey } from './overlays/index.ts';
 import { buildChatMenu, buildMessageMenu, MenuActions, resolveMenuPosition, resolveMenuWidth } from './context-menu.ts';
 import {
   FRAME_TEE_LEFT,
@@ -83,6 +84,11 @@ export interface IAppProps {
   onPin: (opts: { peerId: string; messageId: number }) => Promise<void>;
   /** Load the page of history before the one on screen. Called when the cursor nears the top of it; every guard lives in the service. */
   onLoadOlder: (opts: { peerId: string }) => Promise<void>;
+  /**
+   * `:logout`, once confirmed: sign out on Telegram, erase the local session
+   * and cache, and quit. Never called without a y/n answered yes.
+   */
+  onLogout: () => Promise<void>;
   onQuit: () => void;
   onOpenChat: (opts: { peerId: string }) => Promise<void>;
   /**
@@ -204,6 +210,8 @@ const OVERLAY_LEADER_TOKEN = '\\';
  */
 const ENTER_TOKEN = '<return>';
 const BACKSPACE_TOKEN = '<backspace>';
+/** Completes a half-typed command, the way vim's own command line does. */
+const TAB_TOKEN = '<tab>';
 
 /**
  * The chat picker's own vocabulary while it owns input (M1b-2 Task 8): each
@@ -350,7 +358,7 @@ const resolveClipboardText = (opts: {
 export const App = (props: IAppProps) => {
   const {
     store, engine, keymapService, keyNormalizer, messageSearchService, timeoutMilliseconds, tokens, resolveSenderName,
-    onSend, onEdit, onDelete, onPin, onLoadOlder, onQuit, onOpenChat, onMarkRead,
+    onSend, onEdit, onDelete, onPin, onLoadOlder, onLogout, onQuit, onOpenChat, onMarkRead,
   } = props;
 
   // useSyncExternalStore re-subscribes whenever the `subscribe` argument's
@@ -683,6 +691,121 @@ export const App = (props: IAppProps) => {
     });
   };
 
+  /**
+   * `:` committed.
+   *
+   * Every command runs the same thing its key runs -- through commitResolution
+   * where an action exists, so a command can no more skip a confirmation than
+   * the context menu can. The overlay closes first, so whatever the command
+   * does to state cannot be undone by a stale patch landing after it.
+   */
+  const runCommand = (opts: { input: string }): void => {
+    const { spec, lineNumber } = parseCommand({ input: opts.input });
+    const current = store.getState();
+    const closed: Partial<IApplicationState> = { overlay: null, commandQuery: '' };
+
+    // vim's `:{number}`: jump to that message, 1-based, clamped rather than
+    // refused -- `:9999` in a chat of forty means "the end", which is what
+    // typing a large number has always meant in vim.
+    if (lineNumber !== null) {
+      store.setState({
+        patch: {
+          ...closed,
+          messageCursor: Math.max(0, Math.min(lineNumber - 1, current.messages.length - 1)),
+          engine: { ...current.engine, context: VimContexts.MESSAGES },
+        },
+      });
+      return;
+    }
+
+    if (spec === null) {
+      // An empty `:` is a cancelled command, not a mistyped one -- vim says
+      // nothing either.
+      store.setState({
+        patch: {
+          ...closed,
+          statusMessage: opts.input.trim() === '' ? current.statusMessage : describeUnknown({ input: opts.input }),
+        },
+      });
+      return;
+    }
+
+    store.setState({ patch: closed });
+    const state = store.getState();
+
+    switch (spec.name) {
+      case CommandNames.QUIT: {
+        commitResolution({
+          current: state,
+          result: { state: state.engine, actions: [{ type: ActionTypes.APPLICATION_QUIT }], status: 'resolved' },
+        });
+        return;
+      }
+      case CommandNames.HELP: {
+        store.setState({
+          patch: applyAction({
+            state, action: { type: ActionTypes.OVERLAY_TOGGLE, overlay: 'whichkey' },
+          }),
+        });
+        return;
+      }
+      case CommandNames.READ: {
+        const dialog = state.dialogs.find(row => row.peerId === state.activePeerId);
+        if (dialog && dialog.topMessageId !== null) {
+          void onMarkRead({ peerId: dialog.peerId, maxId: dialog.topMessageId })
+            .catch(error => { logRejection({ method: 'onMarkRead', error }); });
+        }
+        return;
+      }
+      // Pin and unpin are one action -- PIN_TOGGLE reads the message's current
+      // state and does the opposite -- so `:pin` on something already pinned
+      // would unpin it, saying one thing and doing another. Each refuses the
+      // case it does not mean instead.
+      case CommandNames.PIN:
+      case CommandNames.UNPIN: {
+        const target = state.messages[state.messageCursor];
+        const wantPinned = spec.name === CommandNames.PIN;
+        if (!target) {
+          return;
+        }
+        if ((target.pinned === 1) === wantPinned) {
+          store.setState({
+            patch: { statusMessage: wantPinned ? 'Already pinned' : 'Not pinned' },
+          });
+          return;
+        }
+        commitResolution({
+          current: state,
+          result: { state: state.engine, actions: [{ type: ActionTypes.PIN_TOGGLE }], status: 'resolved' },
+        });
+        return;
+      }
+      case CommandNames.RELOAD: {
+        if (state.activePeerId !== null) {
+          void onOpenChat({ peerId: state.activePeerId })
+            .catch(error => { logRejection({ method: 'onOpenChat', error }); });
+        }
+        return;
+      }
+      case CommandNames.LOGOUT: {
+        store.setState({
+          patch: {
+            pendingConfirmation: { kind: 'logout' },
+            // Short enough to fit beside the mode block on a narrow terminal.
+            // The first wording ran to 64 columns and was truncated at 70,
+            // taking its own "(y/n)" with it -- a confirmation that does not
+            // say which keys answer it is not a confirmation.
+            statusMessage: 'Sign out and erase local data? (y/n)',
+          },
+        });
+        return;
+      }
+      default: {
+        return;
+      }
+    }
+  };
+
   useKeyboard(event => {
     // Cleared before anything else, on every key press without exception --
     // an ambiguous key's timer must never survive the key that completes the
@@ -770,15 +893,32 @@ export const App = (props: IAppProps) => {
         return;
       }
 
-      const { messageIds } = current.pendingConfirmation;
+      const confirmed = current.pendingConfirmation;
       store.setState({ patch: applyAction({ state: current, action: confirmationAction }) });
-      if (confirmationAction.type === ActionTypes.CONFIRM) {
-        // One call carrying every id, not a loop of single deletes: Telegram's
-        // own deleteMessages takes an array, so a ranged delete is one round
-        // trip, one republish and one status message rather than N of each.
-        void onDelete({ messageIds }).catch(error => { logRejection({ method: 'onDelete', error }); });
+      if (confirmationAction.type !== ActionTypes.CONFIRM) {
+        return;
       }
-      return;
+      // Answered yes. Which question was being answered is the confirmation's
+      // own to say -- App has exactly one y/n gate and every irreversible
+      // action goes through it, so this switch is where they part company.
+      switch (confirmed.kind) {
+        case 'delete': {
+          // One call carrying every id, not a loop of single deletes:
+          // Telegram's own deleteMessages takes an array, so a ranged delete
+          // is one round trip, one republish and one status message rather
+          // than N of each.
+          void onDelete({ messageIds: confirmed.messageIds })
+            .catch(error => { logRejection({ method: 'onDelete', error }); });
+          return;
+        }
+        case 'logout': {
+          void onLogout().catch(error => { logRejection({ method: 'onLogout', error }); });
+          return;
+        }
+        default: {
+          return;
+        }
+      }
     }
 
     // The chat picker owns every key while it is open, the same guarantee
@@ -786,6 +926,42 @@ export const App = (props: IAppProps) => {
     // real state of its own to update (chatPickerQuery/chatPickerCursor),
     // not merely a choice between swallowing a key and letting it through,
     // so it gets its own block, checked first.
+    // The command line owns every key while it is open, the same guarantee the
+    // picker and search make below -- including `:` itself, which is a
+    // character to type rather than a second command line to open.
+    if (current.overlay === 'command') {
+      const commandToken = keyNormalizer.toCanonicalString({ key });
+
+      if (commandToken === OVERLAY_ESCAPE_TOKEN) {
+        store.setState({ patch: { overlay: null, commandQuery: '' } });
+        return;
+      }
+      if (commandToken === ENTER_TOKEN) {
+        runCommand({ input: current.commandQuery });
+        return;
+      }
+      if (commandToken === BACKSPACE_TOKEN) {
+        // Backspacing past the start closes it, as vim does: the `:` is the
+        // overlay's own and there is nothing left to be editing without it.
+        if (current.commandQuery === '') {
+          store.setState({ patch: { overlay: null } });
+          return;
+        }
+        store.setState({ patch: { commandQuery: current.commandQuery.slice(0, -1) } });
+        return;
+      }
+      if (commandToken === TAB_TOKEN) {
+        store.setState({ patch: { commandQuery: completeCommand({ input: current.commandQuery }) } });
+        return;
+      }
+
+      const isCommandPrintable = isPrintableCharacter({ sequence: event.sequence, ctrl: event.ctrl, meta: event.meta });
+      if (isCommandPrintable) {
+        store.setState({ patch: { commandQuery: current.commandQuery + event.sequence } });
+      }
+      return;
+    }
+
     if (current.overlay === 'chatpicker') {
       const pickerToken = keyNormalizer.toCanonicalString({ key });
 
@@ -1683,6 +1859,12 @@ export const App = (props: IAppProps) => {
         />
       ) : null}
 
+      {/* In place of the status line, not above it: see CommandLine's own
+          doc comment. The chrome budget is unchanged either way, so pressing
+          `:` never resizes a pane. */}
+      {state.overlay === 'command' ? (
+        <CommandLine query={state.commandQuery} tokens={tokens} width={width} />
+      ) : (
       <StatusLine
         mode={state.engine.mode}
         title={statusTitle}
@@ -1706,6 +1888,7 @@ export const App = (props: IAppProps) => {
         composerLength={state.composerText.length}
         loadingOlder={state.loadingOlder}
       />
+      )}
     </box>
   );
 };

@@ -147,6 +147,16 @@ export interface IApplicationState {
    */
   searchCursorBeforeOpen: number | null;
   /**
+   * What has been typed after the `:` while the command line is open. The
+   * colon itself is the overlay's, not the query's -- it cannot be deleted,
+   * exactly as vim's own command line behaves.
+   *
+   * Reset to '' whenever any overlay opens or closes, mirroring
+   * chatPickerQuery and searchQuery: a command typed in a previous session of
+   * it must never leak into the next.
+   */
+  commandQuery: string;
+  /**
    * Set by DELETE_REQUEST -- which `dd`/`3dd` and any d+motion delete all
    * route through (M1b-2 Task 4), never bypass -- while the status line
    * waits for y/n; null once answered either way. The only irreversible
@@ -155,7 +165,15 @@ export interface IApplicationState {
    * the reply/edit escapes above, and swallows every key except y, n and
    * escape while it is set.
    */
-  pendingConfirmation: { kind: 'delete'; messageIds: number[] } | null;
+  pendingConfirmation:
+    | { kind: 'delete'; messageIds: number[] }
+    // `:logout` is the second thing in tglow that cannot be undone, and the
+    // first that cannot be undone from inside tglow at all -- signing back in
+    // means the phone-and-code flow again. It asks the same y/n the only other
+    // irreversible action does, through the same field, so there is one place
+    // that can ever be answered rather than two.
+    | { kind: 'logout' }
+    | null;
   /**
    * Ids of messages whose spoilers `zs` has revealed. Not persisted: reopening
    * a chat rebuilds the store from scratch, so a spoiler revealed yesterday is
@@ -205,6 +223,7 @@ const INITIAL_STATE: IApplicationState = {
   searchQuery: '',
   searchMatchIds: [],
   searchCursorBeforeOpen: null,
+  commandQuery: '',
   pendingConfirmation: null,
   revealedSpoilers: new Set(),
   registers: {},

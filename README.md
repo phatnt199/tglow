@@ -47,8 +47,9 @@ runtime, no `node_modules`, no repository.
    launch — and later runs skip all of this.
 
 Everything tglow stores lives under `~/.local/share/tglow/`: the session, the
-message cache and the log. Deleting that directory logs you out and forgets the
-cache; it does not touch anything on Telegram.
+message cache and the log. Deleting that directory makes this machine forget
+your account, but leaves the session authorised on Telegram's side — use
+`:logout` to end it properly.
 
 ## The interface
 
@@ -201,6 +202,37 @@ than 50 means the start of the conversation; nothing is requested after that.
 `/` searches the whole cached chat, not only the part on screen — if the match
 is older than what is loaded, the pages between are fetched before it jumps.
 
+## Commands
+
+`:` opens the command line. `<Tab>` completes, `<Esc>` cancels, and
+backspacing past the `:` closes it. The hint on the right shows what a
+half-typed word could still become.
+
+| Command | Action |
+| --- | --- |
+| `:q` `:quit` `:q!` `:qa` | close tglow — the same as `<C-c>` |
+| `:{number}` | jump to that message, counting from 1 |
+| `:h` `:help` | show the key bindings |
+| `:read` | mark the open chat read |
+| `:pin` / `:unpin` | pin or unpin the message under the cursor |
+| `:e` `:reload` | reload the open chat from Telegram |
+| `:logout` | sign out on Telegram, erase the local session and cache, and quit — asks `y`/`n` first |
+
+Everything here is also a key, or is something no key should be: `:q` is
+`<C-c>`, `:pin` is `P`, and `:logout` has no binding at all, because a single
+keystroke should not be able to end a session.
+
+### Logging out
+
+`:logout` calls Telegram's own `auth.logOut`, so tglow stops being listed under
+Active Sessions on your other devices, then deletes `~/.local/share/tglow/session`
+and `~/.local/share/tglow/cache.sqlite`. The next launch starts at the phone
+number prompt.
+
+Deleting those two files by hand does most of the same thing, but *not* the
+first part: the session stays authorised on Telegram's side until you revoke
+it from another device.
+
 ## Keys
 
 Leader is `\`. The application starts in NORMAL mode — nothing you type is sent
@@ -259,6 +291,7 @@ by accident.
 | Key | Action |
 | --- | --- |
 | `<C-l>` (normal) | dismiss a data-integrity warning on the status line |
+| `:` | open the command line — see Commands above |
 | `<C-c>` (normal) | quit |
 
 ## Security

@@ -214,7 +214,8 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
       // second time must return to null rather than re-opening the same
       // overlay it already is.
       //
-      // chatPickerQuery/chatPickerCursor/searchQuery reset unconditionally
+      // chatPickerQuery/chatPickerCursor/searchQuery/commandQuery reset
+      // unconditionally
       // alongside it -- harmless for whichkey, which never reads any of them,
       // and what lets a fresh <C-p> or `/` always open onto an empty query
       // rather than whatever was typed the last time. The picker's and
@@ -226,6 +227,7 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
         chatPickerQuery: '',
         chatPickerCursor: 0,
         searchQuery: '',
+        commandQuery: '',
         // Only the transition INTO 'search' needs this snapshot -- and this
         // case can only ever be reached with action.overlay === 'search' from
         // outside it (state.overlay !== 'search' already), since app.tsx's

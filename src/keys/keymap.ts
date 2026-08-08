@@ -291,6 +291,13 @@ export class KeymapService {
       context: '*', mode: VimModes.NORMAL, keys: '<C-c>', description: 'Quit',
       action: () => [{ type: ActionTypes.APPLICATION_QUIT }],
     },
+    // vim's command line. Everything it can do is also a key, or is something
+    // no single key should do -- `:logout` ends the session, and a keystroke
+    // that does that is a keystroke waiting to be pressed by accident.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: ':', description: 'Command line',
+      action: () => [{ type: ActionTypes.OVERLAY_TOGGLE, overlay: 'command' }],
+    },
   ];
 
   /**

@@ -1,11 +1,14 @@
 import 'reflect-metadata';
 
+import { rmSync } from 'node:fs';
+
 import { createElement } from 'react';
 
 import { createCliRenderer } from '@opentui/core';
 import { AppContext, createRoot } from '@opentui/react';
-import { toError } from '@venizia/ignis-helpers';
+import { ApplicationLogger, toError } from '@venizia/ignis-helpers';
 import { isApplicationError } from '@venizia/ignis-inversion';
+import { Api } from 'teleproto';
 
 import { readLine, runInteractiveLogin } from './cli/index.ts';
 import { BindingKeys } from './common/index.ts';
@@ -181,6 +184,53 @@ const main = async (): Promise<void> => {
     process.exit(0);
   };
 
+  /**
+   * `:logout`, once the y/n has been answered yes.
+   *
+   * Three things, in this order, because each is worth less than the one
+   * before it and the order is what makes a partial failure safe:
+   *
+   * 1. `auth.logOut` on the server, which is the only step that actually ends
+   *    the session -- deleting the local file alone leaves tglow listed and
+   *    authorised under Telegram's own Active Sessions, which is the opposite
+   *    of what someone typing "logout" wants.
+   * 2. The session file, which is the credential. Deleted even when step 1
+   *    failed: an unreachable server must not leave a session key sitting on
+   *    disk after the user asked for it to be gone. Telegram invalidates the
+   *    key on its side when it eventually hears, and the user can revoke it
+   *    from another device meanwhile -- both better than keeping it.
+   * 3. The cache, which is message content. Erased because "log out" plainly
+   *    means "leave nothing of my account on this machine", and a readable
+   *    history after logging out would surprise anyone who meant it.
+   *
+   * Never rejects: it always reaches the exit.
+   */
+  const logger = ApplicationLogger.get('logout');
+  const logout = async (): Promise<void> => {
+    try {
+      await client.invoke(new Api.auth.LogOut());
+    } catch (error) {
+      // Logged, not surfaced: the window is about to close, and there is
+      // nothing the user could do with the message except read it going.
+      logger.error('Could not sign out on Telegram | Reason: %s', toError(error).message);
+    }
+
+    stopReceivingUpdates();
+    database.close();
+
+    for (const path of [configuration.sessionPath, configuration.cachePath]) {
+      try {
+        rmSync(path, { force: true });
+      } catch (error) {
+        logger.error('Could not erase %s | Reason: %s', path, toError(error).message);
+      }
+    }
+
+    renderer.destroy();
+    void client.destroy();
+    process.exit(0);
+  };
+
   root.render(
     createElement(
       AppContext.Provider,
@@ -245,6 +295,7 @@ const main = async (): Promise<void> => {
         onLoadOlder: async (opts: { peerId: string }): Promise<void> => {
           await messageService.loadOlder({ peerId: opts.peerId });
         },
+        onLogout: logout,
         // A direct pass-through: App already decides *when* a chat has been
         // read (opening one, or the cursor reaching its newest message) and
         // hands over exactly the peerId/maxId markRead needs -- there is
