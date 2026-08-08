@@ -233,7 +233,10 @@ of that project, and no library can work around a terminal that has no
 mechanism to receive image data.
 
 In a terminal that *can* take a picture — kitty, Ghostty, WezTerm, Konsole —
-tglow shows the photograph itself rather than a drawing of it. It works this
+tglow sends the photograph itself and the terminal composites it over those
+same cells, so what you see is the photograph. The drawing stays underneath:
+it is what a terminal that ignores the sequences shows, and it is what decides
+how many rows the message takes either way. It works this
 out from the environment rather than by querying the terminal, because a
 query's reply arrives on stdin and would be read as keystrokes nobody typed.
 Two escape hatches:

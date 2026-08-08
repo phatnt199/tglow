@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 
 import { useKeyboard, useRenderer, useTerminalDimensions } from '@opentui/react';
 import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
@@ -30,6 +30,7 @@ import { describePresence, PresenceKinds } from '../core/presence.ts';
 import { renderImage } from './image-renderer.ts';
 import { formatClock } from './clock.ts';
 import { CommandNames, completeCommand, describeUnknown, parseCommand } from './command-line.ts';
+import { place, supportsGraphics, transmit } from './kitty-graphics.ts';
 import { resolveReactionKey } from './reaction-picker.ts';
 import { measureTextWidth, toGraphemes } from './text-width.ts';
 import { formatPeerKind } from './status-segments.ts';
@@ -56,7 +57,7 @@ import {
   buildTopEdge,
   resolvePaneWidths,
 } from './pane-frame.ts';
-import { ChatList, Composer, COMPOSER_PROMPT_WIDTH, FolderRail, MessageView, StatusLine } from './panes/index.ts';
+import { ChatList, Composer, COMPOSER_PROMPT_WIDTH, FolderRail, MessageView, StatusLine, type IImageRowPlacement } from './panes/index.ts';
 import type { ITokens } from './theme/index.ts';
 
 export interface IAppProps {
@@ -462,6 +463,14 @@ export const App = (props: IAppProps) => {
    * one-column handle be draggable at all.
    */
   const dragModeRef = useRef<'divider' | 'section' | null>(null);
+  /**
+   * Whether this terminal will show a real picture, worked out once: it cannot
+   * change while tglow is running, and asking per frame would be asking the
+   * same question a hundred times a second.
+   */
+  const graphicsCapable = useMemo(() => supportsGraphics({ environment: process.env }), []);
+  /** Images already handed to the terminal, so each is sent once rather than once per frame. */
+  const transmittedRef = useRef<Set<number>>(new Set());
   /**
    * Whether the press being handled right now is the one that opened a menu.
    * Children handle a press before the root does, so without this the root
@@ -1643,6 +1652,43 @@ export const App = (props: IAppProps) => {
   /** The one column the divider occupies: past the frame's left border and the sidebar. */
   const dividerColumn = FRAME_LEFT_COLUMNS + paneWidths.sidebar;
 
+  /**
+   * Hand the terminal the real pictures, where it can take them.
+   *
+   * Written straight to stdout rather than through the renderer, because a
+   * picture is not made of cells and OpenTUI has nowhere to put one. The cells
+   * underneath still carry the chafa drawing: a terminal that ignores these
+   * sequences shows that instead, and one that honours them composites the
+   * photograph over the top.
+   *
+   * Placed after every frame, not once. The renderer redraws cells and has no
+   * reason to preserve something it does not know about, so the placement is
+   * re-sent -- which costs a few dozen bytes, unlike the image.
+   */
+  const placeImages = useCallback((placements: IImageRowPlacement[]): void => {
+    if (!graphicsCapable) {
+      return;
+    }
+    const paneLeft = dividerColumn + FRAME_DIVIDER_COLUMNS;
+    const sequences = placements
+      .filter(placement => transmittedRef.current.has(placement.messageId))
+      .map(placement => place({
+        placement: {
+          id: placement.messageId,
+          // One-based, which is what a cursor position is.
+          row: FRAME_TOP_ROWS + placement.paneRow + 1,
+          column: paneLeft + placement.paneColumn + 1,
+          columns: placement.columns,
+          rows: placement.rows,
+        },
+      }));
+
+    if (sequences.length > 0) {
+      process.stdout.write(sequences.join(''));
+    }
+  }, [graphicsCapable, dividerColumn]);
+
+
   // Pictures for whatever is on screen.
   //
   // Driven off the loaded messages rather than the visible slice: working out
@@ -1671,6 +1717,14 @@ export const App = (props: IAppProps) => {
         const bytes = await onThumbnail({ peerId, messageId: message.id });
         if (!live || bytes === null) {
           continue;
+        }
+
+        // The picture itself, for a terminal that can hold one. Sent once per
+        // message: transmitting is the expensive half and the terminal keeps
+        // it until told otherwise.
+        if (graphicsCapable && !transmittedRef.current.has(message.id)) {
+          transmittedRef.current.add(message.id);
+          process.stdout.write(transmit({ id: message.id, bytes }));
         }
 
         const cells = await renderImage({
@@ -2070,6 +2124,7 @@ export const App = (props: IAppProps) => {
             resolveSenderName={resolveSenderName}
             revealedSpoilers={state.revealedSpoilers}
             imagesByMessageId={state.imagesByMessageId}
+            onImageRows={placeImages}
             readOutboxMaxId={activeDialog?.readOutboxMaxId ?? 0}
             onMessagePress={pressMessage}
             onScroll={({ delta }) => { scrollBy({ unit: 'message', delta }); }}

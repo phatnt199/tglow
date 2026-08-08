@@ -67,6 +67,26 @@ export interface IMessageViewProps {
    * still shows while its bytes are on the way.
    */
   imagesByMessageId?: Map<number, IImageCell[][]>;
+  /**
+   * Called with where each picture ended up, in cells relative to this pane's
+   * own top-left, so a caller that can hand the terminal the real image knows
+   * exactly which cells to put it over.
+   *
+   * Reported from here because this is the only place that knows: which rows
+   * are on screen is the outcome of wrapping, scrolling and the viewport, none
+   * of which App can work out without redoing all of it.
+   */
+  onImageRows?: (placements: IImageRowPlacement[]) => void;
+}
+
+export interface IImageRowPlacement {
+  messageId: number;
+  /** Rows from the top of this pane, zero-based. */
+  paneRow: number;
+  /** Columns from the left of this pane, zero-based -- past the rail. */
+  paneColumn: number;
+  rows: number;
+  columns: number;
 }
 
 /** Reserved and always blank: the cursorline shows position, not an arrow. */
@@ -645,7 +665,7 @@ const buildRows = (opts: {
 export const MessageView = (props: IMessageViewProps) => {
   const {
     messages, cursor, focused, tokens, height, width, resolveSenderName, revealedSpoilers, readOutboxMaxId,
-    onMessagePress, onScroll, showGutter = true, showTime = true, imagesByMessageId,
+    onMessagePress, onScroll, showGutter = true, showTime = true, imagesByMessageId, onImageRows,
   } = props;
 
   if (messages.length === 0) {
@@ -671,6 +691,39 @@ export const MessageView = (props: IMessageViewProps) => {
     cursorRowSpan,
     height,
   });
+
+  // Where each picture's visible rows landed, for a caller that can hand the
+  // terminal the real image. Grouped per message: a picture is contiguous
+  // rows, and a placement covers all of them at once.
+  //
+  // Only what is on screen. A picture scrolled half out has only its visible
+  // rows reported, and the terminal is asked to fit the image to those -- so
+  // it is cropped by being drawn smaller rather than by spilling past the
+  // pane, which is the one thing an image over a diffing renderer must never
+  // do.
+  const railWidth = resolveRailWidth({ showGutter, showTime });
+  const placements: IImageRowPlacement[] = [];
+  rows.slice(start, end).forEach((row, offset) => {
+    if (!row.cells) {
+      return;
+    }
+    const message = messages[row.messageIndex];
+    const existing = placements[placements.length - 1];
+    if (message && existing?.messageId === message.id && existing.paneRow + existing.rows === offset) {
+      existing.rows += 1;
+      return;
+    }
+    if (message) {
+      placements.push({
+        messageId: message.id,
+        paneRow: offset,
+        paneColumn: railWidth,
+        rows: 1,
+        columns: row.cells.length,
+      });
+    }
+  });
+  onImageRows?.(placements);
 
   return (
     <box
