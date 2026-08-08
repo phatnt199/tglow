@@ -1672,6 +1672,7 @@ export const App = (props: IAppProps) => {
         if (!live || bytes === null) {
           continue;
         }
+
         const cells = await renderImage({
           bytes,
           maximumColumns: Math.max(1, paneWidths.messages - IMAGE_RAIL_ALLOWANCE),

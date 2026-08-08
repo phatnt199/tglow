@@ -230,9 +230,18 @@ That indirection is not a shortcut — it is the only route on some terminals.
 **Alacritty cannot display images at all**: no Sixel, no Kitty graphics
 protocol, no iTerm2 inline images. It is a deliberate, long-standing decision
 of that project, and no library can work around a terminal that has no
-mechanism to receive image data. Terminals that *can* show a picture inline —
-kitty, WezTerm, Ghostty, Konsole, foot — are worth switching to if that matters
-to you.
+mechanism to receive image data.
+
+In a terminal that *can* take a picture — kitty, Ghostty, WezTerm, Konsole —
+tglow shows the photograph itself rather than a drawing of it. It works this
+out from the environment rather than by querying the terminal, because a
+query's reply arrives on stdin and would be read as keystrokes nobody typed.
+Two escape hatches:
+
+```sh
+TGLOW_GRAPHICS=on   tglow   # a terminal tglow does not recognise yet
+TGLOW_GRAPHICS=off  tglow   # keep the drawing
+```
 
 Reactions are tallied under the message: `👍 3  ❤️ 1  [😂] 2`. The brackets mark
 your own, in brackets rather than colour so it survives a terminal without
