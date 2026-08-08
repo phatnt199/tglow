@@ -74,6 +74,13 @@ left, the way a graphical client lays them out. Below sixty columns of
 conversation everything stays left-aligned: right-aligning in a cramped pane
 costs the text the room it has least of.
 
+### Resizing
+
+Drag the divider between the sidebar and the conversation to move it. Drag the
+divider between the folders and the chat list to move that one — up to the top
+puts the folder rail away, and dragging back down brings it back. Neither is
+persisted between runs; see `sidebarWidth` in the source for why.
+
 ### The mouse
 
 tglow holds the mouse by default. This is not new — OpenTUI has enabled mouse
@@ -186,6 +193,30 @@ One row, lualine's shape, and as much of this as the terminal has columns for:
 Nothing is clipped to fit. Each field has a priority, and a narrow terminal
 drops the cheapest ones whole — `\ for keys` first, the position and the mode
 last. A data-integrity warning claims whatever width it needs.
+
+## Media, reactions and emoji
+
+A message that carries something other than text says what it is, on its own
+line above any caption:
+
+```
+📷 Photo · 1280×960        🎤 Voice · 0:12         📎 report.pdf · 2.4 MB
+🎬 Video · 1:05            🐱 Sticker              📍 Location
+🎵 Diễm Xưa · 4:05         🎞 GIF · 0:03           📊 Poll · Ăn gì trưa nay?
+```
+
+A sticker shows the emoji it stands for, which is the closest thing to seeing
+it. Drawing the actual pixels is not implemented yet — but a photo is no longer
+a blank row, which is what it was before.
+
+Reactions are tallied under the message: `👍 3  ❤️ 1  [😂] 2`. The brackets mark
+your own, in brackets rather than colour so it survives a terminal without
+colour and survives being copied out of one.
+
+Emoji are typed like any other character. Anything built from more than one
+code point — a skin tone, a flag, a family, `❤️` — used to be dropped silently
+on the way to the composer, as was decomposed Vietnamese from an input method
+that emits it. Both work.
 
 ## History
 

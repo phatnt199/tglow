@@ -4,6 +4,8 @@ import { TextAttributes } from '@opentui/core';
 
 import type { IMessageRow } from '../../core/cache/index.ts';
 import { EntityKinds, type TEntityKind } from '../../core/common/index.ts';
+import { describeMedia } from '../../core/media.ts';
+import { describeReactions } from '../../core/reactions.ts';
 import { formatClock } from '../clock.ts';
 import { toStyledSpans, type IStyledSpan } from '../entities.ts';
 import { measureTextWidth, padStartToWidth, padToWidth, toGraphemes, truncateToWidth } from '../text-width.ts';
@@ -516,11 +518,31 @@ const buildRows = (opts: {
       });
     }
 
+    // Media first, on its own line, then whatever caption came with it.
+    //
+    // Before this a photo was a message whose text was '' and whose row was
+    // therefore blank -- not "a picture we cannot draw", but nothing at all,
+    // indistinguishable from an empty message. The descriptor is plain text
+    // rather than an entity run: it is not part of what anyone typed, so
+    // nothing in it should be a link, a mention, or maskable as a spoiler.
+    const mediaLine: IStyledSpan[][] = message.media
+      ? [[{ text: describeMedia({ media: message.media }), kinds: [], url: null }]]
+      : [];
+
     const styled = maskSpoilerSpans({
       spans: toStyledSpans({ text: message.text, entities: message.entities }),
       revealed,
     });
-    const wrappedRows = toLogicalSpanLines({ spans: styled })
+    // Reactions last, below the message they are about -- which is where every
+    // client puts them, and the only place that reads correctly for a message
+    // that wraps: attached to the top they would look like a reaction to the
+    // message above.
+    const reactionText = describeReactions({ reactions: message.reactions ?? [] });
+    const reactionLine: IStyledSpan[][] = reactionText === ''
+      ? []
+      : [[{ text: reactionText, kinds: [], url: null }]];
+
+    const wrappedRows = [...mediaLine, ...toLogicalSpanLines({ spans: styled }), ...reactionLine]
       .flatMap(line => wrapLogicalLine({ spans: line, contentWidth, preContentWidth }));
 
     // How far this message's block is pushed right. Zero for everything the

@@ -28,6 +28,13 @@ export interface IApplicationState {
    */
   sidebarWidth: number | null;
   /**
+   * The folder section's height in rows, or null for "as many as the folders
+   * need". Set by dragging the divider between the folders and the chat list.
+   *
+   * Not persisted, same as sidebarWidth and for the same reason -- see there.
+   */
+  folderHeight: number | null;
+  /**
    * The conversation's relative-number gutter and its clock, each switchable
    * with `zn` and `zt`. vim's own `z` is the view prefix, and this project
    * already treats it as one -- `zs` reveals a spoiler.
@@ -199,6 +206,7 @@ const INITIAL_STATE: IApplicationState = {
   folders: [],
   activeFolderId: 0,
   sidebarWidth: null,
+  folderHeight: null,
   showGutter: true,
   showTime: true,
   contextMenu: null,

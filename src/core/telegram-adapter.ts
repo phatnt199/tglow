@@ -9,6 +9,8 @@ import type { IDialogAdapter, IRawDialog } from './dialog-service.ts';
 import type { IDifferenceAdapter, IDifferenceResult } from './difference-service.ts';
 import { ReadDirections, type ILiveMessage, type IMessageAdapter, type IRawMessage, type IReadReceipt } from './message-service.ts';
 import type { IFolderAdapter, IRawFolder } from './folder-service.ts';
+import { MediaKinds, type IMessageMedia } from './media.ts';
+import { CUSTOM_REACTION_PLACEHOLDER, type IMessageReaction } from './reactions.ts';
 import { resolveTypingPhrase, type ITypingStatus } from './typing-status.ts';
 import type { IUpdateState } from './update-state.ts';
 
@@ -74,6 +76,153 @@ const toEntity = (opts: { entity: Api.TypeMessageEntity }): ITelegramEntity => {
  * live path derived one from the message -- two paths that could silently
  * drift apart from a single edit to either.
  */
+/**
+ * The largest size Telegram offers for a photo, for its dimensions alone.
+ *
+ * `sizes` is a mixed union -- PhotoSize, PhotoSizeProgressive, PhotoStrippedSize
+ * and PhotoCachedSize -- and only some members carry `w`/`h`. Filtered by the
+ * presence of the fields rather than by className, so a size type added in a
+ * later layer contributes if it has dimensions and is ignored if it does not,
+ * instead of being a crash or a silent zero.
+ */
+const largestPhotoSize = (opts: { photo: Api.TypePhoto | undefined }): { width: number; height: number } | null => {
+  const { photo } = opts;
+  if (!photo || photo.className !== 'Photo') {
+    return null;
+  }
+  const sized = photo.sizes
+    .map(size => size as unknown as { w?: number; h?: number })
+    .filter((size): size is { w: number; h: number } => typeof size.w === 'number' && typeof size.h === 'number');
+  const largest = sized.reduce<{ w: number; h: number } | null>(
+    (best, size) => (best === null || size.w * size.h > best.w * best.h ? size : best),
+    null,
+  );
+  return largest === null ? null : { width: largest.w, height: largest.h };
+};
+
+/**
+ * A document's kind, from its attributes.
+ *
+ * Order matters and is not arbitrary: a sticker is also a file, a GIF carries
+ * both Animated and Video, and a voice message is an Audio with `voice` set.
+ * Checking generic before specific would label every one of them "File".
+ */
+const toDocumentMedia = (opts: { document: Api.TypeDocument }): IMessageMedia => {
+  const { document } = opts;
+  if (document.className !== 'Document') {
+    return { kind: MediaKinds.UNSUPPORTED };
+  }
+
+  const attributes = document.attributes;
+  const find = <T extends Api.TypeDocumentAttribute['className']>(className: T) =>
+    attributes.find(attribute => attribute.className === className);
+
+  const size = typeof document.size === 'number' ? document.size : Number(document.size);
+  const fileName = find('DocumentAttributeFilename');
+  const named = fileName?.className === 'DocumentAttributeFilename' ? fileName.fileName : undefined;
+
+  const sticker = find('DocumentAttributeSticker');
+  if (sticker?.className === 'DocumentAttributeSticker') {
+    return { kind: MediaKinds.STICKER, emoji: sticker.alt };
+  }
+
+  const video = find('DocumentAttributeVideo');
+  const videoDuration = video?.className === 'DocumentAttributeVideo' ? video.duration : undefined;
+
+  if (find('DocumentAttributeAnimated')) {
+    return { kind: MediaKinds.ANIMATION, duration: videoDuration, size };
+  }
+
+  const audio = find('DocumentAttributeAudio');
+  if (audio?.className === 'DocumentAttributeAudio') {
+    return audio.voice
+      ? { kind: MediaKinds.VOICE, duration: audio.duration, size }
+      : {
+        kind: MediaKinds.AUDIO,
+        duration: audio.duration,
+        size,
+        // A track with a performer reads as "Artist — Title", which is how
+        // every player names one; either alone is still better than the file
+        // name, and the file name is still better than nothing.
+        title: audio.title && audio.performer
+          ? `${audio.performer} — ${audio.title}`
+          : audio.title ?? audio.performer ?? named,
+      };
+  }
+
+  if (video?.className === 'DocumentAttributeVideo') {
+    return { kind: MediaKinds.VIDEO, duration: video.duration, width: video.w, height: video.h, size };
+  }
+
+  return { kind: MediaKinds.DOCUMENT, title: named, size };
+};
+
+/**
+ * What a message carries besides its text, or null when it carries nothing.
+ *
+ * A web page preview returns null on purpose: the link it previews is already
+ * in the message text and already rendered as a link, so announcing it again
+ * would put "🔗 Web page" under every URL anyone sends.
+ */
+const toMedia = (opts: { media: Api.TypeMessageMedia | undefined }): IMessageMedia | null => {
+  const { media } = opts;
+  if (!media) {
+    return null;
+  }
+
+  switch (media.className) {
+    case 'MessageMediaPhoto': {
+      return { kind: MediaKinds.PHOTO, ...largestPhotoSize({ photo: media.photo }) };
+    }
+    case 'MessageMediaDocument': {
+      return media.document ? toDocumentMedia({ document: media.document }) : { kind: MediaKinds.UNSUPPORTED };
+    }
+    case 'MessageMediaWebPage': {
+      return null;
+    }
+    case 'MessageMediaGeo':
+    case 'MessageMediaGeoLive': {
+      return { kind: MediaKinds.LOCATION };
+    }
+    case 'MessageMediaVenue': {
+      return { kind: MediaKinds.LOCATION, title: media.title };
+    }
+    case 'MessageMediaContact': {
+      return { kind: MediaKinds.CONTACT, title: `${media.firstName} ${media.lastName}`.trim() };
+    }
+    case 'MessageMediaPoll': {
+      // `question` became a TextWithEntities in a later layer -- read from
+      // teleproto's own Poll rather than assumed to still be a string.
+      return { kind: MediaKinds.POLL, title: media.poll.question.text };
+    }
+    default: {
+      return { kind: MediaKinds.UNSUPPORTED };
+    }
+  }
+};
+
+/**
+ * The reaction tallies on a message, newest layer's shape.
+ *
+ * `chosenOrder` is how Telegram says "you reacted with this one" -- it is the
+ * position among your own reactions, so zero is a real value and `undefined`
+ * is the absent one. `!== undefined` rather than a truthiness check, which
+ * would read your first reaction as not yours.
+ */
+const toReactions = (opts: { reactions: Api.MessageReactions | undefined }): IMessageReaction[] => {
+  const { reactions } = opts;
+  if (!reactions) {
+    return [];
+  }
+  return reactions.results.map(result => ({
+    emoji: result.reaction.className === 'ReactionEmoji'
+      ? result.reaction.emoticon
+      : CUSTOM_REACTION_PLACEHOLDER,
+    count: result.count,
+    chosen: result.chosenOrder !== undefined,
+  }));
+};
+
 const toRawMessage = (opts: { message: Api.Message }): IRawMessage => {
   const { message } = opts;
 
@@ -103,6 +252,8 @@ const toRawMessage = (opts: { message: Api.Message }): IRawMessage => {
     // live delivery -- no separate lookup, and the marker cannot disagree with
     // the server about a message already on screen.
     pinned: message.pinned ? 1 : 0,
+    media: toMedia({ media: message.media }),
+    reactions: toReactions({ reactions: message.reactions }),
   };
 };
 

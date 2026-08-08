@@ -4,6 +4,7 @@ import { rgbToHex, TextAttributes } from '@opentui/core';
 import type { TestRendererSetup } from '@opentui/core/testing';
 
 import type { IMessageRow } from '../../../core/cache/index.ts';
+import { MediaKinds } from '../../../core/media.ts';
 import { renderWithKeys } from '../../helpers/render.tsx';
 import { buildTokens } from '../../../tui/theme/index.ts';
 import { MessageView, type IMessageViewProps } from '../../../tui/panes/message-view.tsx';
@@ -904,4 +905,76 @@ test('the flag appears once on a wrapped message, on its first row', async () =>
   const flagged = readRows(renderer).filter(line => line.startsWith('⚑'));
 
   expect(flagged).toHaveLength(1);
+});
+
+// ── media and reactions ───────────────────────────────────────────────────
+
+// A photo arrived as a message whose text was '' and whose row was therefore
+// blank -- not "a picture we cannot draw", but nothing at all, and no way to
+// tell someone had sent you something.
+test('a media message says what it is instead of drawing a blank row', async () => {
+  const photo: IMessageRow[] = [{
+    peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: '', out: 0, entities: [], replyToMessageId: null,
+    media: { kind: MediaKinds.PHOTO, width: 1280, height: 960 },
+  }];
+  const renderer = await render({ messages: photo, width: 60 });
+
+  expect(renderer.captureCharFrame()).toContain('📷 Photo · 1280×960');
+});
+
+// The caption is what the sender wrote; the descriptor says what it is
+// attached to. Both, in that order -- the media above the words about it.
+test('a caption is shown under its media, not instead of it', async () => {
+  const captioned: IMessageRow[] = [{
+    peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'ăn trưa nha', out: 0,
+    entities: [], replyToMessageId: null, media: { kind: MediaKinds.PHOTO },
+  }];
+  const rows = readRows(await render({ messages: captioned, width: 60 }));
+
+  const mediaRow = rows.findIndex(row => row.includes('📷 Photo'));
+  const captionRow = rows.findIndex(row => row.includes('ăn trưa nha'));
+  expect(mediaRow).toBeGreaterThanOrEqual(0);
+  expect(captionRow).toBe(mediaRow + 1);
+});
+
+// Below the message, which is where every client puts them and the only place
+// that reads correctly for a message that wraps: above, they would look like a
+// reaction to the message before.
+test('reactions are drawn under the message they are about', async () => {
+  const reacted: IMessageRow[] = [{
+    peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'xong rồi', out: 0,
+    entities: [], replyToMessageId: null,
+    reactions: [{ emoji: '👍', count: 3, chosen: false }, { emoji: '🎉', count: 1, chosen: true }],
+  }];
+  const rows = readRows(await render({ messages: reacted, width: 60 }));
+
+  const textRow = rows.findIndex(row => row.includes('xong rồi'));
+  const reactionRow = rows.findIndex(row => row.includes('👍 3'));
+  expect(reactionRow).toBe(textRow + 1);
+  expect(rows[reactionRow]!).toContain('[🎉] 1');
+});
+
+// A message nobody reacted to must not spend a row saying so.
+test('a message with no reactions gains no row', async () => {
+  const plain: IMessageRow[] = [{
+    peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'chào', out: 0,
+    entities: [], replyToMessageId: null, reactions: [],
+  }];
+  const rows = readRows(await render({ messages: plain, width: 60, height: 10 }));
+
+  expect(rows.filter(row => row.trim() !== '')).toHaveLength(1);
+});
+
+// The descriptor is not something anyone typed, so nothing in it should be a
+// link, a mention, or maskable as a spoiler -- it goes through as plain text.
+test('a media descriptor is plain text, not an entity run', async () => {
+  const linkNamed: IMessageRow[] = [{
+    peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: '', out: 0, entities: [], replyToMessageId: null,
+    media: { kind: MediaKinds.DOCUMENT, title: 'https://example.com.pdf' },
+  }];
+  const renderer = await render({ messages: linkNamed, width: 60 });
+  const spans = readSpans(renderer, 0).filter(span => span.text.includes('example.com'));
+
+  expect(spans.length).toBeGreaterThan(0);
+  expect(spans.every(span => span.foreground !== tokens.textLink.toLowerCase())).toBe(true);
 });

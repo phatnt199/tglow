@@ -41,4 +41,12 @@ export const EMBEDDED_MIGRATIONS: IEmbeddedMigration[] = [
       "ALTER TABLE `messages` ADD `pinned` integer DEFAULT 0 NOT NULL;",
     ],
   },
+  {
+    tag: "0003_youthful_scorpion",
+    hash: "ef20167773c679b2e8df67d271f399a013ec099f4155281119800332f6644f41",
+    createdAt: 1786177564559,
+    sql: [
+      "ALTER TABLE `messages` ADD `reactions` text;",
+    ],
+  },
 ];

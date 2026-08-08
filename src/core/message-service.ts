@@ -5,6 +5,8 @@ import { BindingKeys } from '../common/index.ts';
 import type { ApplicationStoreService, IApplicationState } from './application-store.ts';
 import type { DatabaseService, IMessageRow } from './cache/index.ts';
 import type { ITelegramEntity } from './common/index.ts';
+import type { IMessageMedia } from './media.ts';
+import type { IMessageReaction } from './reactions.ts';
 import type { ITypingStatus } from './typing-status.ts';
 
 /**
@@ -40,6 +42,10 @@ export interface IRawMessage {
   replyToMessageId: number | null;
   /** 1 when pinned in its chat. */
   pinned?: number;
+  /** What the message carries besides text, or null when it is only text. */
+  media?: IMessageMedia | null;
+  /** Who reacted with what. Empty when nobody has. */
+  reactions?: IMessageReaction[];
 }
 
 /**
@@ -195,6 +201,8 @@ export class MessageService {
     entities: message.entities,
     replyToMessageId: message.replyToMessageId,
     pinned: message.pinned,
+    media: message.media,
+    reactions: message.reactions,
   }));
 
   loadHistory = async (opts: { peerId: string; limit: number }): Promise<void> => {

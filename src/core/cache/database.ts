@@ -4,6 +4,8 @@ import { and, desc, eq, like, lt, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/bun-sqlite';
 
 import type { ITelegramEntity } from '../common/index.ts';
+import { describeMedia, type IMessageMedia, type TMediaKind } from '../media.ts';
+import type { IMessageReaction } from '../reactions.ts';
 import { runMigrations } from './migrate.ts';
 import { dialogFilters, dialogs, messages, peers, syncState } from './schema.ts';
 
@@ -36,6 +38,10 @@ export interface IMessageInput {
   replyToMessageId: number | null;
   /** 1 when pinned in its chat; omitted means not pinned. */
   pinned?: number;
+  /** What the message carries besides text; omitted or null means text only. */
+  media?: IMessageMedia | null;
+  /** Who reacted with what; omitted means nobody has. */
+  reactions?: IMessageReaction[];
 }
 
 export interface IDialogRow {
@@ -106,6 +112,16 @@ export interface IMessageRow {
   replyToMessageId: number | null;
   /** 1 when pinned in its chat. Optional on input so existing call sites need no change; always present on a row read back. */
   pinned?: number;
+  /**
+   * What the message carries besides text, or null when it is only text.
+   *
+   * Stored in the mediaKind/mediaJson columns the M1 schema reserved: the kind
+   * separately from the rest so a later "show me only the photos" can filter
+   * in SQL rather than parsing every row's JSON to find out.
+   */
+  media?: IMessageMedia | null;
+  /** Who reacted with what. Always an array on a row read back, empty when nobody has. */
+  reactions?: IMessageReaction[];
 }
 
 export type TDrizzleDatabase = ReturnType<typeof drizzle>;
@@ -140,6 +156,9 @@ const MESSAGE_COLUMNS = {
   entities: messages.entities,
   replyToMessageId: messages.replyToMsgId,
   pinned: messages.pinned,
+  mediaKind: messages.mediaKind,
+  mediaJson: messages.mediaJson,
+  reactions: messages.reactions,
 };
 
 /**
@@ -148,7 +167,11 @@ const MESSAGE_COLUMNS = {
  * from IMessageRow rather than restating every field: only `text` and
  * `entities` actually differ (still nullable strings, pre-parse).
  */
-type TMessageSelection = Omit<IMessageRow, 'text' | 'entities'> & { text: string | null; entities: string | null };
+type TMessageSelection = Omit<IMessageRow, 'text' | 'entities' | 'media' | 'reactions'>
+  & {
+    text: string | null; entities: string | null;
+    mediaKind: string | null; mediaJson: string | null; reactions: string | null;
+  };
 
 const toMessageRows = (opts: { rows: TMessageSelection[] }): IMessageRow[] => {
   return opts.rows.map(row => ({
@@ -162,6 +185,16 @@ const toMessageRows = (opts: { rows: TMessageSelection[] }): IMessageRow[] => {
     // downstream iterate this without a null check, so it must never surface
     // as null here.
     entities: row.entities ? (JSON.parse(row.entities) as ITelegramEntity[]) : [],
+    // mediaKind is the column that decides, not mediaJson: a media type with
+    // no detail worth storing (a location) still has a kind and would
+    // otherwise read back as no media at all.
+    media: row.mediaKind
+      ? { ...(row.mediaJson ? (JSON.parse(row.mediaJson) as IMessageMedia) : {}), kind: row.mediaKind as TMediaKind }
+      : null,
+    // Same reasoning as entities above: rows written before this column
+    // existed read back SQL NULL, and every caller iterates this without a
+    // null check.
+    reactions: row.reactions ? (JSON.parse(row.reactions) as IMessageReaction[]) : [],
   }));
 };
 
@@ -365,7 +398,7 @@ export class DatabaseService {
   };
 
   listDialogs = (): IDialogRow[] => {
-    return this.require('listDialogs')
+    const rows = this.require('listDialogs')
       .select({
         peerId: dialogs.peerId,
         title: peers.title,
@@ -390,11 +423,33 @@ export class DatabaseService {
           ORDER BY ${messages.date} DESC, ${messages.id} DESC
           LIMIT 1
         )`,
+        // The same row's media kind, so a chat whose newest message is a photo
+        // previews as a photo rather than as a blank line -- which is exactly
+        // what it did, since a media message's text is the empty string.
+        previewMediaKind: sql<string | null>`(
+          SELECT ${messages.mediaKind} FROM ${messages}
+          WHERE ${messages.peerId} = ${dialogs.peerId} AND ${messages.deleted} = 0
+          ORDER BY ${messages.date} DESC, ${messages.id} DESC
+          LIMIT 1
+        )`,
       })
       .from(dialogs)
       .innerJoin(peers, eq(peers.id, dialogs.peerId))
       .orderBy(desc(dialogs.pinned), desc(dialogs.lastMessageAt))
       .all();
+
+    return rows.map(({ previewMediaKind, ...row }) => ({
+      ...row,
+      // The caption wins when there is one: "📷 Photo" says less than whatever
+      // the sender wrote under it, and a caption is already the summary they
+      // chose. Only a media message with no text at all falls back to naming
+      // its kind.
+      preview: row.preview && row.preview !== ''
+        ? row.preview
+        : previewMediaKind
+          ? describeMedia({ media: { kind: previewMediaKind as TMediaKind } })
+          : row.preview,
+    }));
   };
 
   insertMessages = (opts: { messages: IMessageInput[] }): void => {
@@ -412,6 +467,9 @@ export class DatabaseService {
             entities: JSON.stringify(message.entities),
             replyToMsgId: message.replyToMessageId,
             pinned: message.pinned ?? 0,
+            mediaKind: message.media?.kind ?? null,
+            mediaJson: message.media ? JSON.stringify(message.media) : null,
+            reactions: message.reactions && message.reactions.length > 0 ? JSON.stringify(message.reactions) : null,
           })
           .onConflictDoUpdate({
             target: [messages.peerId, messages.id],
@@ -423,6 +481,9 @@ export class DatabaseService {
               entities: JSON.stringify(message.entities),
               replyToMsgId: message.replyToMessageId,
               pinned: message.pinned ?? 0,
+              mediaKind: message.media?.kind ?? null,
+              mediaJson: message.media ? JSON.stringify(message.media) : null,
+              reactions: message.reactions && message.reactions.length > 0 ? JSON.stringify(message.reactions) : null,
             },
           })
           .run();

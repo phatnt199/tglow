@@ -53,6 +53,13 @@ export const messages = sqliteTable(
      * disagreeing with the server about a message already on screen.
      */
     pinned: integer('pinned').notNull().default(0),
+    /**
+     * The reaction tallies, as JSON. One column rather than a table: they are
+     * always read with their message, never queried across messages, and a
+     * message's reactions arrive as a complete replacement set every time --
+     * so there is nothing a row per reaction would buy.
+     */
+    reactions: text('reactions'),
   },
   table => [
     primaryKey({ columns: [table.peerId, table.id] }),

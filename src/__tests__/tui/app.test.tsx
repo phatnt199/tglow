@@ -10,7 +10,7 @@ import type { TestRendererSetup } from '@opentui/core/testing';
 import { BindingKeys } from '../../common/index.ts';
 // Concrete module, not the core/ barrel -- see src/tui/action-reducer.ts for why.
 import { ApplicationStoreService } from '../../core/application-store.ts';
-import { DatabaseService, type IDialogRow, type IMessageRow } from '../../core/cache/index.ts';
+import { DatabaseService, type IDialogRow, type IFolderRow, type IMessageRow } from '../../core/cache/index.ts';
 // Concrete module, not the core/ barrel -- same reasoning as
 // ApplicationStoreService above (src/tui/action-reducer.ts explains why):
 // a value import (mount() below constructs one), off the root barrel's
@@ -21,9 +21,10 @@ import { DatabaseService, type IDialogRow, type IMessageRow } from '../../core/c
 import { MessageSearchService } from '../../core/message-search.ts';
 import { ActionTypes, VimContexts, VimModes, type IKeyBinding } from '../../keys/common/index.ts';
 import { KeyNormalizerService, KeymapService, VimEngineService } from '../../keys/index.ts';
+import { toGraphemes } from '../../tui/text-width.ts';
 import { renderWithKeys } from '../helpers/render.tsx';
 import { buildTokens } from '../../tui/theme/index.ts';
-import { App } from '../../tui/app.tsx';
+import { App, isPrintableCharacter } from '../../tui/app.tsx';
 
 const tokens = buildTokens({ paletteName: 'sage' });
 
@@ -103,6 +104,7 @@ const pressEscape = async (renderer: TestRendererSetup): Promise<void> => {
 const mount = async (opts: {
   dialogs?: IDialogRow[];
   messages?: IMessageRow[];
+  folders?: IFolderRow[];
   onSend?: (text: string) => Promise<void>;
   onEdit?: (edit: { messageId: number; text: string }) => Promise<void>;
   onLoadOlder?: (opts: { peerId: string }) => Promise<void>;
@@ -149,6 +151,7 @@ const mount = async (opts: {
     patch: {
       dialogs: seedDialogs,
       messages: seedMessages,
+      folders: opts.folders ?? [],
       activePeerId: 'u1',
       connection: 'connected',
     },
@@ -3240,4 +3243,163 @@ test(':help opens the key bindings', async () => {
   await renderer.flush();
 
   expect(store.getState().overlay).toBe('whichkey');
+});
+
+// ── typing emoji and composed characters ──────────────────────────────────
+
+/** Enters insert mode and feeds the text through as one key press each. */
+const typeInComposer = async (renderer: TestRendererSetup, pieces: string[]): Promise<void> => {
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  for (const piece of pieces) {
+    await act(async () => { renderer.mockInput.pressKey(piece); });
+  }
+  await renderer.flush();
+};
+
+// Counting code points accepted 😀 and stopped there. A skin tone is two code
+// points, a heart with its variation selector is two, a flag is two and a
+// family is seven -- every one of them silently vanished on the way to the
+// composer, with nothing on screen to say why.
+test('an emoji built from more than one code point reaches the composer', async () => {
+  const { renderer, store } = await mount();
+
+  await typeInComposer(renderer, ['😀', '👍🏽', '❤️', '🇻🇳', '👨‍👩‍👧‍👦']);
+
+  expect(store.getState().composerText).toBe('😀👍🏽❤️🇻🇳👨‍👩‍👧‍👦');
+});
+
+// The same bug, and the one that matters to anyone typing Vietnamese: plenty
+// of input methods emit decomposed letters, and a single letter is then three
+// code points.
+test('a decomposed letter reaches the composer as one character', async () => {
+  const { renderer, store } = await mount();
+  const decomposed = 'ế'.normalize('NFD');
+  expect(Array.from(decomposed)).toHaveLength(3);
+
+  await typeInComposer(renderer, [decomposed]);
+
+  expect(store.getState().composerText).toBe(decomposed);
+  expect(toGraphemes({ text: store.getState().composerText })).toHaveLength(1);
+});
+
+// Widening what counts as one character must not widen it to everything.
+// Tested on the predicate rather than through the mock terminal: OpenTUI's own
+// parser splits a multi-character write into one key event per character, so
+// no app-level press can deliver "hello" as a single sequence to reject.
+test('one character means one character, not one sequence of any length', () => {
+  const printable = (sequence: string): boolean =>
+    isPrintableCharacter({ sequence, ctrl: false, meta: false });
+
+  // Accepted: one grapheme, however many code points it takes to write.
+  expect(printable('a')).toBe(true);
+  expect(printable('😀')).toBe(true);
+  expect(printable('👍🏽')).toBe(true);
+  expect(printable('👨‍👩‍👧‍👦')).toBe(true);
+  expect(printable('🇻🇳')).toBe(true);
+  expect(printable('ế'.normalize('NFD'))).toBe(true);
+
+  // Rejected: more than one character, a control character, or a modified key.
+  expect(printable('hello')).toBe(false);
+  expect(printable('<escape>')).toBe(false);
+  expect(printable('😀😀')).toBe(false);
+  expect(printable('')).toBe(false);
+  expect(printable('\t')).toBe(false);
+  expect(printable('\n')).toBe(false);
+  expect(printable('\x7f')).toBe(false);
+  expect(isPrintableCharacter({ sequence: 'a', ctrl: true, meta: false })).toBe(false);
+  expect(isPrintableCharacter({ sequence: 'a', ctrl: false, meta: true })).toBe(false);
+});
+
+// The renderer measures in graphemes too, so what can be typed and what can be
+// drawn agree by construction -- an emoji in the composer must occupy the
+// columns the composer thinks it does.
+test('an emoji in the composer is drawn at the width it measures', async () => {
+  const { renderer, store } = await mount();
+
+  await typeInComposer(renderer, ['👍🏽']);
+
+  expect(store.getState().composerText).toBe('👍🏽');
+  expect(renderer.captureCharFrame()).toContain('👍🏽');
+});
+
+// ── resizing the folder / chat split ──────────────────────────────────────
+
+/** Distinctive enough that no other pane's text can be mistaken for a folder row. */
+const FOLDER_TITLES = ['Everything', 'Worklife', 'Relatives', 'Robots'];
+
+const foldersFor = (titles: string[]): IFolderRow[] => titles.map((title, index) => ({
+  id: index, title, emoticon: null, ord: index,
+  pinnedPeers: [], includePeers: [], excludePeers: [],
+  contacts: false, nonContacts: false, groups: false, broadcasts: false, bots: false,
+  excludeMuted: false, excludeRead: false, excludeArchived: false,
+}));
+
+/** Rows the folder rail occupies, read off the frame rather than off state. */
+const folderRowCount = (renderer: TestRendererSetup, titles: string[]): number =>
+  renderer.captureCharFrame().split('\n')
+    .filter(row => titles.some(title => row.includes(title)))
+    .length;
+
+// The sidebar's own divider, dragged the way the one between the panes is.
+// Both are decided by coordinate rather than by hit-testing a single cell,
+// which is what the vertical one already had to do to survive a drag.
+test('dragging the sidebar divider down gives the folders more rows', async () => {
+  const { renderer, store } = await mount({ folders: foldersFor(FOLDER_TITLES) });
+  const mouse = createMockMouse(renderer.renderer);
+  await renderer.flush();
+  const before = folderRowCount(renderer, FOLDER_TITLES);
+
+  // The divider sits one row below the last folder: FRAME_TOP_ROWS + height.
+  await act(async () => { await mouse.drag(6, 1 + before, 6, 1 + before + 1); });
+  await renderer.flush();
+
+  expect(store.getState().folderHeight).toBe(before + 1);
+});
+
+// Dragging it to the top is how the rail is put away, and dragging back down
+// brings it back -- so the floor is zero rather than a refusal.
+test('dragging the sidebar divider to the top puts the folder rail away', async () => {
+  const { renderer, store } = await mount({ folders: foldersFor(FOLDER_TITLES.slice(0, 3)) });
+  const mouse = createMockMouse(renderer.renderer);
+  await renderer.flush();
+  const before = folderRowCount(renderer, FOLDER_TITLES.slice(0, 3));
+  expect(before).toBeGreaterThan(0);
+
+  await act(async () => { await mouse.drag(6, 1 + before, 6, 1); });
+  await renderer.flush();
+
+  expect(store.getState().folderHeight).toBe(0);
+  expect(folderRowCount(renderer, FOLDER_TITLES.slice(0, 3))).toBe(0);
+});
+
+// The chat list must keep something. A drag past the bottom that left it with
+// a divider and no rows under it would be worse than refusing the last row.
+test('the chat list keeps rows however far the divider is dragged down', async () => {
+  const { renderer, store } = await mount({ folders: foldersFor(FOLDER_TITLES.slice(0, 3)) });
+  const mouse = createMockMouse(renderer.renderer);
+  await renderer.flush();
+
+  // To the last row on screen: a coordinate outside the window is never
+  // delivered, so "as far down as it goes" has to mean the bottom of it.
+  const before = folderRowCount(renderer, FOLDER_TITLES.slice(0, 3));
+  await act(async () => { await mouse.drag(6, 1 + before, 6, TERMINAL_HEIGHT - 1); });
+  await renderer.flush();
+
+  // The store records what was asked for; the layout is what refuses it.
+  expect(store.getState().folderHeight).toBeGreaterThan(0);
+  expect(renderer.captureCharFrame()).toContain('Alice');
+});
+
+// A press that is not on either divider must not begin a drag: dragging the
+// conversation to scroll was built and removed at the owner's request.
+test('a drag that starts off the dividers resizes nothing', async () => {
+  const { renderer, store } = await mount({ folders: foldersFor(FOLDER_TITLES.slice(0, 2)) });
+  const mouse = createMockMouse(renderer.renderer);
+  await renderer.flush();
+
+  await act(async () => { await mouse.drag(40, 5, 40, 9); });
+  await renderer.flush();
+
+  expect(store.getState().folderHeight).toBeNull();
+  expect(store.getState().sidebarWidth).toBeNull();
 });

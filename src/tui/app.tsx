@@ -27,6 +27,7 @@ import { ALL_CHATS_FOLDER_ID, resolveFolderMembership } from '../core/folder-ser
 import { readTypingStatus } from '../core/typing-status.ts';
 import { formatClock } from './clock.ts';
 import { CommandNames, completeCommand, describeUnknown, parseCommand } from './command-line.ts';
+import { toGraphemes } from './text-width.ts';
 import { formatPeerKind } from './status-segments.ts';
 // Type-only: App receives a MessageSearchService instance through props
 // (constructed and DI-wired by main.ts) and only ever calls the instance
@@ -136,6 +137,13 @@ const MINIMUM_PANE_WIDTH = 16;
 const MINIMUM_PANE_HEIGHT = 4;
 /** The titled rule between the sidebar's folder section and its chat list. */
 const SECTION_DIVIDER_HEIGHT = 1;
+/**
+ * The fewest rows the chat list keeps when the folder section is dragged down
+ * over it. One row is a chat -- below that the section is a divider with
+ * nothing under it, which is a worse outcome than refusing the last row of the
+ * drag.
+ */
+const MINIMUM_SECTION_HEIGHT = 2;
 
 /**
  * OpenTUI's MouseButton.LEFT. Named rather than compared to a bare 0, and
@@ -152,6 +160,8 @@ const SCROLL_ROWS_PER_NOTCH = 3;
 
 /** The frame's left border, which the sidebar starts after. */
 const FRAME_LEFT_COLUMNS = 1;
+/** The frame's top border, which the folder rail starts under. */
+const FRAME_TOP_ROWS = 1;
 
 /**
  * One `<text>` per row, the same one-child-one-row rule the panes follow, so a
@@ -261,7 +271,7 @@ const CONTROL_CHARACTER_BOUNDARY = 0x20;
 const DELETE_CODE_POINT = 0x7f;
 
 /**
- * True only for a single, unmodified, printable character. Two things a
+ * True only for a single, unmodified, printable character. Three things a
  * naive check misses:
  *
  * - Tab and linefeed arrive with `ctrl: false` (OpenTUI's parseKeypress
@@ -270,21 +280,32 @@ const DELETE_CODE_POINT = 0x7f;
  *   what actually excludes them.
  * - `sequence.length` counts UTF-16 code units, which splits a non-BMP
  *   character (an emoji) into two, silently failing "exactly one character"
- *   for perfectly ordinary input. Array.from a string to count code points
- *   instead.
+ *   for perfectly ordinary input.
+ * - Counting code points instead fixes `😀` and stops there. One *character*,
+ *   as a reader means it, is a grapheme: `👍🏽` is two code points, `❤️` is two,
+ *   `🇻🇳` is two, a family emoji is seven, and decomposed Vietnamese -- which
+ *   plenty of input methods emit -- is three for a single letter. Every one of
+ *   those was silently dropped on the way to the composer, so the character
+ *   the user typed simply never appeared and nothing said why.
+ *
+ * Graphemes, then, which is the same unit the renderer measures in
+ * (text-width.ts) -- so what can be typed and what can be drawn agree by
+ * construction. A pasted word is still many graphemes and still rejected, and
+ * so is a bracketed token like "<escape>".
  */
-const isPrintableCharacter = (opts: { sequence: string; ctrl: boolean; meta: boolean }): boolean => {
+export const isPrintableCharacter = (opts: { sequence: string; ctrl: boolean; meta: boolean }): boolean => {
   const { sequence, ctrl, meta } = opts;
   if (ctrl || meta) {
     return false;
   }
 
-  const codePoints = Array.from(sequence);
-  if (codePoints.length !== 1) {
+  if (toGraphemes({ text: sequence }).length !== 1) {
     return false;
   }
 
-  const codePoint = codePoints[0].codePointAt(0) ?? 0;
+  // The first code point decides: a control character is one on its own, and
+  // no grapheme starts with one and continues into something printable.
+  const codePoint = sequence.codePointAt(0) ?? 0;
   return codePoint >= CONTROL_CHARACTER_BOUNDARY && codePoint !== DELETE_CODE_POINT;
 };
 
@@ -398,7 +419,7 @@ export const App = (props: IAppProps) => {
    * Tracking the mode here and handling the drag at the root is what lets a
    * one-column handle be draggable at all.
    */
-  const dragModeRef = useRef<'divider' | null>(null);
+  const dragModeRef = useRef<'divider' | 'section' | null>(null);
   /**
    * Whether the press being handled right now is the one that opened a menu.
    * Children handle a press before the root does, so without this the root
@@ -1360,8 +1381,17 @@ export const App = (props: IAppProps) => {
   // The folder section takes what its folders need, capped so the chat list
   // always keeps the larger half: folders are how you reach chats, not a thing
   // to look at on their own. Zero hides it, divider included.
+  //
+  // A dragged height wins over both, clamped the same way the sidebar's own
+  // width is: the user asking for more folder rows than the pane has must
+  // leave the chat list something, and a drag to the very top must not leave
+  // the folders a section with no rows in it and a divider still drawn.
+  const automaticFolderHeight = Math.min(state.folders.length, Math.floor(paneHeight / 2) - SECTION_DIVIDER_HEIGHT);
   const folderSectionHeight = hasFolders
-    ? Math.max(0, Math.min(state.folders.length, Math.floor(paneHeight / 2) - SECTION_DIVIDER_HEIGHT))
+    ? Math.max(0, Math.min(
+      state.folderHeight ?? automaticFolderHeight,
+      paneHeight - SECTION_DIVIDER_HEIGHT - MINIMUM_SECTION_HEIGHT,
+    ))
     : 0;
   const chatListHeight = Math.max(
     1,
@@ -1584,7 +1614,7 @@ export const App = (props: IAppProps) => {
    * depend on hit-testing a single cell, which it did not survive. The column
    * is known here exactly, so this needs no hit-testing at all.
    */
-  const beginDrag = (opts: { x: number; button: number }): void => {
+  const beginDrag = (opts: { x: number; y: number; button: number }): void => {
     // Clicking away closes the menu, which is what every menu does and what
     // this one failed to do -- only escape and choosing an item closed it.
     //
@@ -1606,14 +1636,43 @@ export const App = (props: IAppProps) => {
     // conversation to scroll it was built and then removed at the owner's
     // request, and the wheel covers the same ground without competing with the
     // terminal's own click-and-drag.
-    dragModeRef.current = opts.x === dividerColumn ? 'divider' : null;
+    // Two dividers, told apart by where the press landed. The vertical one
+    // runs the full height at a known column; the horizontal one runs across
+    // the sidebar at a known row, so both are decided by coordinate rather
+    // than by hit-testing a one-cell target the drag would then lose.
+    if (opts.x === dividerColumn) {
+      dragModeRef.current = 'divider';
+      return;
+    }
+    const onSectionDivider = folderSectionHeight > 0
+      && opts.y === FRAME_TOP_ROWS + folderSectionHeight
+      && opts.x > 0 && opts.x < dividerColumn;
+    dragModeRef.current = onSectionDivider ? 'section' : null;
   };
 
   /** Every drag, routed by what it started on rather than what it is over. */
-  const dragAnywhere = (opts: { x: number }): void => {
+  const dragAnywhere = (opts: { x: number; y: number }): void => {
     if (dragModeRef.current === 'divider') {
       dragDivider({ x: opts.x });
+      return;
     }
+    if (dragModeRef.current === 'section') {
+      dragSection({ y: opts.y });
+    }
+  };
+
+  /**
+   * Dragging the divider between the folders and the chat list.
+   *
+   * `y` is the pointer's row in the window, and the sidebar's first row is one
+   * down -- past the frame's top border -- so the height it implies is the
+   * rows above it. Clamped to zero at the floor rather than refused: dragging
+   * it to the top is how you put the folder rail away, and it comes back by
+   * dragging it down again. The ceiling is applied where the height is read,
+   * so a drag past the bottom of a short window cannot strand the chat list.
+   */
+  const dragSection = (opts: { y: number }): void => {
+    store.setState({ patch: { folderHeight: Math.max(0, opts.y - FRAME_TOP_ROWS) } });
   };
 
   const endDrag = (): void => {
@@ -1686,8 +1745,10 @@ export const App = (props: IAppProps) => {
       // because OpenTUI delivers a drag to whatever is under the pointer --
       // which loses a one-column divider on the first movement. What the drag
       // means was decided when it began; see dragModeRef.
-      onMouseDown={(event: { x: number; button: number }) => { beginDrag({ x: event.x, button: event.button }); }}
-      onMouseDrag={(event: { x: number }) => { dragAnywhere({ x: event.x }); }}
+      onMouseDown={(event: { x: number; y: number; button: number }) => {
+        beginDrag({ x: event.x, y: event.y, button: event.button });
+      }}
+      onMouseDrag={(event: { x: number; y: number }) => { dragAnywhere({ x: event.x, y: event.y }); }}
       onMouseDragEnd={endDrag}
       onMouseUp={endDrag}
     >
