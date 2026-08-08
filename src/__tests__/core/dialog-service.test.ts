@@ -9,7 +9,15 @@ const buildRawDialog = (overrides: Partial<IRawDialog> = {}): IRawDialog => ({
   pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 1, readOutboxMaxId: 0, ...overrides,
 });
 
-const buildService = (adapter: IDialogAdapter): { service: DialogService; database: DatabaseService; store: ApplicationStoreService } => {
+/** Fills in whatever the test does not care about, so a method added to the adapter needs no edit here. */
+const buildService = (
+  overrides: Partial<IDialogAdapter>,
+): { service: DialogService; database: DatabaseService; store: ApplicationStoreService } => {
+  const adapter: IDialogAdapter = {
+    fetchDialogs: async () => [],
+    pinDialog: async (): Promise<void> => {},
+    ...overrides,
+  };
   const database = new DatabaseService();
   database.open({ filePath: ':memory:' });
   const store = new ApplicationStoreService();
@@ -104,7 +112,10 @@ test('a network failure with an unreadable cache still resolves instead of throw
   database.open({ filePath: ':memory:' });
   const store = new ApplicationStoreService();
   const service = new DialogService(
-    { fetchDialogs: async () => { throw new Error('network down'); } },
+    {
+      fetchDialogs: async () => { throw new Error('network down'); },
+      pinDialog: async (): Promise<void> => {},
+    },
     database,
     store,
   );

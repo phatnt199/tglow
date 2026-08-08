@@ -109,6 +109,12 @@ export interface IMessageAdapter {
   delete(opts: { peerId: string; messageIds: number[]; forEveryone: boolean }): Promise<void>;
   markRead(opts: { peerId: string; maxId: number }): Promise<void>;
   pinMessage(opts: { peerId: string; messageId: number; unpin: boolean }): Promise<void>;
+  /**
+   * React to a message, or take your reaction back with an empty `emoji`.
+   * Returns the tallies the server came back with, which is authoritative --
+   * other people react between your press and its reply.
+   */
+  react(opts: { peerId: string; messageId: number; emoji: string }): Promise<IMessageReaction[]>;
   subscribeToNewMessages(opts: { onMessage: (live: ILiveMessage) => void }): () => void;
   subscribeToReadReceipts(opts: { onReadReceipt: (receipt: IReadReceipt) => void }): () => void;
   subscribeToTyping(opts: { onTyping: (status: ITypingStatus) => void }): () => void;
@@ -342,6 +348,44 @@ export class MessageService {
     } finally {
       this._loadingOlderFor = null;
       this._store.setState({ patch: { loadingOlder: false } });
+    }
+  };
+
+  /**
+   * React to a message, or take your reaction back by reacting with the one
+   * you already chose -- which is the toggle every client uses, and the reason
+   * this reads the cached tallies before deciding what to send.
+   *
+   * Telegram replaces rather than adds: one reaction per account per message,
+   * so choosing a second one does not need the first removed first.
+   *
+   * The server's tallies win. Other people react between the press and the
+   * reply, so incrementing locally would show a count that was already wrong.
+   */
+  react = async (opts: { peerId: string; messageId: number; emoji: string }): Promise<void> => {
+    const { peerId, messageId, emoji } = opts;
+    const target = this._store.getState().messages.find(message => message.id === messageId);
+    const alreadyMine = (target?.reactions ?? []).some(
+      reaction => reaction.chosen && reaction.emoji === emoji,
+    );
+
+    let reactions: IMessageReaction[];
+    try {
+      reactions = await this._adapter.react({ peerId, messageId, emoji: alreadyMine ? '' : emoji });
+    } catch (error) {
+      this._logger.for(this.react.name).error('Reaction failed | Reason: %s', error);
+      this._store.setState({ patch: { statusMessage: `Reaction failed: ${toError(error).message}` } });
+      return;
+    }
+
+    try {
+      this._database.setMessageReactions({ peerId, id: messageId, reactions });
+      this._store.setState({ patch: { messages: this.readWindow({ peerId }) } });
+    } catch (error) {
+      this._logger.for(this.react.name).error('Reacted but could not update the cache | Reason: %s', error);
+      this._store.setState({
+        patch: { statusMessage: `Reacted, but could not update the local cache: ${toError(error).message}` },
+      });
     }
   };
 

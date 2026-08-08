@@ -72,6 +72,7 @@ export const buildChatMenu = (opts: { dialog: IDialogRow | undefined }): IMenuIt
 
   const items: IMenuItem[] = [
     { action: MenuActions.OPEN, label: 'Open', key: '⏎' },
+    { action: MenuActions.PIN, label: dialog.pinned === 1 ? 'Unpin' : 'Pin', key: 'P' },
   ];
 
   // Nothing to mark read in a chat with nothing unread, and offering it would

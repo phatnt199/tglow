@@ -8,6 +8,7 @@ import { DifferenceService, type IDifferenceAdapter, type IDifferenceResult } fr
 import { MessageService, type ILiveMessage, type IMessageAdapter, type IRawMessage } from '../../core/message-service.ts';
 import { buildDifferenceAdapter } from '../../core/telegram-adapter.ts';
 import type { IUpdateState } from '../../core/update-state.ts';
+import type { IMessageReaction } from '../../core/reactions.ts';
 import { MessageOrigins, UpdateService, type TMessageOrigin } from '../../core/update-service.ts';
 
 const buildRawMessage = (overrides: Partial<IRawMessage> = {}): IRawMessage => ({
@@ -72,6 +73,7 @@ const build = (
     delete: async (): Promise<void> => {},
     markRead: async (): Promise<void> => {},
     pinMessage: async (): Promise<void> => {},
+  react: async (): Promise<IMessageReaction[]> => [],
   } satisfies IMessageAdapter;
 
   // A real UpdateService, not a stand-in: "a backfilled message and a live one

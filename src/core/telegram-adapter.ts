@@ -325,6 +325,21 @@ const toFolderPeerIds = (opts: { peers: Api.TypeInputPeer[] }): string[] => {
  * without a network, and a future transport swap would touch only this file.
  */
 export const buildDialogAdapter = (opts: { client: TelegramClient }): IDialogAdapter => ({
+  // `pinned` is a plain flag rather than a position: Telegram keeps the order
+  // of pinned chats separately (ReorderPinnedDialogs), and pinning appends.
+  //
+  // The peer goes in as an entity, not wrapped in an InputDialogPeer. The TL
+  // schema says InputDialogPeer -- this call can also pin a folder, which is
+  // another member of that union -- but GramJS types the argument as
+  // EntityLike and does the wrapping itself, so passing the wrapper is a type
+  // error rather than the faithful thing it looks like.
+  pinDialog: async (pinOpts: { peerId: string; pinned: boolean }): Promise<void> => {
+    await opts.client.invoke(new Api.messages.ToggleDialogPin({
+      peer: pinOpts.peerId,
+      pinned: pinOpts.pinned,
+    }));
+  },
+
   fetchDialogs: async (): Promise<IRawDialog[]> => {
     const dialogs = await opts.client.getDialogs({ limit: DIALOG_FETCH_LIMIT });
 
@@ -368,6 +383,32 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
     return messages
       .filter(message => message.className === 'Message')
       .map(message => toRawMessage({ message }));
+  },
+
+  /**
+   * One reaction at a time, replacing whatever this account had on the message
+   * -- which is what `reaction: []` means and what taking one back looks like.
+   *
+   * The reply is an Updates, and the tallies come back inside an
+   * UpdateMessageReactions in it. Read from the reply rather than assumed:
+   * other people react between the press and its answer, so echoing back what
+   * was sent would show a count that was already stale. A reply that carries
+   * no such update leaves the tallies alone rather than clearing them.
+   */
+  react: async (reactOpts: { peerId: string; messageId: number; emoji: string }): Promise<IMessageReaction[]> => {
+    const result = await opts.client.invoke(new Api.messages.SendReaction({
+      peer: reactOpts.peerId,
+      msgId: reactOpts.messageId,
+      reaction: reactOpts.emoji === ''
+        ? []
+        : [new Api.ReactionEmoji({ emoticon: reactOpts.emoji })],
+    }));
+
+    const updates = 'updates' in result && Array.isArray(result.updates) ? result.updates : [];
+    const changed = updates.find(
+      (update): update is Api.UpdateMessageReactions => update.className === 'UpdateMessageReactions',
+    );
+    return changed ? toReactions({ reactions: changed.reactions }) : [];
   },
 
   // GramJS's own SendMessageParams names this `replyTo`, not `replyToMessageId`

@@ -296,6 +296,12 @@ const main = async (): Promise<void> => {
           await messageService.loadOlder({ peerId: opts.peerId });
         },
         onLogout: logout,
+        onPinChat: async (opts: { peerId: string }): Promise<void> => {
+          await dialogService.togglePin({ peerId: opts.peerId });
+        },
+        onReact: async (opts: { peerId: string; messageId: number; emoji: string }): Promise<void> => {
+          await messageService.react(opts);
+        },
         // A direct pass-through: App already decides *when* a chat has been
         // read (opening one, or the cursor reaching its newest message) and
         // hands over exactly the peerId/maxId markRead needs -- there is

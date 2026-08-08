@@ -21,6 +21,8 @@ export interface IRawDialog {
 
 export interface IDialogAdapter {
   fetchDialogs(): Promise<IRawDialog[]>;
+  /** Pin or unpin a chat in the sidebar, on Telegram, so every device agrees. */
+  pinDialog(opts: { peerId: string; pinned: boolean }): Promise<void>;
 }
 
 export class DialogService {
@@ -31,6 +33,45 @@ export class DialogService {
     @inject({ key: BindingKeys.DATABASE }) private readonly _database: DatabaseService,
     @inject({ key: BindingKeys.APPLICATION_STORE }) private readonly _store: ApplicationStoreService,
   ) {}
+
+  /**
+   * Pin or unpin a chat, toggled from what is cached.
+   *
+   * Server first, cache second -- the same order MessageService.pin uses, and
+   * for the same reason: a sidebar that reorders itself and then silently
+   * disagrees with every other device is worse than one that does not move.
+   *
+   * Telegram caps how many chats can be pinned at once and refuses past it, so
+   * the failure here is ordinary rather than exceptional and says what the
+   * server said.
+   */
+  togglePin = async (opts: { peerId: string }): Promise<void> => {
+    const dialog = this._store.getState().dialogs.find(row => row.peerId === opts.peerId);
+    if (!dialog) {
+      return;
+    }
+    const pinned = dialog.pinned !== 1;
+
+    try {
+      await this._adapter.pinDialog({ peerId: opts.peerId, pinned });
+    } catch (error) {
+      this._logger.for(this.togglePin.name).error('Pin failed | Reason: %s', error);
+      this._store.setState({ patch: { statusMessage: `Pin failed: ${toError(error).message}` } });
+      return;
+    }
+
+    try {
+      this._database.setDialogPinned({ peerId: opts.peerId, pinned: pinned ? 1 : 0 });
+      this._store.setState({
+        patch: { dialogs: this._database.listDialogs(), statusMessage: pinned ? 'Chat pinned' : 'Chat unpinned' },
+      });
+    } catch (error) {
+      this._logger.for(this.togglePin.name).error('Pinned but could not update the cache | Reason: %s', error);
+      this._store.setState({
+        patch: { statusMessage: `Pinned, but could not update the local cache: ${toError(error).message}` },
+      });
+    }
+  };
 
   /** Refresh the chat list. On failure the cached list stays on screen. */
   sync = async (): Promise<void> => {

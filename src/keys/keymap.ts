@@ -126,6 +126,12 @@ export class KeymapService {
       context: '*', mode: VimModes.NORMAL, keys: '<S-p>', description: 'Pin or unpin the message',
       action: () => [{ type: ActionTypes.PIN_TOGGLE }],
     },
+    // React. `r` is reply, so `R` is the shifted neighbour of it -- the two
+    // are the same gesture aimed at the same message.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: '<S-r>', description: 'React to the message',
+      action: () => [{ type: ActionTypes.OVERLAY_TOGGLE, overlay: 'reaction' }],
+    },
     // Display. `z` is vim's view prefix, and this project already uses it as
     // one -- `zs` reveals a spoiler. `zn` and `zt` switch the conversation's
     // gutter and clock, which also widens the text, since a hidden field gives

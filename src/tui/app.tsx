@@ -27,6 +27,7 @@ import { ALL_CHATS_FOLDER_ID, resolveFolderMembership } from '../core/folder-ser
 import { readTypingStatus } from '../core/typing-status.ts';
 import { formatClock } from './clock.ts';
 import { CommandNames, completeCommand, describeUnknown, parseCommand } from './command-line.ts';
+import { resolveReactionKey } from './reaction-picker.ts';
 import { toGraphemes } from './text-width.ts';
 import { formatPeerKind } from './status-segments.ts';
 // Type-only: App receives a MessageSearchService instance through props
@@ -40,7 +41,7 @@ import {
 } from '../keys/common/index.ts';
 import type { KeyNormalizerService, KeymapService, VimEngineService } from '../keys/index.ts';
 import { applyAction, resolveSearchMatchIndices } from './action-reducer.ts';
-import { ChatPicker, CommandLine, ContextMenu, resolveChatPickerHeight, resolveWhichKeyHeight, SEARCH_OVERLAY_HEIGHT, SearchOverlay, WhichKey } from './overlays/index.ts';
+import { ChatPicker, CommandLine, ContextMenu, ReactionPicker, resolveChatPickerHeight, resolveWhichKeyHeight, SEARCH_OVERLAY_HEIGHT, SearchOverlay, WhichKey } from './overlays/index.ts';
 import { buildChatMenu, buildMessageMenu, MenuActions, resolveMenuPosition, resolveMenuWidth } from './context-menu.ts';
 import {
   FRAME_TEE_LEFT,
@@ -90,6 +91,10 @@ export interface IAppProps {
    * and cache, and quit. Never called without a y/n answered yes.
    */
   onLogout: () => Promise<void>;
+  /** Pin or unpin a chat in the sidebar. */
+  onPinChat: (opts: { peerId: string }) => Promise<void>;
+  /** React to a message, or take the reaction back by choosing the same one again. */
+  onReact: (opts: { peerId: string; messageId: number; emoji: string }) => Promise<void>;
   onQuit: () => void;
   onOpenChat: (opts: { peerId: string }) => Promise<void>;
   /**
@@ -379,7 +384,7 @@ const resolveClipboardText = (opts: {
 export const App = (props: IAppProps) => {
   const {
     store, engine, keymapService, keyNormalizer, messageSearchService, timeoutMilliseconds, tokens, resolveSenderName,
-    onSend, onEdit, onDelete, onPin, onLoadOlder, onLogout, onQuit, onOpenChat, onMarkRead,
+    onSend, onEdit, onDelete, onPin, onPinChat, onReact, onLoadOlder, onLogout, onQuit, onOpenChat, onMarkRead,
   } = props;
 
   // useSyncExternalStore re-subscribes whenever the `subscribe` argument's
@@ -506,6 +511,19 @@ export const App = (props: IAppProps) => {
         // same key that did it, and the one confirmation in this application
         // exists for the one thing that cannot be taken back.
         case ActionTypes.PIN_TOGGLE: {
+          // One key, two things to pin, told apart by which pane has focus --
+          // the same way j and k already mean "next chat" or "next message"
+          // depending on where you are. A second binding for chats would be a
+          // second thing to remember for one idea.
+          if (accumulated.engine.context === VimContexts.CHAT_LIST) {
+            const chat = visibleDialogs[accumulated.chatCursor];
+            if (chat) {
+              void onPinChat({ peerId: chat.peerId }).catch(error => {
+                logRejection({ method: 'onPinChat', error });
+              });
+            }
+            break;
+          }
           const target = accumulated.messages[accumulated.messageCursor];
           if (target && accumulated.activePeerId !== null) {
             void onPin({ peerId: accumulated.activePeerId, messageId: target.id }).catch(error => {
@@ -947,6 +965,26 @@ export const App = (props: IAppProps) => {
     // real state of its own to update (chatPickerQuery/chatPickerCursor),
     // not merely a choice between swallowing a key and letting it through,
     // so it gets its own block, checked first.
+    // The picker owns every key while it is open, like the command line
+    // below. One keystroke sends and closes -- there is no cursor to move and
+    // nothing to confirm, because reacting is undone by pressing the same key
+    // again.
+    if (current.overlay === 'reaction') {
+      const reactionToken = keyNormalizer.toCanonicalString({ key });
+      if (reactionToken === OVERLAY_ESCAPE_TOKEN) {
+        store.setState({ patch: { overlay: null } });
+        return;
+      }
+      const emoji = resolveReactionKey({ key: reactionToken });
+      const target = current.messages[current.messageCursor];
+      if (emoji !== null && target && current.activePeerId !== null) {
+        store.setState({ patch: { overlay: null } });
+        void onReact({ peerId: current.activePeerId, messageId: target.id, emoji })
+          .catch(error => { logRejection({ method: 'onReact', error }); });
+      }
+      return;
+    }
+
     // The command line owns every key while it is open, the same guarantee the
     // picker and search make below -- including `:` itself, which is a
     // character to type rather than a second command line to open.
@@ -1414,9 +1452,18 @@ export const App = (props: IAppProps) => {
 
   const pressChat = (opts: { index: number; button: number; x?: number; y?: number }): void => {
     if (opts.button === MOUSE_BUTTON_RIGHT) {
+      // The cursor moves to the chat the menu is about, exactly as the message
+      // menu already does and for the same reason: acting on one row while the
+      // cursorline sits on another is the surprise. Pin is what made this
+      // matter -- it reads the cursor, so without this it pinned whichever
+      // chat the keyboard had last been on.
+      const current = store.getState();
       menuOpenedThisPressRef.current = true;
       store.setState({
-        patch: { contextMenu: { kind: 'chat', target: opts.index, x: opts.x ?? 0, y: opts.y ?? 0, cursor: 0 } },
+        patch: {
+          chatCursor: Math.max(0, Math.min(opts.index, current.dialogs.length - 1)),
+          contextMenu: { kind: 'chat', target: opts.index, x: opts.x ?? 0, y: opts.y ?? 0, cursor: 0 },
+        },
       });
       return;
     }
@@ -1569,9 +1616,18 @@ export const App = (props: IAppProps) => {
       // side effect, and applyAction alone would move the state and never
       // make the call. `P` reaches the same case by the same route.
       case MenuActions.PIN: {
+        // PIN_TOGGLE reads the focused pane to decide what it is pinning, and
+        // a menu is opened by pointing at something rather than by focusing
+        // it -- so the context is set from which menu this is, not from where
+        // the keyboard happened to be.
+        const context = menu.kind === 'chat' ? VimContexts.CHAT_LIST : VimContexts.MESSAGES;
         commitResolution({
-          current,
-          result: { state: current.engine, actions: [{ type: ActionTypes.PIN_TOGGLE }], status: 'resolved' },
+          current: { ...current, engine: { ...current.engine, context } },
+          result: {
+            state: { ...current.engine, context },
+            actions: [{ type: ActionTypes.PIN_TOGGLE }],
+            status: 'resolved',
+          },
         });
         return;
       }
@@ -1923,7 +1979,13 @@ export const App = (props: IAppProps) => {
       {/* In place of the status line, not above it: see CommandLine's own
           doc comment. The chrome budget is unchanged either way, so pressing
           `:` never resizes a pane. */}
-      {state.overlay === 'command' ? (
+      {state.overlay === 'reaction' ? (
+        <ReactionPicker
+          tokens={tokens}
+          width={width}
+          chosen={(cursorMessage?.reactions ?? []).find(reaction => reaction.chosen)?.emoji ?? null}
+        />
+      ) : state.overlay === 'command' ? (
         <CommandLine query={state.commandQuery} tokens={tokens} width={width} />
       ) : (
       <StatusLine

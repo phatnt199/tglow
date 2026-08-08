@@ -3,6 +3,7 @@ import { test, expect } from 'bun:test';
 import { ApplicationStoreService } from '../../core/application-store.ts';
 import { DatabaseService } from '../../core/cache/index.ts';
 import { HISTORY_PAGE_SIZE, MessageService, type IMessageAdapter, type IRawMessage } from '../../core/message-service.ts';
+import type { IMessageReaction } from '../../core/reactions.ts';
 import { MessageOrigins, UpdateService } from '../../core/update-service.ts';
 
 const buildRawMessage = (overrides: Partial<IRawMessage> = {}): IRawMessage => ({
@@ -24,6 +25,7 @@ const buildAdapter = (overrides: Partial<IMessageAdapter> = {}): IMessageAdapter
   delete: async (): Promise<void> => {},
   markRead: async (): Promise<void> => {},
   pinMessage: async (): Promise<void> => {},
+  react: async (): Promise<IMessageReaction[]> => [],
   // MessageService never calls this -- UpdateService (src/__tests__/core/update-service.test.ts)
   // is what exercises it -- but IMessageAdapter requires it, so a stub keeps this fake whole.
   subscribeToNewMessages: () => (): void => {},

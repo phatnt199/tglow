@@ -7,6 +7,7 @@ import { DatabaseService, type IMessageRow } from '../../core/cache/index.ts';
 import { ReadDirections, type ILiveMessage, type IMessageAdapter, type IRawMessage, type IReadReceipt } from '../../core/message-service.ts';
 import type { ITypingStatus } from '../../core/typing-status.ts';
 import { buildMessageAdapter } from '../../core/telegram-adapter.ts';
+import type { IMessageReaction } from '../../core/reactions.ts';
 import { MessageOrigins, UpdateService } from '../../core/update-service.ts';
 
 const buildRawMessage = (overrides: Partial<IRawMessage> = {}): IRawMessage => ({
@@ -40,6 +41,7 @@ const buildAdapter = (): {
     // message-service.test.ts) is what exercises this.
     markRead: async (): Promise<void> => {},
     pinMessage: async (): Promise<void> => {},
+  react: async (): Promise<IMessageReaction[]> => [],
     subscribeToNewMessages: subscribeOpts => {
       onMessage = subscribeOpts.onMessage;
       return (): void => {

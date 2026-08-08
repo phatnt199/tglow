@@ -276,6 +276,15 @@ export class DatabaseService {
    * DialogService.sync()'s first fetch -- matches zero rows and is a no-op,
    * not an error.
    */
+  /** A direct UPDATE, the same shape clearUnreadCount uses -- and a no-op for a chat the dialog list has never carried. */
+  setDialogPinned = (opts: { peerId: string; pinned: number }): void => {
+    this.require('setDialogPinned')
+      .update(dialogs)
+      .set({ pinned: opts.pinned })
+      .where(eq(dialogs.peerId, opts.peerId))
+      .run();
+  };
+
   clearUnreadCount = (opts: { peerId: string }): void => {
     this.require('clearUnreadCount')
       .update(dialogs)
@@ -489,6 +498,15 @@ export class DatabaseService {
           .run();
       }
     });
+  };
+
+  /** Wholesale, because Telegram sends the whole set on every change rather than a delta. Empty writes NULL, the same as a message nobody has reacted to. */
+  setMessageReactions = (opts: { peerId: string; id: number; reactions: IMessageReaction[] }): void => {
+    this.require('setMessageReactions')
+      .update(messages)
+      .set({ reactions: opts.reactions.length > 0 ? JSON.stringify(opts.reactions) : null })
+      .where(and(eq(messages.peerId, opts.peerId), eq(messages.id, opts.id)))
+      .run();
   };
 
   /** A direct UPDATE, the same shape clearUnreadCount uses: one column, and a no-op when the row is not cached. */

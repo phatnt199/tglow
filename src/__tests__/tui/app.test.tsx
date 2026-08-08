@@ -232,6 +232,14 @@ const mount = async (opts: {
   const onLogout = async (): Promise<void> => {
     loggedOut.push(1);
   };
+  const reacted: Array<{ peerId: string; messageId: number; emoji: string }> = [];
+  const onReact = async (request: { peerId: string; messageId: number; emoji: string }): Promise<void> => {
+    reacted.push(request);
+  };
+  const pinnedChats: string[] = [];
+  const onPinChat = async (request: { peerId: string }): Promise<void> => {
+    pinnedChats.push(request.peerId);
+  };
   const pinned: Array<{ peerId: string; messageId: number }> = [];
   const onPin = async (target: { peerId: string; messageId: number }): Promise<void> => {
     pinned.push(target);
@@ -272,6 +280,8 @@ const mount = async (opts: {
       onPin={onPin}
       onLoadOlder={onLoadOlder}
       onLogout={onLogout}
+      onPinChat={onPinChat}
+      onReact={onReact}
       onQuit={() => { quit.push(true); }}
       onOpenChat={onOpenChat}
       onMarkRead={onMarkRead}
@@ -279,7 +289,7 @@ const mount = async (opts: {
     { width: opts.width ?? TERMINAL_WIDTH, height: opts.height ?? TERMINAL_HEIGHT },
   );
   await renderer.flush();
-  return { renderer, store, sent, composerAtSend, edited, deleted, pinned, olderRequests, loggedOut, opened, marked, quit, database };
+  return { renderer, store, sent, composerAtSend, edited, deleted, pinned, pinnedChats, reacted, olderRequests, loggedOut, opened, marked, quit, database };
 };
 
 test('starts in NORMAL mode with both panes on screen', async () => {
@@ -3402,4 +3412,106 @@ test('a drag that starts off the dividers resizes nothing', async () => {
 
   expect(store.getState().folderHeight).toBeNull();
   expect(store.getState().sidebarWidth).toBeNull();
+});
+
+// ── pinning a chat ────────────────────────────────────────────────────────
+
+// One key, two things to pin, told apart by which pane has focus -- the same
+// way j and k already mean "next chat" or "next message" depending on where
+// you are.
+test('P pins the chat when the chat list has focus, and the message otherwise', async () => {
+  const { renderer, store, pinned, pinnedChats } = await mount({ dialogs: manyDialogs });
+
+  await act(async () => { renderer.mockInput.pressKey('P'); });
+  await renderer.flush();
+  expect(pinned).toHaveLength(1);
+  expect(pinnedChats).toHaveLength(0);
+
+  await act(async () => { store.setState({ patch: { engine: { ...store.getState().engine, context: VimContexts.CHAT_LIST } } }); });
+  await act(async () => { renderer.mockInput.pressKey('P'); });
+  await renderer.flush();
+  expect(pinnedChats).toEqual(['u1']);
+});
+
+// A menu is opened by pointing at something rather than by focusing it, so
+// the pin has to follow the menu rather than the keyboard.
+test('Pin from a chat menu pins that chat, whatever the keyboard was on', async () => {
+  const { renderer, store, pinnedChats } = await mount({ dialogs: manyDialogs });
+  const mouse = createMockMouse(renderer.renderer);
+  expect(store.getState().engine.context).not.toBe(VimContexts.CHAT_LIST);
+
+  // Right-click the second chat: two rows per chat, so it starts at row 3.
+  await act(async () => { await mouse.click(6, 3, MouseButtons.RIGHT); });
+  await renderer.flush();
+  expect(store.getState().contextMenu?.kind).toBe('chat');
+  expect(store.getState().chatCursor).toBe(1);
+
+  // Open, Pin -- so Pin is one down.
+  await act(async () => { renderer.mockInput.pressKey('j'); });
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+
+  expect(pinnedChats).toEqual([manyDialogs[1]!.peerId]);
+});
+
+// ── reacting ──────────────────────────────────────────────────────────────
+
+// Two keystrokes: R, then the one the emoji sits on. A row you have to walk to
+// with h/l would be four or five for the ones on the right, which is how a
+// quick gesture becomes a chore.
+test('R then a home-row key reacts, in two keystrokes', async () => {
+  const { renderer, store, reacted } = await mount();
+
+  await act(async () => { renderer.mockInput.pressKey('R'); });
+  await renderer.flush();
+  expect(store.getState().overlay).toBe('reaction');
+  expect(renderer.captureCharFrame()).toContain('React');
+
+  await act(async () => { renderer.mockInput.pressKey('a'); });
+  await renderer.flush();
+
+  expect(reacted).toEqual([{ peerId: 'u1', messageId: 1, emoji: '👍' }]);
+  expect(store.getState().overlay).toBeNull();
+});
+
+// The picker owns every key while it is open, like the command line: an `i`
+// here is a key that is not a reaction, not a way into insert mode.
+test('keys do not fall through the reaction picker', async () => {
+  const { renderer, store, reacted } = await mount();
+
+  await act(async () => { renderer.mockInput.pressKey('R'); });
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await renderer.flush();
+
+  expect(store.getState().engine.mode).toBe(VimModes.NORMAL);
+  expect(reacted).toHaveLength(0);
+  // A key that is not a reaction leaves the picker open rather than closing
+  // it: a mistyped key should cost a keystroke, not the gesture.
+  expect(store.getState().overlay).toBe('reaction');
+});
+
+test('escape closes the reaction picker without reacting', async () => {
+  const { renderer, store, reacted } = await mount();
+
+  await act(async () => { renderer.mockInput.pressKey('R'); });
+  await pressEscape(renderer);
+
+  expect(store.getState().overlay).toBeNull();
+  expect(reacted).toHaveLength(0);
+});
+
+// Reacting is undone by choosing the same one again, so the picker marks
+// which one is already yours -- otherwise "react" and "un-react" look
+// identical at the moment you press the key.
+test('the picker marks the reaction you already chose', async () => {
+  const mine: IMessageRow[] = [{
+    peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'hi', out: 0, entities: [], replyToMessageId: null,
+    reactions: [{ emoji: '🔥', count: 2, chosen: true }],
+  }];
+  const { renderer } = await mount({ messages: mine });
+
+  await act(async () => { renderer.mockInput.pressKey('R'); });
+  await renderer.flush();
+
+  expect(renderer.captureCharFrame()).toContain('🔥✓');
 });
