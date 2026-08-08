@@ -11,6 +11,8 @@ export interface IApplicationConfiguration {
   timeoutMilliseconds: number;
   sessionPath: string;
   cachePath: string;
+  /** Where downloaded photo thumbnails are kept, so the same picture is fetched once rather than once per launch. */
+  thumbnailDirectory: string;
   logPath: string;
   /**
    * Where `palette` is looked up before the twelve built-ins, so a theme

@@ -8,7 +8,7 @@
   },
   "scripts": {
     "start": "bun run src/main.ts",
-    "build": "bun run scripts/build-migrations.ts && bun build --compile src/main.ts --outfile dist/tglow && bun run scripts/checksum.ts dist/tglow",
+    "build": "bun run scripts/build-migrations.ts && bun build --compile --asset-naming=\"[name].[ext]\" src/main.ts --outfile dist/tglow && bun run scripts/checksum.ts dist/tglow",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
@@ -20,9 +20,9 @@
     "@opentui/react": "0.4.5",
     "@venizia/ignis-helpers": "0.1.1-14",
     "@venizia/ignis-inversion": "0.1.1-6",
+    "chafa-wasm": "^0.3.3",
     "drizzle-orm": "0.45.2",
     "hono": "^4.12.33",
-    "jpeg-js": "^0.4.4",
     "react": "19.2.8",
     "reflect-metadata": "0.2.2",
     "teleproto": "1.228.5"

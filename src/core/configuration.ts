@@ -104,6 +104,7 @@ export class ConfigurationService {
         : DEFAULT_TIMEOUT_MILLISECONDS,
       sessionPath: join(dataHome, 'tglow', 'session'),
       cachePath: join(dataHome, 'tglow', 'cache.sqlite'),
+      thumbnailDirectory: join(dataHome, 'tglow', 'thumbnails'),
       logPath: join(dataHome, 'tglow', 'tglow.log'),
       // Beside the config file, not under dataHome: themes are hand-edited
       // input like config.toml, not state tglow writes. Derived from the

@@ -15,7 +15,7 @@ const buildConfiguration = (): IApplicationConfiguration => {
     palette: 'sage',
     timeoutMilliseconds: 400,
     sessionPath: join(directory, 'session'),
-    cachePath: join(directory, 'cache.sqlite'),
+    thumbnailDirectory: '/tmp/tglow-thumbs', cachePath: join(directory, 'cache.sqlite'),
     logPath: join(directory, 'tglow.log'),
     themeDirectory: join(directory, 'themes'),
     mouse: true,
