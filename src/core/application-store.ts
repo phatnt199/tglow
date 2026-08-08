@@ -67,6 +67,24 @@ export interface IApplicationState {
    */
   typingByPeer: Map<string, IActiveTyping>;
   messages: IMessageRow[];
+  /**
+   * True while an older page is in flight.
+   *
+   * Reaching the top of the loaded history asks for the page before it, and
+   * the cursor stays there while the request runs -- so without this, every
+   * key press near the top would ask again, and a slow connection would queue
+   * a dozen identical fetches whose replies then each shift the cursor.
+   */
+  loadingOlder: boolean;
+  /**
+   * True once the chat's very first message is loaded: there is nothing older
+   * to ask for, and asking anyway would be a round trip per keystroke at the
+   * top of every short conversation.
+   *
+   * Reset by loadHistory, since it is a claim about the open chat rather than
+   * about the application.
+   */
+  reachedOldest: boolean;
   activePeerId: string | null;
   chatCursor: number;
   messageCursor: number;
@@ -169,6 +187,8 @@ const INITIAL_STATE: IApplicationState = {
   peerKinds: new Map(),
   typingByPeer: new Map(),
   messages: [],
+  loadingOlder: false,
+  reachedOldest: false,
   activePeerId: null,
   chatCursor: 0,
   messageCursor: 0,

@@ -2,7 +2,7 @@ import { test, expect } from 'bun:test';
 
 import { ApplicationStoreService } from '../../core/application-store.ts';
 import { DatabaseService } from '../../core/cache/index.ts';
-import { MessageService, type IMessageAdapter, type IRawMessage } from '../../core/message-service.ts';
+import { HISTORY_PAGE_SIZE, MessageService, type IMessageAdapter, type IRawMessage } from '../../core/message-service.ts';
 import { MessageOrigins, UpdateService } from '../../core/update-service.ts';
 
 const buildRawMessage = (overrides: Partial<IRawMessage> = {}): IRawMessage => ({
@@ -150,16 +150,18 @@ test('a failed send keeps the composed text', async () => {
   database.close();
 });
 
-// A hardcoded republish limit would let the visible list grow past whatever
-// loadHistory last showed, so messageCursor could point past the end of it.
-test('send republishes using the limit from the last loadHistory call', async () => {
+// A send adds to the window rather than sliding it. Republishing at exactly
+// the size already on screen puts the new message at the bottom and pushes the
+// oldest one off the top -- invisible at the old fixed limit of 200, and very
+// visible now the window is only as big as the user has paged it open.
+test('sending keeps everything on screen and adds to it', async () => {
   const { service, store, database } = buildService(buildAdapter());
   database.insertMessages({
     messages: [{ peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'earlier', out: 0, entities: [], replyToMessageId: null }],
   });
   await service.loadHistory({ peerId: 'u1', limit: 1 });
   await service.send({ peerId: 'u1', text: 'on my way' });
-  expect(store.getState().messages.map(message => message.text)).toEqual(['on my way']);
+  expect(store.getState().messages.map(message => message.text)).toEqual(['earlier', 'on my way']);
   database.close();
 });
 
@@ -655,5 +657,216 @@ test('opening an empty chat leaves the cursor at zero', async () => {
   await service.loadHistory({ peerId: 'u1', limit: 50 });
 
   expect(store.getState().messageCursor).toBe(0);
+  database.close();
+});
+
+// ── paging backwards ──────────────────────────────────────────────────────
+
+/** `count` messages, newest last, ids ascending from 1. */
+const seedHistory = (count: number): IRawMessage[] =>
+  Array.from({ length: count }, (unused, index) => buildRawMessage({
+    id: index + 1, date: (index + 1) * 100, text: `msg${index + 1}`,
+  }));
+
+/** An adapter that serves a fixed history, honouring `beforeId` the way Telegram does. */
+const buildPagingAdapter = (history: IRawMessage[]): { adapter: IMessageAdapter; calls: (number | undefined)[] } => {
+  const calls: (number | undefined)[] = [];
+  const adapter = buildAdapter({
+    fetchHistory: async opts => {
+      calls.push(opts.beforeId);
+      // Newest-first, exclusive of beforeId -- what getMessages({ offsetId })
+      // returns.
+      const older = opts.beforeId === undefined
+        ? history
+        : history.filter(message => message.id < opts.beforeId!);
+      return [...older].reverse().slice(0, opts.limit);
+    },
+  });
+  return { adapter, calls };
+};
+
+test('opening a chat loads one page, not the whole history', async () => {
+  const { adapter } = buildPagingAdapter(seedHistory(500));
+  const { service, store, database } = buildService(adapter);
+
+  await service.loadHistory({ peerId: 'u1', limit: HISTORY_PAGE_SIZE });
+
+  expect(store.getState().messages).toHaveLength(HISTORY_PAGE_SIZE);
+  expect(store.getState().messages[0]!.text).toBe('msg451');
+  expect(store.getState().reachedOldest).toBe(false);
+  database.close();
+});
+
+// The page is prepended, so every existing index shifts. A cursor left alone
+// would jump the view backwards by exactly the number of new messages -- the
+// classic infinite-scroll lurch.
+test('an older page is prepended and the cursor keeps its message', async () => {
+  const { adapter } = buildPagingAdapter(seedHistory(500));
+  const { service, store, database } = buildService(adapter);
+  await service.loadHistory({ peerId: 'u1', limit: HISTORY_PAGE_SIZE });
+
+  store.setState({ patch: { messageCursor: 0 } });
+  const under = store.getState().messages[0]!.text;
+
+  await service.loadOlder({ peerId: 'u1' });
+
+  const state = store.getState();
+  expect(state.messages).toHaveLength(HISTORY_PAGE_SIZE * 2);
+  expect(state.messages[state.messageCursor]!.text).toBe(under);
+  expect(state.messageCursor).toBe(HISTORY_PAGE_SIZE);
+  database.close();
+});
+
+// Exclusive: asking again from the oldest loaded id must not re-serve it.
+test('each page asks from the oldest message on screen', async () => {
+  const { adapter, calls } = buildPagingAdapter(seedHistory(500));
+  const { service, store, database } = buildService(adapter);
+  await service.loadHistory({ peerId: 'u1', limit: HISTORY_PAGE_SIZE });
+
+  await service.loadOlder({ peerId: 'u1' });
+  await service.loadOlder({ peerId: 'u1' });
+
+  expect(calls).toEqual([undefined, 451, 401]);
+  expect(store.getState().messages).toHaveLength(HISTORY_PAGE_SIZE * 3);
+  database.close();
+});
+
+// A short page is the beginning of the conversation. Without noticing, every
+// keystroke at the top would be a round trip that returns nothing.
+test('a page shorter than asked for means there is no more, and asking stops', async () => {
+  const { adapter, calls } = buildPagingAdapter(seedHistory(60));
+  const { service, store, database } = buildService(adapter);
+  await service.loadHistory({ peerId: 'u1', limit: HISTORY_PAGE_SIZE });
+
+  await service.loadOlder({ peerId: 'u1' });
+  expect(store.getState().reachedOldest).toBe(true);
+  expect(store.getState().messages).toHaveLength(60);
+
+  await service.loadOlder({ peerId: 'u1' });
+  await service.loadOlder({ peerId: 'u1' });
+  expect(calls).toEqual([undefined, 11]);
+  database.close();
+});
+
+// A chat whose whole history fits in the first page has nothing behind it, and
+// nothing should ever be asked for.
+test('a chat shorter than a page never asks for more', async () => {
+  const { adapter, calls } = buildPagingAdapter(seedHistory(5));
+  const { service, store, database } = buildService(adapter);
+
+  await service.loadHistory({ peerId: 'u1', limit: HISTORY_PAGE_SIZE });
+  expect(store.getState().reachedOldest).toBe(true);
+
+  await service.loadOlder({ peerId: 'u1' });
+  expect(calls).toEqual([undefined]);
+  database.close();
+});
+
+// The cache often holds more than the window shows -- a previous session that
+// paged further back, or a catch-up's own fetch. Reading it costs no round
+// trip and works with no connection at all.
+test('the cache is used before the network', async () => {
+  const { adapter, calls } = buildPagingAdapter(seedHistory(500));
+  const { service, store, database } = buildService(adapter);
+  database.insertMessages({
+    messages: seedHistory(200).map(message => ({ ...message, peerId: 'u1' })),
+  });
+
+  await service.loadHistory({ peerId: 'u1', limit: HISTORY_PAGE_SIZE });
+  await service.loadOlder({ peerId: 'u1' });
+
+  // Only the open-the-chat fetch: the older page came out of the cache.
+  expect(calls).toEqual([undefined]);
+  expect(store.getState().messages).toHaveLength(HISTORY_PAGE_SIZE * 2);
+  database.close();
+});
+
+// Reaching the top and staying there fires the effect on every keystroke; only
+// one of them may become a request.
+test('a page already in flight is not asked for twice', async () => {
+  const { adapter, calls } = buildPagingAdapter(seedHistory(500));
+  // A box rather than a `let`: TypeScript narrows a local assigned only inside
+  // a callback to `null` and then refuses to call it.
+  const gate: { release: (() => void) | null } = { release: null };
+  const gated: IMessageAdapter = {
+    ...adapter,
+    fetchHistory: async opts => {
+      if (opts.beforeId !== undefined) {
+        await new Promise<void>(resolve => { gate.release = resolve; });
+      }
+      return adapter.fetchHistory(opts);
+    },
+  };
+  const { service, store, database } = buildService(gated);
+  await service.loadHistory({ peerId: 'u1', limit: HISTORY_PAGE_SIZE });
+
+  const first = service.loadOlder({ peerId: 'u1' });
+  await service.loadOlder({ peerId: 'u1' });
+  await service.loadOlder({ peerId: 'u1' });
+  expect(store.getState().loadingOlder).toBe(true);
+
+  gate.release?.();
+  await first;
+
+  expect(calls.filter(call => call !== undefined)).toEqual([451]);
+  expect(store.getState().loadingOlder).toBe(false);
+  database.close();
+});
+
+// Offline is not an error state for reading: the window stays exactly as it
+// was, and the failure is reported rather than swallowed.
+test('a failed page leaves the window alone and says so', async () => {
+  const { adapter } = buildPagingAdapter(seedHistory(500));
+  let failing = false;
+  const { service, store, database } = buildService({
+    ...adapter,
+    fetchHistory: async opts => {
+      if (failing) {
+        throw new Error('NETWORK_DOWN');
+      }
+      return adapter.fetchHistory(opts);
+    },
+  });
+  await service.loadHistory({ peerId: 'u1', limit: HISTORY_PAGE_SIZE });
+  failing = true;
+
+  await service.loadOlder({ peerId: 'u1' });
+
+  const state = store.getState();
+  expect(state.messages).toHaveLength(HISTORY_PAGE_SIZE);
+  expect(state.statusMessage).toContain('NETWORK_DOWN');
+  // The network failed, not the history -- the pages may still be there when
+  // it comes back, so it must stay willing to ask again.
+  expect(state.reachedOldest).toBe(false);
+  expect(state.loadingOlder).toBe(false);
+  database.close();
+});
+
+// Opening another chat mid-flight must not prepend one conversation's history
+// to another's.
+test('a page that lands after the chat changed is dropped', async () => {
+  const { adapter } = buildPagingAdapter(seedHistory(500));
+  // A box rather than a `let`: TypeScript narrows a local assigned only inside
+  // a callback to `null` and then refuses to call it.
+  const gate: { release: (() => void) | null } = { release: null };
+  const { service, store, database } = buildService({
+    ...adapter,
+    fetchHistory: async opts => {
+      if (opts.beforeId !== undefined) {
+        await new Promise<void>(resolve => { gate.release = resolve; });
+      }
+      return adapter.fetchHistory(opts);
+    },
+  });
+  database.upsertPeer({ id: 'u2', type: 'user', accessHash: 'h', title: 'Bob', username: null });
+  await service.loadHistory({ peerId: 'u1', limit: HISTORY_PAGE_SIZE });
+
+  const inFlight = service.loadOlder({ peerId: 'u1' });
+  store.setState({ patch: { activePeerId: 'u2', messages: [], messageCursor: 0 } });
+  gate.release?.();
+  await inFlight;
+
+  expect(store.getState().activePeerId).toBe('u2');
+  expect(store.getState().messages).toEqual([]);
   database.close();
 });

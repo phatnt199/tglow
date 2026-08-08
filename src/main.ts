@@ -18,6 +18,7 @@ import {
   DialogService,
   DifferenceService,
   FolderService,
+  HISTORY_PAGE_SIZE,
   MessageSearchService,
   MessageService,
   SessionStoreService,
@@ -31,7 +32,10 @@ import { KeyNormalizerService, KeymapService, VimEngineService } from './keys/in
 import { App } from './tui/app.tsx';
 import { buildTokens, loadTheme, DEFAULT_PALETTE_NAME, ThemeSources } from './tui/theme/index.ts';
 
-const HISTORY_LIMIT = 200;
+// One page. MessageService owns the number and what it means -- opening a chat
+// loads this many and reaching the top of them loads another -- so main.ts
+// passes it on rather than keeping a second copy that could drift.
+const HISTORY_LIMIT = HISTORY_PAGE_SIZE;
 
 const main = async (): Promise<void> => {
   const configurationService = new ConfigurationService();
@@ -234,6 +238,12 @@ const main = async (): Promise<void> => {
         onQuit: quit,
         onOpenChat: async (opts: { peerId: string }): Promise<void> => {
           await messageService.loadHistory({ peerId: opts.peerId, limit: HISTORY_LIMIT });
+        },
+        // A pass-through, like onMarkRead: App decides *when* to ask for the
+        // page behind the one on screen; every guard on whether to actually
+        // fetch it lives in the service.
+        onLoadOlder: async (opts: { peerId: string }): Promise<void> => {
+          await messageService.loadOlder({ peerId: opts.peerId });
         },
         // A direct pass-through: App already decides *when* a chat has been
         // read (opening one, or the cursor reaching its newest message) and

@@ -4,16 +4,26 @@ import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
 import { BindingKeys } from '../common/index.ts';
 import type { ApplicationStoreService, IApplicationState } from './application-store.ts';
 import type { DatabaseService, IMessageRow } from './cache/index.ts';
-import { ReadDirections, type ILiveMessage, type IMessageAdapter, type IRawMessage, type IReadReceipt } from './message-service.ts';
+import { HISTORY_PAGE_SIZE, ReadDirections, type ILiveMessage, type IMessageAdapter, type IRawMessage, type IReadReceipt } from './message-service.ts';
 import { TYPING_STATUS_TTL_MS, type ITypingStatus } from './typing-status.ts';
 import { advanceUpdateState } from './update-state.ts';
 
-// Mirrors MessageService's SEND_REFRESH_LIMIT and main.ts's HISTORY_LIMIT: the
-// page size a live republish shows. UpdateService cannot see the limit
-// MessageService's own loadHistory() was last called with -- that is private
-// state on a different instance -- so it keeps its own, generous enough for a
-// single screen of history.
-const MESSAGE_REFRESH_LIMIT = 200;
+/**
+ * How much of the chat a live arrival republishes: everything already on
+ * screen, plus room for the arrival itself.
+ *
+ * Taken from the store rather than a constant of its own. UpdateService cannot
+ * see MessageService's private window size, but both write to the same
+ * `messages` array, and its length *is* that window -- so this cannot drift
+ * from it the way a second hardcoded number did.
+ *
+ * A fixed limit is actively wrong now the conversation pages: 200 would expand
+ * a freshly opened 50-message window to 200 on the first message anyone sends,
+ * and would silently truncate a window the user had scrolled back further than
+ * that -- leaving messageCursor pointing past the end of the list it indexes.
+ */
+const resolveRefreshLimit = (opts: { loaded: number }): number =>
+  Math.max(opts.loaded + 1, HISTORY_PAGE_SIZE);
 
 /**
  * Where a message reached `apply` from. The two are identical downstream --
@@ -120,7 +130,10 @@ export class UpdateService {
         // a message can arrive mid-loadHistory, and only a cache read keeps
         // ordering and de-duplication correct in that race.
         const nextMessages = this.forDisplay({
-          rows: this._database.listMessages({ peerId: message.peerId, limit: MESSAGE_REFRESH_LIMIT }),
+          rows: this._database.listMessages({
+            peerId: message.peerId,
+            limit: resolveRefreshLimit({ loaded: state.messages.length }),
+          }),
         });
 
         // Follow-if-at-newest: a cursor already on the last message is being

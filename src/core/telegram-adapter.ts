@@ -202,8 +202,17 @@ export const buildDialogAdapter = (opts: { client: TelegramClient }): IDialogAda
 });
 
 export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageAdapter => ({
-  fetchHistory: async (historyOpts: { peerId: string; limit: number }): Promise<IRawMessage[]> => {
-    const messages = await opts.client.getMessages(historyOpts.peerId, { limit: historyOpts.limit });
+  // `offsetId` is GramJS's own name for "only messages older than this one",
+  // and it is exclusive -- read from node_modules/teleproto/client/messages.d.ts
+  // (IterMessagesParams: "Offset message ID (only messages previous to the
+  // given ID will be retrieved). Exclusive."), not guessed. Zero means no
+  // offset, which is what the newest-page call wants, and is also GramJS's own
+  // default -- so the two cases differ only in the number.
+  fetchHistory: async (historyOpts: { peerId: string; limit: number; beforeId?: number }): Promise<IRawMessage[]> => {
+    const messages = await opts.client.getMessages(historyOpts.peerId, {
+      limit: historyOpts.limit,
+      offsetId: historyOpts.beforeId ?? 0,
+    });
 
     return messages
       .filter(message => message.className === 'Message')

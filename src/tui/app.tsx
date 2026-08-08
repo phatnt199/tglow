@@ -81,6 +81,8 @@ export interface IAppProps {
   onEdit: (opts: { messageId: number; text: string }) => Promise<void>;
   onDelete: (opts: { messageIds: number[] }) => Promise<void>;
   onPin: (opts: { peerId: string; messageId: number }) => Promise<void>;
+  /** Load the page of history before the one on screen. Called when the cursor nears the top of it; every guard lives in the service. */
+  onLoadOlder: (opts: { peerId: string }) => Promise<void>;
   onQuit: () => void;
   onOpenChat: (opts: { peerId: string }) => Promise<void>;
   /**
@@ -214,14 +216,38 @@ const CHAT_PICKER_NEXT_TOKENS: readonly string[] = ['<C-n>', 'j'];
 const CHAT_PICKER_PREVIOUS_TOKENS: readonly string[] = ['<C-p>', 'k'];
 
 /**
- * Bounds how many cache rows a single `/` query asks MessageSearchService
- * for. Mirrors main.ts's own HISTORY_LIMIT: state.messages never holds more
- * than that many rows at once (no pagination past it exists yet), so a match
- * outside this many of the newest cached rows could never be present in
- * state.messages for resolveSearchMatchIndices to find anyway -- searching
- * further than this would only cost time, not find anything reachable.
+ * Bounds how many cache rows a single `/` query asks MessageSearchService for.
+ *
+ * This used to mirror a fixed 200-message window and reason that a match
+ * outside it could never be reachable. The conversation pages now, so that is
+ * no longer true -- a match older than what is on screen becomes reachable as
+ * soon as the pages between are loaded, which is what commitSearch below does
+ * before it jumps. The bound is now simply how far back a single search is
+ * willing to look, not a statement about what the view can hold.
  */
-const SEARCH_RESULT_LIMIT = 200;
+const SEARCH_RESULT_LIMIT = 500;
+
+/**
+ * How many pages a committed search will load to reach its oldest match.
+ *
+ * Bounded because each page is a round trip: a search whose only match is
+ * years back should say so rather than silently spending a minute walking
+ * there. Ten pages is well past the fixed window this replaced, so no search
+ * that used to land reaches less far now.
+ */
+const SEARCH_PAGE_BUDGET = 10;
+
+/**
+ * How close to the top of the loaded history the cursor gets before the page
+ * behind it is fetched.
+ *
+ * Not zero: a fetch started only once the cursor is already on the oldest
+ * loaded message is a fetch the user waits for. A few rows of warning is
+ * enough for a page to arrive while they are still reading toward it, and
+ * small enough that opening a chat -- which lands on the newest message --
+ * never triggers one on a history worth paging.
+ */
+const OLDER_PREFETCH_ROWS = 5;
 
 const CONTROL_CHARACTER_BOUNDARY = 0x20;
 const DELETE_CODE_POINT = 0x7f;
@@ -324,7 +350,7 @@ const resolveClipboardText = (opts: {
 export const App = (props: IAppProps) => {
   const {
     store, engine, keymapService, keyNormalizer, messageSearchService, timeoutMilliseconds, tokens, resolveSenderName,
-    onSend, onEdit, onDelete, onPin, onQuit, onOpenChat, onMarkRead,
+    onSend, onEdit, onDelete, onPin, onLoadOlder, onQuit, onOpenChat, onMarkRead,
   } = props;
 
   // useSyncExternalStore re-subscribes whenever the `subscribe` argument's
@@ -585,6 +611,78 @@ export const App = (props: IAppProps) => {
     store.setState({ patch: { ...patch, engine: nextEngineState } });
   };
 
+  /**
+   * `/` committed: find the matches, make sure at least one is reachable, and
+   * jump to it.
+   *
+   * A search reads the whole cache; the cursor can only land on a message the
+   * view actually holds. While the view held a fixed 200 that was a
+   * distinction without a difference, and this was a synchronous function. Now
+   * the conversation pages, matches older than the loaded window are common,
+   * and reporting "no match" against a window that had simply not been opened
+   * far enough would make `/` look broken.
+   *
+   * So: page back until a match is in range. Nothing is loaded when a match is
+   * already there, which is every search that used to work -- their behaviour
+   * is unchanged, including the jump landing on the topmost loaded match.
+   */
+  const commitSearch = async (opts: { query: string }): Promise<void> => {
+    const opened = store.getState();
+    // A blank query is MessageSearchService's own business rule to refuse
+    // (message-search.ts), not App's to re-check -- activePeerId is the one
+    // thing only App can see, so that guard stays here.
+    if (opened.activePeerId === null) {
+      return;
+    }
+    const peerId = opened.activePeerId;
+    const matchIds = messageSearchService
+      .search({ peerId, query: opts.query, limit: SEARCH_RESULT_LIMIT })
+      .map(row => row.id);
+
+    for (let page = 0; page < SEARCH_PAGE_BUDGET; page += 1) {
+      const state = store.getState();
+      const reachable = resolveSearchMatchIndices({ messages: state.messages, matchIds }).length > 0;
+      // Give up on the chat changing underneath too: paging one conversation
+      // toward another's search result would be worse than not jumping.
+      if (reachable || state.reachedOldest || state.activePeerId !== peerId) {
+        break;
+      }
+      await onLoadOlder({ peerId });
+    }
+
+    const current = store.getState();
+    const positions = resolveSearchMatchIndices({ messages: current.messages, matchIds });
+    // Mirrors the chat picker's own "Enter with nothing selected does
+    // nothing" rule: there is no first match to jump to, which reads as "keep
+    // refining the query", not as "give up and close".
+    if (positions.length === 0) {
+      return;
+    }
+
+    store.setState({
+      patch: {
+        overlay: null,
+        searchQuery: '',
+        // What n/N (SEARCH_CYCLE, action-reducer.ts) cycle through once this
+        // overlay has closed -- ids, not positions, so a message that later
+        // moves or is deleted is dropped rather than corrupting the cursor
+        // (resolveSearchMatchIndices's own doc comment).
+        searchMatchIds: matchIds,
+        // The first (topmost, oldest-loaded) match currently on screen --
+        // positions is already sorted ascending by resolveSearchMatchIndices.
+        messageCursor: positions[0]!,
+        searchCursorBeforeOpen: null,
+        // `/` can be opened from the chat list (it is context '*', like \ and
+        // <C-p>) -- MessageView only highlights the cursor row while focused
+        // (message-view.tsx), so without this a jump triggered from there
+        // would move messageCursor with nothing on screen to show it moved.
+        // Mirrors CHAT_OPEN's own side effect (commitResolution below), which
+        // focuses messages for the same reason once it moves the cursor there.
+        engine: { ...current.engine, context: VimContexts.MESSAGES },
+      },
+    });
+  };
+
   useKeyboard(event => {
     // Cleared before anything else, on every key press without exception --
     // an ambiguous key's timer must never survive the key that completes the
@@ -778,47 +876,8 @@ export const App = (props: IAppProps) => {
       }
 
       if (searchToken === ENTER_TOKEN) {
-        // A blank query is MessageSearchService's own business rule to
-        // refuse (message-search.ts), not App's to re-check -- activePeerId
-        // is the one thing only App can see, so that guard stays here.
-        const rows = current.activePeerId === null
-          ? []
-          : messageSearchService.search({
-            peerId: current.activePeerId,
-            query: current.searchQuery,
-            limit: SEARCH_RESULT_LIMIT,
-          });
-        const matchIds = rows.map(row => row.id);
-        const positions = resolveSearchMatchIndices({ messages: current.messages, matchIds });
-        // Mirrors the chat picker's own "Enter with nothing selected does
-        // nothing" rule: there is no first match to jump to yet, which reads
-        // as "keep refining the query", not as "give up and close".
-        if (positions.length === 0) {
-          return;
-        }
-        store.setState({
-          patch: {
-            overlay: null,
-            searchQuery: '',
-            // What n/N (SEARCH_CYCLE, action-reducer.ts) cycle through once
-            // this overlay has closed -- ids, not positions, so a message
-            // that later moves or is deleted is dropped rather than
-            // corrupting the cursor (resolveSearchMatchIndices's own doc
-            // comment).
-            searchMatchIds: matchIds,
-            // The first (topmost, oldest-loaded) match currently on screen --
-            // positions is already sorted ascending by resolveSearchMatchIndices.
-            messageCursor: positions[0]!,
-            searchCursorBeforeOpen: null,
-            // `/` can be opened from the chat list (it is context '*', like
-            // \ and <C-p>) -- MessageView only highlights the cursor row
-            // while focused (message-view.tsx), so without this a jump
-            // triggered from there would move messageCursor with nothing on
-            // screen to show it moved. Mirrors CHAT_OPEN's own side effect
-            // (commitResolution below), which focuses messages for the same
-            // reason once it moves the cursor there.
-            engine: { ...current.engine, context: VimContexts.MESSAGES },
-          },
+        void commitSearch({ query: current.searchQuery }).catch(error => {
+          logRejection({ method: 'commitSearch', error });
         });
         return;
       }
@@ -972,6 +1031,26 @@ export const App = (props: IAppProps) => {
       }
     };
   }, []);
+
+  // Reaching the top of the loaded history loads the page before it.
+  //
+  // An effect on the cursor rather than a case in commitResolution's switch,
+  // because there is no one action that means "scrolled up": k, 3k, gg, <C-u>,
+  // a wheel notch and a search jump all move the cursor, and scrollBy does not
+  // even go through commitResolution. Watching where the cursor ended up
+  // catches every route, including ones added later.
+  //
+  // The guards all live in MessageService.loadOlder -- already loading, no
+  // more to load, wrong chat -- so this stays a statement of when to ask
+  // rather than a second copy of when not to.
+  useEffect(() => {
+    if (state.activePeerId === null || state.messageCursor > OLDER_PREFETCH_ROWS) {
+      return;
+    }
+    void onLoadOlder({ peerId: state.activePeerId }).catch(error => {
+      logRejection({ method: 'onLoadOlder', error });
+    });
+  }, [state.activePeerId, state.messageCursor, state.messages.length]);
 
   const activeDialog = state.dialogs.find(dialog => dialog.peerId === state.activePeerId);
   const isConfirming = state.pendingConfirmation !== null;
@@ -1625,6 +1704,7 @@ export const App = (props: IAppProps) => {
         messagePinned={cursorMessage?.pinned === 1}
         unreadChats={unreadChats}
         composerLength={state.composerText.length}
+        loadingOlder={state.loadingOlder}
       />
     </box>
   );

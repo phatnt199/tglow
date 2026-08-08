@@ -59,6 +59,8 @@ export interface IStatusLineProps {
   unreadChats?: number;
   /** Characters in the composer, shown against Telegram's limit while in insert mode. */
   composerLength?: number;
+  /** True while the page behind the loaded history is being fetched. */
+  loadingOlder?: boolean;
 }
 
 /** One column of air at each end, matching the pane rails above. */
@@ -138,6 +140,10 @@ const buildTrailing = (props: IStatusLineProps): IStatusSegment[] => {
 
   return [
     { text: showcmd, tone: StatusTones.ACCENT, priority: 95 },
+    // High, and deliberately: this is the answer to "why has scrolling up
+    // stopped", and a line too narrow to say it is exactly a line where the
+    // question is being asked.
+    { text: props.loadingOlder === true ? 'loading…' : '', tone: StatusTones.ACCENT, priority: 85 },
     {
       text: composer,
       tone: length > MESSAGE_LENGTH_LIMIT ? StatusTones.ALERT : StatusTones.DIM,

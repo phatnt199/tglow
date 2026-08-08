@@ -105,6 +105,7 @@ const mount = async (opts: {
   messages?: IMessageRow[];
   onSend?: (text: string) => Promise<void>;
   onEdit?: (edit: { messageId: number; text: string }) => Promise<void>;
+  onLoadOlder?: (opts: { peerId: string }) => Promise<void>;
   onDelete?: (deletion: { messageIds: number[] }) => Promise<void>;
   onOpenChat?: (chat: { peerId: string }) => Promise<void>;
   /**
@@ -215,6 +216,13 @@ const mount = async (opts: {
   // composer text to protect, so nothing here needs the "still what I sent?"
   // guard -- App itself clears pendingConfirmation the instant y is pressed
   // (action-reducer.ts's CONFIRM case), before this ever runs.
+  // Every page the view asked for, so a test can assert both that reaching
+  // the top asks and that a chat with nothing behind it does not.
+  const olderRequests: string[] = [];
+  const onLoadOlder = async (request: { peerId: string }): Promise<void> => {
+    olderRequests.push(request.peerId);
+    await opts.onLoadOlder?.(request);
+  };
   const pinned: Array<{ peerId: string; messageId: number }> = [];
   const onPin = async (target: { peerId: string; messageId: number }): Promise<void> => {
     pinned.push(target);
@@ -253,6 +261,7 @@ const mount = async (opts: {
       onEdit={onEdit}
       onDelete={onDelete}
       onPin={onPin}
+      onLoadOlder={onLoadOlder}
       onQuit={() => { quit.push(true); }}
       onOpenChat={onOpenChat}
       onMarkRead={onMarkRead}
@@ -260,7 +269,7 @@ const mount = async (opts: {
     { width: opts.width ?? TERMINAL_WIDTH, height: opts.height ?? TERMINAL_HEIGHT },
   );
   await renderer.flush();
-  return { renderer, store, sent, composerAtSend, edited, deleted, pinned, opened, marked, quit, database };
+  return { renderer, store, sent, composerAtSend, edited, deleted, pinned, olderRequests, opened, marked, quit, database };
 };
 
 test('starts in NORMAL mode with both panes on screen', async () => {
@@ -2852,4 +2861,156 @@ test('a half-typed command reaches the status line', async () => {
   await renderer.flush();
 
   expect(renderer.captureCharFrame()).toContain('"a');
+});
+
+// ── paging backwards ──────────────────────────────────────────────────────
+
+// Long enough that the newest message is far from the top, so "opened a chat"
+// and "scrolled to the top" are genuinely different positions.
+const longHistory: IMessageRow[] = Array.from({ length: 40 }, (unused, index) => ({
+  peerId: 'u1', id: index + 1, fromId: 'u1', date: (index + 1) * 100,
+  text: `msg${String(index + 1).padStart(3, '0')}`, out: 0, entities: [], replyToMessageId: null,
+}));
+
+// Opening a chat lands on the newest message, which is nowhere near the top --
+// so nothing should be asked for until the user actually scrolls back.
+// mount seeds the store directly and leaves messageCursor at its initial 0,
+// which is the top -- so the cursor is put where a real open would leave it
+// (MessageService.loadHistory's own cursorAtNewest) before anything is
+// asserted, or this would be testing the harness rather than the application.
+test('opening a chat asks for no older pages', async () => {
+  const { renderer, store, olderRequests } = await mount({ messages: longHistory });
+  await act(async () => { store.setState({ patch: { messageCursor: longHistory.length - 1 } }); });
+  await renderer.flush();
+  olderRequests.length = 0;
+
+  await act(async () => { renderer.mockInput.pressKey('k'); });
+  await renderer.flush();
+
+  expect(olderRequests).toEqual([]);
+});
+
+// Every route that moves the cursor has to trigger this, which is why it is an
+// effect on the cursor rather than a case per action: k, gg, a wheel notch and
+// a search jump are four different code paths and one behaviour.
+test('reaching the top asks for the page behind it, however the cursor got there', async () => {
+  const { renderer, store, olderRequests } = await mount({ messages: longHistory });
+  await act(async () => { store.setState({ patch: { messageCursor: longHistory.length - 1 } }); });
+  await renderer.flush();
+  olderRequests.length = 0;
+
+  await act(async () => { renderer.mockInput.pressKey('g'); });
+  await act(async () => { renderer.mockInput.pressKey('g'); });
+  await renderer.flush();
+  expect(olderRequests).toEqual(['u1']);
+});
+
+// A wheel over the conversation does not go through commitResolution at all --
+// it patches the store directly -- so an action-by-action trigger would miss
+// it entirely. This is the test that made the effect the right shape.
+test('scrolling to the top with the wheel asks too', async () => {
+  const { renderer, store, olderRequests } = await mount({ messages: longHistory });
+  const mouse = createMockMouse(renderer.renderer);
+  await act(async () => { store.setState({ patch: { messageCursor: longHistory.length - 1 } }); });
+  await renderer.flush();
+  olderRequests.length = 0;
+
+  for (let notch = 0; notch < 20; notch += 1) {
+    await act(async () => { await mouse.scroll(40, 3, 'up'); });
+    await renderer.flush();
+  }
+
+  expect(store.getState().messageCursor).toBe(0);
+  expect(olderRequests.length).toBeGreaterThan(0);
+  expect(olderRequests.every(peerId => peerId === 'u1')).toBe(true);
+});
+
+// The fetch starts a few rows before the top, so the page arrives while the
+// user is still reading toward it rather than after they hit the end.
+test('the page is asked for before the cursor reaches the very top', async () => {
+  const { renderer, store, olderRequests } = await mount({ messages: longHistory });
+  await act(async () => { store.setState({ patch: { messageCursor: longHistory.length - 1 } }); });
+  await renderer.flush();
+  olderRequests.length = 0;
+
+  await act(async () => { store.setState({ patch: { messageCursor: 3 } }); });
+  await renderer.flush();
+
+  expect(store.getState().messageCursor).toBe(3);
+  expect(olderRequests).toEqual(['u1']);
+});
+
+// A search reads the whole cache; the cursor can only land on a message the
+// view holds. While the view held a fixed 200 those were the same thing. Now
+// the conversation pages, a match older than the window is ordinary -- and
+// reporting "no match" against a window that had simply not been opened far
+// enough would make `/` look broken.
+test('a search reaches a match older than the loaded window', async () => {
+  // The whole history is in the cache; the view starts with only the newest
+  // ten of it, exactly as a freshly opened chat would.
+  const window = longHistory.slice(-10);
+  const { renderer, store, olderRequests } = await mount({
+    messages: longHistory,
+    // Mirrors MessageService.loadOlder, including the part that matters here:
+    // the cursor moves by however many messages were actually prepended, and a
+    // page that added nothing moves it not at all. A fake that shifted by the
+    // page size regardless walked the cursor away from the match it had just
+    // landed on, every time the prefetch effect fired against a full window.
+    onLoadOlder: async (): Promise<void> => {
+      const shown = store.getState().messages.length;
+      const grown = longHistory.slice(Math.max(0, longHistory.length - shown - 10));
+      const added = grown.length - shown;
+      if (added <= 0) {
+        return;
+      }
+      store.setState({
+        patch: { messages: grown, messageCursor: store.getState().messageCursor + added },
+      });
+    },
+  });
+  await act(async () => {
+    store.setState({ patch: { messages: window, messageCursor: window.length - 1 } });
+  });
+  await renderer.flush();
+  olderRequests.length = 0;
+
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  for (const character of 'msg003') {
+    await act(async () => { renderer.mockInput.pressKey(character); });
+  }
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+
+  const state = store.getState();
+  expect(olderRequests.length).toBeGreaterThan(0);
+  expect(state.messages[state.messageCursor]!.text).toBe('msg003');
+  expect(state.overlay).toBeNull();
+});
+
+// The pages are loaded only when they are needed. A match already on screen
+// must not cost a single round trip -- that is every search that worked
+// before, and their behaviour is unchanged.
+//
+// The target is deliberately well clear of the top of the window: landing
+// within a few rows of it prefetches the page behind, correctly, and that
+// would be indistinguishable here from commitSearch having paged to find it.
+test('a search for something already on screen loads nothing', async () => {
+  const window = longHistory.slice(-10);
+  const { renderer, store, olderRequests } = await mount({ messages: longHistory });
+  await act(async () => {
+    store.setState({ patch: { messages: window, messageCursor: window.length - 1 } });
+  });
+  await renderer.flush();
+  olderRequests.length = 0;
+
+  await act(async () => { renderer.mockInput.pressKey('/'); });
+  for (const character of 'msg038') {
+    await act(async () => { renderer.mockInput.pressKey(character); });
+  }
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+
+  const state = store.getState();
+  expect(state.messages[state.messageCursor]!.text).toBe('msg038');
+  expect(olderRequests).toEqual([]);
 });

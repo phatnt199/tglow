@@ -7,7 +7,23 @@ import type { DatabaseService, IMessageRow } from './cache/index.ts';
 import type { ITelegramEntity } from './common/index.ts';
 import type { ITypingStatus } from './typing-status.ts';
 
-const REPUBLISH_LIMIT = 200;
+/**
+ * One page of history: what opening a chat loads, and what reaching the top of
+ * the loaded history loads again.
+ *
+ * Fifty rather than the several hundred this used to fetch in one go. A chat
+ * with years of history made the user wait for messages they were not going to
+ * read, on a request whose size grew with how long they had known someone;
+ * fifty covers more than a screenful on any terminal, so the page after it is
+ * fetched while there is still history left to scroll through.
+ */
+export const HISTORY_PAGE_SIZE = 50;
+/**
+ * The floor for a republish after a send, edit, delete or pin: never fewer
+ * than a page, however few are on screen, so an empty chat's first message
+ * does not republish a window of one and strand the pages behind it.
+ */
+const REPUBLISH_LIMIT = HISTORY_PAGE_SIZE;
 // Telegram rate-limits ReadHistory the same as everything else; a cursor
 // resting on the newest message would otherwise call markRead on every
 // keystroke and earn a self-inflicted FLOOD_WAIT.
@@ -24,10 +40,6 @@ export interface IRawMessage {
   replyToMessageId: number | null;
   /** 1 when pinned in its chat. */
   pinned?: number;
-}
-
-/**
- * A message as the live update stream| null;
 }
 
 /**
@@ -80,7 +92,12 @@ export interface IReadReceipt {
 }
 
 export interface IMessageAdapter {
-  fetchHistory(opts: { peerId: string; limit: number }): Promise<IRawMessage[]>;
+  /**
+   * The newest `limit` messages, or -- with `beforeId` -- the `limit` messages
+   * immediately older than it, which is how the conversation pages backwards.
+   * Exclusive: the message named by `beforeId` is not returned again.
+   */
+  fetchHistory(opts: { peerId: string; limit: number; beforeId?: number }): Promise<IRawMessage[]>;
   send(opts: { peerId: string; text: string; replyToMessageId?: number }): Promise<IRawMessage>;
   edit(opts: { peerId: string; messageId: number; text: string }): Promise<IRawMessage>;
   delete(opts: { peerId: string; messageIds: number[]; forEveryone: boolean }): Promise<void>;
@@ -93,11 +110,18 @@ export interface IMessageAdapter {
 
 export class MessageService {
   private readonly _logger: ILogger = ApplicationLogger.get(MessageService.name);
-  // The limit the view is currently displaying, so a republish after send()
-  // or edit() shows the same page size loadHistory() last asked for rather
-  // than a hardcoded one -- see REPUBLISH_LIMIT, its fallback before
-  // loadHistory has ever run.
-  private _historyLimit: number | null = null;
+  // How many of the open chat's messages are on screen, so a republish after
+  // send, edit, delete or pin shows the window the user has actually paged
+  // open rather than a fixed page.
+  //
+  // Grows with each older page loaded and with each message appended: a fixed
+  // limit would have republished the newest N and silently dropped whatever
+  // the user had scrolled back to. See REPUBLISH_LIMIT, its floor.
+  private _loadedCount: number = 0;
+  // The peer whose older page is in flight, so a reply that arrives after the
+  // user has moved to a different chat is dropped instead of prepending one
+  // conversation's history to another's.
+  private _loadingOlderFor: string | null = null;
   // When markRead last ran for a given peer, keyed so reading one chat can
   // never suppress a mark-read for a different one landing in the same
   // window. Set before the adapter call, not after it resolves: two overlapping
@@ -134,32 +158,69 @@ export class MessageService {
   private cursorAtNewest = (opts: { messages: IMessageRow[] }): number =>
     Math.max(0, opts.messages.length - 1);
 
+  /**
+   * Re-read the open window from the cache, and remember how big it came out.
+   *
+   * `extra` makes room for messages appended since the window was last
+   * measured -- a send, or a live arrival. Without it a republish asks for
+   * exactly what is already on screen, so the new message arrives at the
+   * bottom and pushes the oldest one off the top: at the old fixed limit of
+   * 200 that was invisible, but a paged window is exactly as big as the user
+   * scrolled it, and losing its top row on every send is not.
+   *
+   * The count is taken from what actually came back rather than from what was
+   * asked for, so a delete that shrinks the window, or a cache with less in it
+   * than expected, corrects the bookkeeping instead of drifting from it.
+   */
+  private readWindow = (opts: { peerId: string; extra?: number }): IMessageRow[] => {
+    const limit = Math.max(this._loadedCount + (opts.extra ?? 0), REPUBLISH_LIMIT);
+    const messages = this.forDisplay({ rows: this._database.listMessages({ peerId: opts.peerId, limit }) });
+    this._loadedCount = messages.length;
+    return messages;
+  };
+
+  /**
+   * The rows the cache holds for a message not yet written to it, in the shape
+   * insertMessages wants. Shared by loadHistory and loadOlder so a field added
+   * to one path cannot be forgotten in the other -- `pinned` was very nearly
+   * exactly that.
+   */
+  private toCacheRows = (opts: { messages: IRawMessage[] }) => opts.messages.map(message => ({
+    peerId: message.peerId,
+    id: message.id,
+    fromId: message.fromId,
+    date: message.date,
+    text: message.text,
+    out: message.out,
+    entities: message.entities,
+    replyToMessageId: message.replyToMessageId,
+    pinned: message.pinned,
+  }));
+
   loadHistory = async (opts: { peerId: string; limit: number }): Promise<void> => {
     const { peerId, limit } = opts;
-    this._historyLimit = limit;
+    // A fresh chat starts with one page and nothing known about what is behind
+    // it. Reset before the await, not after: opening a chat while another's
+    // older page is still in flight must not leave that flag set on the new
+    // one, and must not let the reply land here either.
+    this._loadedCount = limit;
+    this._loadingOlderFor = null;
+    this._store.setState({ patch: { loadingOlder: false, reachedOldest: false } });
 
     try {
       const fetched = await this._adapter.fetchHistory({ peerId, limit });
-      this._database.insertMessages({
-        messages: fetched.map(message => ({
-          peerId: message.peerId,
-          id: message.id,
-          fromId: message.fromId,
-          date: message.date,
-          text: message.text,
-          out: message.out,
-          entities: message.entities,
-          replyToMessageId: message.replyToMessageId,
-          pinned: message.pinned,
-        })),
-      });
+      this._database.insertMessages({ messages: this.toCacheRows({ messages: fetched }) });
       const messages = this.forDisplay({ rows: this._database.listMessages({ peerId, limit }) });
+      this._loadedCount = messages.length;
       this._store.setState({
         patch: {
           messages,
           messageCursor: this.cursorAtNewest({ messages }),
           activePeerId: peerId,
           statusMessage: null,
+          // A first page shorter than asked for is the whole chat: the server
+          // had no more to give, so there is nothing behind it to page to.
+          reachedOldest: fetched.length < limit && messages.length <= limit,
         },
       });
     } catch (error) {
@@ -176,8 +237,12 @@ export class MessageService {
         this._logger.for(this.loadHistory.name).error('Cache unreadable | Reason: %s', cacheError);
       }
 
+      this._loadedCount = cached.length;
+
       // Offline is not an error state for reading — show what we already have,
-      // at the bottom of it, exactly as a successful open would.
+      // at the bottom of it, exactly as a successful open would. reachedOldest
+      // stays false: the network is what failed, and the pages behind this one
+      // may well still be there when it comes back.
       this._store.setState({
         patch: {
           messages: cached,
@@ -186,6 +251,89 @@ export class MessageService {
           statusMessage: `Could not load history: ${toError(error).message}`,
         },
       });
+    }
+  };
+
+  /**
+   * The page of history before the one on screen, fetched when the cursor
+   * reaches the top of it.
+   *
+   * Cache first, network second. The cache often already holds more than the
+   * window shows -- a previous session that paged further back, or a
+   * catch-up's own fetch -- and reading it costs no round trip and works with
+   * no connection at all. Only when the cache has nothing further does this
+   * ask the server, with `beforeId` set to the oldest message on screen.
+   *
+   * The cursor moves by however many messages actually arrived, not by the
+   * page size: they are prepended, so every existing index shifts, and a
+   * cursor left alone would jump the view backwards by exactly the number of
+   * new messages -- the classic infinite-scroll lurch. Counted from the
+   * published lists rather than assumed, since the server may return fewer
+   * than asked for.
+   *
+   * Never rejects: this is called from a render effect, fire-and-forget.
+   */
+  loadOlder = async (opts: { peerId: string }): Promise<void> => {
+    const { peerId } = opts;
+    const state = this._store.getState();
+
+    if (state.reachedOldest || this._loadingOlderFor !== null || peerId !== state.activePeerId) {
+      return;
+    }
+
+    const oldest = state.messages[0];
+    if (!oldest) {
+      return;
+    }
+
+    this._loadingOlderFor = peerId;
+    this._store.setState({ patch: { loadingOlder: true } });
+
+    try {
+      const wanted = this._loadedCount + HISTORY_PAGE_SIZE;
+      let rows = this._database.listMessages({ peerId, limit: wanted });
+
+      // The cache had nothing more, so the server is the only place left to
+      // look. `reachedOldest` is set from what the server returned rather than
+      // from what the cache then holds: a fetch that came back short is the
+      // one reliable signal that the conversation has a beginning above this.
+      if (rows.length <= state.messages.length) {
+        const fetched = await this._adapter.fetchHistory({
+          peerId, limit: HISTORY_PAGE_SIZE, beforeId: oldest.id,
+        });
+        this._database.insertMessages({ messages: this.toCacheRows({ messages: fetched }) });
+        if (fetched.length < HISTORY_PAGE_SIZE) {
+          this._store.setState({ patch: { reachedOldest: true } });
+        }
+        rows = this._database.listMessages({ peerId, limit: wanted });
+      }
+
+      // Read again rather than reusing the snapshot above: the await may have
+      // let a live message land, and publishing the older state would undo it.
+      const current = this._store.getState();
+      if (current.activePeerId !== peerId) {
+        return;
+      }
+
+      const messages = this.forDisplay({ rows });
+      const added = messages.length - current.messages.length;
+      this._loadedCount = messages.length;
+
+      if (added <= 0) {
+        return;
+      }
+
+      this._store.setState({
+        patch: { messages, messageCursor: current.messageCursor + added },
+      });
+    } catch (error) {
+      this._logger.for(this.loadOlder.name).error('Could not load older messages | Reason: %s', error);
+      this._store.setState({
+        patch: { statusMessage: `Could not load older messages: ${toError(error).message}` },
+      });
+    } finally {
+      this._loadingOlderFor = null;
+      this._store.setState({ patch: { loadingOlder: false } });
     }
   };
 
@@ -226,9 +374,7 @@ export class MessageService {
       });
 
       const patch: Partial<IApplicationState> = {
-        messages: this.forDisplay({
-          rows: this._database.listMessages({ peerId, limit: this._historyLimit ?? REPUBLISH_LIMIT }),
-        }),
+        messages: this.readWindow({ peerId, extra: 1 }),
         activePeerId: peerId,
         statusMessage: null,
       };
@@ -294,9 +440,7 @@ export class MessageService {
       });
 
       const patch: Partial<IApplicationState> = {
-        messages: this.forDisplay({
-          rows: this._database.listMessages({ peerId, limit: this._historyLimit ?? REPUBLISH_LIMIT }),
-        }),
+        messages: this.readWindow({ peerId }),
         activePeerId: peerId,
         statusMessage: null,
       };
@@ -383,9 +527,7 @@ export class MessageService {
       }
       this._store.setState({
         patch: {
-          messages: this.forDisplay({
-            rows: this._database.listMessages({ peerId, limit: this._historyLimit ?? REPUBLISH_LIMIT }),
-          }),
+          messages: this.readWindow({ peerId }),
           activePeerId: peerId,
           statusMessage: this.describeDeletion({
             deleted, requested: messageIds.length, own: own.length, failure,
@@ -493,9 +635,7 @@ export class MessageService {
       this._database.setMessagePinned({ peerId, id: messageId, pinned: unpin ? 0 : 1 });
       this._store.setState({
         patch: {
-          messages: this.forDisplay({
-            rows: this._database.listMessages({ peerId, limit: this._historyLimit ?? REPUBLISH_LIMIT }),
-          }),
+          messages: this.readWindow({ peerId }),
           statusMessage: unpin ? 'Unpinned' : 'Pinned',
         },
       });

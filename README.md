@@ -186,6 +186,21 @@ Nothing is clipped to fit. Each field has a priority, and a narrow terminal
 drops the cheapest ones whole — `\ for keys` first, the position and the mode
 last. A data-integrity warning claims whatever width it needs.
 
+## History
+
+Opening a chat loads the newest 50 messages and puts the cursor on the last
+one. Scrolling back toward the top loads the 50 before it, and so on — the page
+is fetched a few rows before you reach the end of the loaded ones, so it is
+usually already there by the time you get there. `loading…` appears on the
+status line while one is in flight.
+
+The cache is asked before the network, so pages you have read before come back
+with no round trip and are readable with no connection at all. A page shorter
+than 50 means the start of the conversation; nothing is requested after that.
+
+`/` searches the whole cached chat, not only the part on screen — if the match
+is older than what is loaded, the pages between are fetched before it jumps.
+
 ## Keys
 
 Leader is `\`. The application starts in NORMAL mode — nothing you type is sent
