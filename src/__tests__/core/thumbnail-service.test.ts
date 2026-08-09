@@ -14,14 +14,14 @@ const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
 const WEBM = new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0x01, 0x00]);
 
 const build = (opts: {
-  download?: (request: { peerId: string; messageId: number; peerType: string }) => Promise<Uint8Array | null>;
+  download?: (request: { peerId: string; messageId: number }) => Promise<Uint8Array | null>;
   peerType?: 'user' | 'channel';
-}): { service: ThumbnailService; directory: string; asked: Array<{ peerId: string; peerType: string }>; database: DatabaseService } => {
+}): { service: ThumbnailService; directory: string; asked: Array<{ peerId: string }>; database: DatabaseService } => {
   const directory = mkdtempSync(join(tmpdir(), 'tglow-thumbs-'));
-  const asked: Array<{ peerId: string; peerType: string }> = [];
+  const asked: Array<{ peerId: string }> = [];
   const adapter = {
-    downloadThumbnail: async (request: { peerId: string; messageId: number; peerType: string }) => {
-      asked.push({ peerId: request.peerId, peerType: request.peerType });
+    downloadThumbnail: async (request: { peerId: string; messageId: number }) => {
+      asked.push({ peerId: request.peerId });
       return opts.download ? opts.download(request) : JPEG;
     },
   } as unknown as IMessageAdapter;
@@ -62,15 +62,15 @@ test('anything that is not a drawable image is refused, not cached', async () =>
   harness.database.close();
 });
 
-// tglow stores unmarked peer ids and GramJS resolves a bare number as a user,
-// so a channel's picture needs the type or the download fails with an error
-// that reads like a network fault.
-test('the peer type is handed over so a channel can be resolved', async () => {
+// Marking the peer id for GramJS moved into the adapter, where it applies to
+// every call rather than the two that remembered to ask for it -- see markPeer
+// in telegram-adapter.ts. What this service owes is the peer, nothing more.
+test('the picture is asked for by peer and message, and nothing else', async () => {
   const harness = build({ peerType: 'channel' });
 
   await harness.service.fetch({ peerId: 'p1', messageId: 7 });
 
-  expect(harness.asked[0]).toEqual({ peerId: 'p1', peerType: 'channel' });
+  expect(harness.asked[0]?.peerId).toBe('p1');
   harness.database.close();
 });
 

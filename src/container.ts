@@ -30,7 +30,12 @@ export const buildContainer = (opts: {
   container.bind({ key: BindingKeys.DATABASE }).toValue(opts.database);
   container.bind({ key: BindingKeys.DIALOG_ADAPTER }).toValue(buildDialogAdapter({ client: opts.client }));
   container.bind({ key: BindingKeys.FOLDER_ADAPTER }).toValue(buildFolderAdapter({ client: opts.client }));
-  container.bind({ key: BindingKeys.MESSAGE_ADAPTER }).toValue(buildMessageAdapter({ client: opts.client }));
+  container.bind({ key: BindingKeys.MESSAGE_ADAPTER }).toValue(buildMessageAdapter({
+    client: opts.client,
+    // The cache is the only thing that knows a peer's type, and GramJS needs
+    // it to resolve anything that is not a user -- see markPeer.
+    resolvePeerType: (peerId: string): string => opts.database.listPeerKinds().get(peerId)?.type ?? 'user',
+  }));
   container.bind({ key: BindingKeys.DIFFERENCE_ADAPTER }).toValue(buildDifferenceAdapter({ client: opts.client }));
 
   container.bind({ key: BindingKeys.SESSION_STORE }).toClass(SessionStoreService).setScope(BindingScopes.SINGLETON);

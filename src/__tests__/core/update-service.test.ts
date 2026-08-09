@@ -247,7 +247,7 @@ test('a cursor reading earlier history stays on the same message after a live ar
 // buildMessageAdapter (or from IMessageAdapter) and this test -- not just a
 // live account -- is what fails.
 test('IMessageAdapter exposes subscribeToNewMessages, so removing it cannot silently disable receive', () => {
-  const adapter = buildMessageAdapter({ client: {} as any });
+  const adapter = buildMessageAdapter({ client: {} as any, resolvePeerType: (): string => 'user' });
   expect(typeof adapter.subscribeToNewMessages).toBe('function');
 });
 
@@ -322,7 +322,7 @@ const buildApiMessage = (): Api.Message =>
 test('a private-chat update hands its account pts to the subscriber', () => {
   const { client, fire } = buildSubscribedClient();
   const received: ILiveMessage[] = [];
-  buildMessageAdapter({ client }).subscribeToNewMessages({ onMessage: live => { received.push(live); } });
+  buildMessageAdapter({ client , resolvePeerType: (): string => 'user' }).subscribeToNewMessages({ onMessage: live => { received.push(live); } });
 
   const message = buildApiMessage();
   fire({ message, originalUpdate: new Api.UpdateNewMessage({ message, pts: 4242, ptsCount: 1 }) });
@@ -334,7 +334,7 @@ test('a private-chat update hands its account pts to the subscriber', () => {
 test('a channel update reports a null pts rather than corrupting the account state', () => {
   const { client, fire } = buildSubscribedClient();
   const received: ILiveMessage[] = [];
-  buildMessageAdapter({ client }).subscribeToNewMessages({ onMessage: live => { received.push(live); } });
+  buildMessageAdapter({ client , resolvePeerType: (): string => 'user' }).subscribeToNewMessages({ onMessage: live => { received.push(live); } });
 
   const message = buildApiMessage();
   fire({ message, originalUpdate: new Api.UpdateNewChannelMessage({ message, pts: 9, ptsCount: 1 }) });
@@ -347,7 +347,7 @@ test('a channel update reports a null pts rather than corrupting the account sta
 test('updateShortMessage, the other private-chat delivery shape, carries its pts too', () => {
   const { client, fire } = buildSubscribedClient();
   const received: ILiveMessage[] = [];
-  buildMessageAdapter({ client }).subscribeToNewMessages({ onMessage: live => { received.push(live); } });
+  buildMessageAdapter({ client , resolvePeerType: (): string => 'user' }).subscribeToNewMessages({ onMessage: live => { received.push(live); } });
 
   fire({
     message: buildApiMessage(),
@@ -438,7 +438,7 @@ test('stopping the service releases the read-receipt subscription too', () => {
 test('a private-chat read receipt derives the unmarked peer id from its Peer', () => {
   const { client, fire } = buildSubscribedClient();
   const received: IReadReceipt[] = [];
-  buildMessageAdapter({ client }).subscribeToReadReceipts({ onReadReceipt: receipt => { received.push(receipt); } });
+  buildMessageAdapter({ client , resolvePeerType: (): string => 'user' }).subscribeToReadReceipts({ onReadReceipt: receipt => { received.push(receipt); } });
 
   fire(new Api.UpdateReadHistoryOutbox({
     peer: new Api.PeerUser({ userId: BigInt(4242) as any }), maxId: 17, pts: 5, ptsCount: 1,
@@ -452,7 +452,7 @@ test('a private-chat read receipt derives the unmarked peer id from its Peer', (
 test('a channel read receipt reads its bare channelId, which is already unmarked', () => {
   const { client, fire } = buildSubscribedClient();
   const received: IReadReceipt[] = [];
-  buildMessageAdapter({ client }).subscribeToReadReceipts({ onReadReceipt: receipt => { received.push(receipt); } });
+  buildMessageAdapter({ client , resolvePeerType: (): string => 'user' }).subscribeToReadReceipts({ onReadReceipt: receipt => { received.push(receipt); } });
 
   fire(new Api.UpdateReadChannelOutbox({ channelId: BigInt(777) as any, maxId: 30 }));
 
@@ -468,7 +468,7 @@ test('a channel read receipt reads its bare channelId, which is already unmarked
 test('an inbox read update arrives tagged inbox, carrying the server-side unread count', () => {
   const { client, fire } = buildSubscribedClient();
   const received: IReadReceipt[] = [];
-  buildMessageAdapter({ client }).subscribeToReadReceipts({ onReadReceipt: receipt => { received.push(receipt); } });
+  buildMessageAdapter({ client , resolvePeerType: (): string => 'user' }).subscribeToReadReceipts({ onReadReceipt: receipt => { received.push(receipt); } });
 
   fire(new Api.UpdateReadHistoryInbox({
     peer: new Api.PeerUser({ userId: BigInt(4242) as any }), maxId: 17, stillUnreadCount: 2, pts: 5, ptsCount: 1,
@@ -482,7 +482,7 @@ test('an inbox read update arrives tagged inbox, carrying the server-side unread
 test('a channel inbox read reads its bare channelId, like its outbox twin', () => {
   const { client, fire } = buildSubscribedClient();
   const received: IReadReceipt[] = [];
-  buildMessageAdapter({ client }).subscribeToReadReceipts({ onReadReceipt: receipt => { received.push(receipt); } });
+  buildMessageAdapter({ client , resolvePeerType: (): string => 'user' }).subscribeToReadReceipts({ onReadReceipt: receipt => { received.push(receipt); } });
 
   fire(new Api.UpdateReadChannelInbox({ channelId: BigInt(777) as any, maxId: 30, stillUnreadCount: 5, pts: 2 }));
 

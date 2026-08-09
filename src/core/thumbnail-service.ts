@@ -137,11 +137,9 @@ export class ThumbnailService {
    */
   materialise = async (opts: { peerId: string; messageId: number }): Promise<string | null> => {
     const { peerId, messageId } = opts;
-    const peerType = this._database.listPeerKinds().get(peerId)?.type ?? 'user';
-
     let bytes: Uint8Array | null;
     try {
-      bytes = await this._adapter.downloadMedia({ peerId, messageId, peerType });
+      bytes = await this._adapter.downloadMedia({ peerId, messageId });
     } catch (error) {
       this._logger.for('materialise').error('Could not download %s:%s | Reason: %s', peerId, messageId, error);
       return null;
@@ -169,12 +167,7 @@ export class ThumbnailService {
     const { peerId, messageId, key } = opts;
     let bytes: Uint8Array | null;
     try {
-      // The peer's type, because a bare id is not enough to ask GramJS about a
-      // channel -- see toMarkedPeer in telegram-adapter.ts. Defaulted to
-      // 'user' for a peer that is somehow not cached, which is the shape a
-      // bare id already implies.
-      const peerType = this._database.listPeerKinds().get(peerId)?.type ?? 'user';
-      bytes = await this._adapter.downloadThumbnail({ peerId, messageId, peerType });
+      bytes = await this._adapter.downloadThumbnail({ peerId, messageId });
     } catch (error) {
       // Not remembered as missing: this is a network failure, not an absence,
       // and the picture is probably still there next time.

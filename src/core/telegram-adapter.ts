@@ -408,6 +408,16 @@ const resolveThumbnailSize = (opts: { media: Api.TypeMessageMedia }): Api.TypePh
  * string concatenation, so the convention lives in one library rather than in
  * two places that can disagree.
  */
+/**
+ * A stored peer id, on its way out to GramJS.
+ *
+ * Bound once when the adapter is built and applied at every single call site,
+ * rather than a `peerType` argument threaded through ten methods and the four
+ * fakes that implement them. Missing it on one method is invisible until
+ * somebody opens a channel.
+ */
+let markPeer: (peerId: string) => string = (peerId: string): string => peerId;
+
 const toMarkedPeer = (opts: { peerId: string; peerType: string }): string => {
   const id = BigInt(opts.peerId) as unknown as bigInt.BigInteger;
   switch (opts.peerType) {
@@ -505,7 +515,7 @@ export const buildDialogAdapter = (opts: { client: TelegramClient }): IDialogAda
   // error rather than the faithful thing it looks like.
   pinDialog: async (pinOpts: { peerId: string; pinned: boolean }): Promise<void> => {
     await opts.client.invoke(new Api.messages.ToggleDialogPin({
-      peer: pinOpts.peerId,
+      peer: markPeer(pinOpts.peerId),
       pinned: pinOpts.pinned,
     }));
   },
@@ -543,7 +553,22 @@ export const buildDialogAdapter = (opts: { client: TelegramClient }): IDialogAda
   },
 });
 
-export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageAdapter => ({
+export const buildMessageAdapter = (
+  opts: { client: TelegramClient; resolvePeerType: (peerId: string) => string },
+): IMessageAdapter => {
+  /**
+   * A stored peer id, on its way out to GramJS.
+   *
+   * Bound once here and applied at every single call site, rather than a
+   * `peerType` argument threaded through ten methods and the four fakes that
+   * implement them. Missing it on one method is invisible until somebody opens
+   * a channel -- which is exactly how mark-read stayed broken for every
+   * channel and group in the list, logging a failure nobody was reading.
+   */
+  const markPeer = (peerId: string): string =>
+    toMarkedPeer({ peerId, peerType: opts.resolvePeerType(peerId) });
+
+  return {
   // `offsetId` is GramJS's own name for "only messages older than this one",
   // and it is exclusive -- read from node_modules/teleproto/client/messages.d.ts
   // (IterMessagesParams: "Offset message ID (only messages previous to the
@@ -551,7 +576,7 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
   // offset, which is what the newest-page call wants, and is also GramJS's own
   // default -- so the two cases differ only in the number.
   fetchHistory: async (historyOpts: { peerId: string; limit: number; beforeId?: number }): Promise<IRawMessage[]> => {
-    const messages = await opts.client.getMessages(historyOpts.peerId, {
+    const messages = await opts.client.getMessages(markPeer(historyOpts.peerId), {
       limit: historyOpts.limit,
       offsetId: historyOpts.beforeId ?? 0,
     });
@@ -573,7 +598,7 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
    */
   react: async (reactOpts: { peerId: string; messageId: number; emoji: string }): Promise<IMessageReaction[]> => {
     const result = await opts.client.invoke(new Api.messages.SendReaction({
-      peer: reactOpts.peerId,
+      peer: markPeer(reactOpts.peerId),
       msgId: reactOpts.messageId,
       reaction: reactOpts.emoji === ''
         ? []
@@ -595,9 +620,9 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
    * wrong way with no error at all.
    */
   forward: async (forwardOpts: { fromPeerId: string; toPeerId: string; messageIds: number[] }): Promise<void> => {
-    await opts.client.forwardMessages(forwardOpts.toPeerId, {
+    await opts.client.forwardMessages(markPeer(forwardOpts.toPeerId), {
       messages: forwardOpts.messageIds,
-      fromPeer: forwardOpts.fromPeerId,
+      fromPeer: markPeer(forwardOpts.fromPeerId),
     });
   },
 
@@ -606,7 +631,7 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
   // guessed, since a wrong name here sends an ordinary message with no error
   // at all, silently dropping the reply.
   send: async (sendOpts: { peerId: string; text: string; replyToMessageId?: number }): Promise<IRawMessage> => {
-    const sent = await opts.client.sendMessage(sendOpts.peerId, {
+    const sent = await opts.client.sendMessage(markPeer(sendOpts.peerId), {
       message: sendOpts.text,
       replyTo: sendOpts.replyToMessageId,
     });
@@ -626,7 +651,7 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
   sendFile: async (
     fileOpts: { peerId: string; path: string; caption: string; replyToMessageId?: number },
   ): Promise<IRawMessage> => {
-    const sent = await opts.client.sendFile(fileOpts.peerId, {
+    const sent = await opts.client.sendFile(markPeer(fileOpts.peerId), {
       file: fileOpts.path,
       caption: fileOpts.caption === '' ? undefined : fileOpts.caption,
       replyTo: fileOpts.replyToMessageId,
@@ -641,7 +666,7 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
   // node_modules/telegram/client/TelegramClient.d.ts:563) rather than
   // guessed, the same discipline send's own replyTo comment above follows.
   edit: async (editOpts: { peerId: string; messageId: number; text: string }): Promise<IRawMessage> => {
-    const edited = await opts.client.editMessage(editOpts.peerId, {
+    const edited = await opts.client.editMessage(markPeer(editOpts.peerId), {
       message: editOpts.messageId,
       text: editOpts.text,
     });
@@ -665,7 +690,7 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
     // deleteMessages has always taken an array (messages.d.ts declares
     // `messageIds: MessageIDLike[]`); until ranged delete existed this only
     // ever passed one. A `3dd` is one round trip, not three.
-    await opts.client.deleteMessages(deleteOpts.peerId, deleteOpts.messageIds, { revoke: deleteOpts.forEveryone });
+    await opts.client.deleteMessages(markPeer(deleteOpts.peerId), deleteOpts.messageIds, { revoke: deleteOpts.forEveryone });
   },
 
   // GramJS's own signature (client.markAsRead, declared at
@@ -690,14 +715,14 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
    */
   pinMessage: async (pinOpts: { peerId: string; messageId: number; unpin: boolean }): Promise<void> => {
     await opts.client.invoke(new Api.messages.UpdatePinnedMessage({
-      peer: pinOpts.peerId,
+      peer: markPeer(pinOpts.peerId),
       id: pinOpts.messageId,
       unpin: pinOpts.unpin,
     }));
   },
 
   markRead: async (markReadOpts: { peerId: string; maxId: number }): Promise<void> => {
-    await opts.client.markAsRead(markReadOpts.peerId, undefined, { maxId: markReadOpts.maxId });
+    await opts.client.markAsRead(markPeer(markReadOpts.peerId), undefined, { maxId: markReadOpts.maxId });
   },
 
   subscribeToNewMessages: (subscribeOpts: { onMessage: (live: ILiveMessage) => void }): (() => void) => {
@@ -840,10 +865,10 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
    * size index and a negative one counts from the end.
    */
   downloadThumbnail: async (
-    thumbOpts: { peerId: string; messageId: number; peerType: string },
+    thumbOpts: { peerId: string; messageId: number },
   ): Promise<Uint8Array | null> => {
     const [message] = await opts.client.getMessages(
-      toMarkedPeer({ peerId: thumbOpts.peerId, peerType: thumbOpts.peerType }),
+      markPeer(thumbOpts.peerId),
       { ids: [thumbOpts.messageId] },
     );
     if (!message?.media) {
@@ -862,10 +887,10 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
 
   /** The original, for opening outside the terminal. Same message lookup as the thumbnail path, without picking a size. */
   downloadMedia: async (
-    mediaOpts: { peerId: string; messageId: number; peerType: string },
+    mediaOpts: { peerId: string; messageId: number },
   ): Promise<Uint8Array | null> => {
     const [message] = await opts.client.getMessages(
-      toMarkedPeer({ peerId: mediaOpts.peerId, peerType: mediaOpts.peerType }),
+      markPeer(mediaOpts.peerId),
       { ids: [mediaOpts.messageId] },
     );
     if (!message?.media) {
@@ -974,7 +999,8 @@ export const buildMessageAdapter = (opts: { client: TelegramClient }): IMessageA
       opts.client.removeEventHandler(handleUpdate, eventBuilder);
     };
   },
-});
+  };
+};
 
 /**
  * `updates.getDifference` returns one of four distinct classes, read from
@@ -1010,7 +1036,7 @@ export const buildDifferenceAdapter = (opts: { client: TelegramClient }): IDiffe
     channelOpts: { peerId: string; pts: number },
   ): Promise<IChannelDifferenceResult> => {
     const difference = await opts.client.invoke(new Api.updates.GetChannelDifference({
-      channel: await opts.client.getInputEntity(channelOpts.peerId),
+      channel: await opts.client.getInputEntity(markPeer(channelOpts.peerId)),
       filter: new Api.ChannelMessagesFilterEmpty(),
       pts: channelOpts.pts,
       limit: CHANNEL_DIFFERENCE_LIMIT,
