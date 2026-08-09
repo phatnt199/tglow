@@ -47,6 +47,15 @@ export interface IRgbaImage {
 /** RGBA, four bytes per pixel. The protocol's own number for it. */
 const RGBA_FORMAT = 32;
 
+/**
+ * The one placement each image gets.
+ *
+ * tglow never shows the same picture in two places at once, so one number for
+ * all of them is enough -- what matters is that it is *named*, so a repeat
+ * replaces rather than adds.
+ */
+const PLACEMENT_ID = 1;
+
 export interface IImagePlacement {
   /** The id this image was transmitted under, so it can be placed again without resending. */
   id: number;
@@ -122,7 +131,14 @@ export const place = (opts: { placement: IImagePlacement }): string => {
   // image, so this decides nothing visually today -- but a default that
   // changed would be a picture that silently disappeared behind its own
   // reserved space, which is a bad thing to leave to chance.
-  const control = toControl({ keys: { a: 'p', i: id, c: columns, r: rows, z: 1, q: 2, C: 1 } });
+  // `p=1` names the placement, not just the image. Without it every call adds
+  // *another* copy of the picture: kitty lets one image be placed many times,
+  // so re-placing on every frame stacked a new one each time and scrolling
+  // left a smear of the same sticker down the screen. Naming it means each
+  // image has exactly one placement, replaced rather than added to.
+  const control = toControl({
+    keys: { a: 'p', i: id, p: PLACEMENT_ID, c: columns, r: rows, z: 1, q: 2, C: 1 },
+  });
   return `${move}${APC}${control};${ST}`;
 };
 

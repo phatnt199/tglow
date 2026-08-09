@@ -30,7 +30,7 @@ import { describePresence, PresenceKinds } from '../core/presence.ts';
 import { renderImage } from './image-renderer.ts';
 import { formatClock } from './clock.ts';
 import { CommandNames, completeCommand, describeUnknown, parseCommand } from './command-line.ts';
-import { place, supportsGraphics, transmit, type IImagePlacement } from './kitty-graphics.ts';
+import { forget, place, supportsGraphics, transmit, type IImagePlacement } from './kitty-graphics.ts';
 import { resolveReactionKey } from './reaction-picker.ts';
 import { measureTextWidth, toGraphemes } from './text-width.ts';
 import { formatPeerKind } from './status-segments.ts';
@@ -496,6 +496,8 @@ export const App = (props: IAppProps) => {
   const transmittedRef = useRef<Set<number>>(new Set());
   /** Where the pictures currently are, so the per-frame repaint has something to re-place without re-deriving it. */
   const placementsRef = useRef<IImagePlacement[]>([]);
+  /** Which pictures the terminal is currently showing, so the ones that scroll away can be taken down. */
+  const placedRef = useRef<Set<number>>(new Set());
   /**
    * Whether the press being handled right now is the one that opened a menu.
    * Children handle a press before the root does, so without this the root
@@ -1724,10 +1726,31 @@ export const App = (props: IAppProps) => {
     }
     const repaint = (): void => {
       const current = placementsRef.current;
-      if (current.length === 0) {
-        return;
+      const showing = new Set(current.map(placement => placement.id));
+
+      // Anything that has scrolled out is taken off the screen. Re-placing
+      // alone is not enough: a picture whose message has scrolled away has no
+      // placement to replace, so it simply stayed where it was -- which is
+      // what left old stickers smeared down the pane.
+      const stale = [...placedRef.current].filter(id => !showing.has(id));
+      const sequences = [
+        ...stale.map(id => forget({ id })),
+        ...current.map(placement => place({ placement })),
+      ];
+      for (const id of stale) {
+        placedRef.current.delete(id);
+        // Forgotten entirely, so the next time it is on screen it is sent
+        // again: kitty frees the pixels with the placement, and placing an
+        // image it no longer holds draws nothing.
+        transmittedRef.current.delete(id);
       }
-      writeToTerminal({ text: current.map(placement => place({ placement })).join('') });
+      for (const id of showing) {
+        placedRef.current.add(id);
+      }
+
+      if (sequences.length > 0) {
+        writeToTerminal({ text: sequences.join('') });
+      }
     };
     renderer.addPostProcessFn(repaint);
     return (): void => { renderer.removePostProcessFn(repaint); };
