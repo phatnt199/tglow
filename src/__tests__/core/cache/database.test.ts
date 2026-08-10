@@ -10,6 +10,24 @@ const buildDatabase = (): DatabaseService => {
   return database;
 };
 
+// SQLite's default busy timeout is zero: a write that finds the database
+// locked fails on the spot rather than waiting. That is what filled the log
+// with "Could not apply message | Reason: database is locked", and every one
+// of those was a message that arrived and was never stored.
+test('a write waits for a busy database rather than giving up on it', () => {
+  const database = new DatabaseService();
+  database.open({ filePath: ':memory:' });
+  // Reached through drizzle's own handle to the connection, because the
+  // pragma is a property of the connection rather than of anything the
+  // service exposes -- and asserting it here is the only thing that would
+  // notice the pragma being dropped in a later refactor.
+  const connection = (database as unknown as { _database: { $client: { query: (sql: string) => { get: () => { timeout: number } } } } })
+    ._database.$client;
+
+  expect(connection.query('PRAGMA busy_timeout').get().timeout).toBe(5000);
+  database.close();
+});
+
 test('peers and dialogs round-trip', () => {
   const database = buildDatabase();
   database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 2, lastMessageAt: 100, topMessageId: 5, readOutboxMaxId: 0 });

@@ -201,6 +201,9 @@ const toMessageRows = (opts: { rows: TMessageSelection[] }): IMessageRow[] => {
   }));
 };
 
+/** How long a write waits for a busy database before giving up. See `open`. */
+const BUSY_TIMEOUT_MILLISECONDS = 5000;
+
 export class DatabaseService {
   private _database: TDrizzleDatabase | null = null;
 
@@ -216,6 +219,20 @@ export class DatabaseService {
     const connection = new Database(opts.filePath);
     connection.run('PRAGMA journal_mode = WAL');
     connection.run('PRAGMA foreign_keys = ON');
+    // Wait for a busy database instead of giving up on it.
+    //
+    // SQLite's default busy timeout is zero: a write that finds the database
+    // locked fails immediately rather than retrying, and bun:sqlite surfaces
+    // that as "database is locked". Which is exactly what the log was full of
+    // -- 'UpdateService-apply: Could not apply message | Reason: database is
+    // locked' -- and each one of those is a message that arrived and was not
+    // stored. WAL keeps readers from blocking writers, but it does not make
+    // two writers wait for each other, and a checkpoint holds the file
+    // briefly; a second tglow, or a checkpoint landing mid-write, is enough.
+    //
+    // Five seconds is far longer than any write here takes and still short
+    // enough to fail rather than hang if something really is stuck.
+    connection.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MILLISECONDS}`);
     const database = drizzle(connection);
     runMigrations({ database });
     this._database = database;
