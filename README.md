@@ -232,18 +232,24 @@ protocol, no iTerm2 inline images. It is a deliberate, long-standing decision
 of that project, and no library can work around a terminal that has no
 mechanism to receive image data.
 
-In a terminal that *can* take a picture — kitty, Ghostty, WezTerm, Konsole —
-tglow sends the photograph itself and the terminal composites it over those
+In a terminal that *can* take a picture, tglow sends the photograph itself and the terminal composites it over those
 same cells, so what you see is the photograph. The drawing stays underneath:
 it is what a terminal that ignores the sequences shows, and it is what decides
 how many rows the message takes either way. It works this
 out from the environment rather than by querying the terminal, because a
 query's reply arrives on stdin and would be read as keystrokes nobody typed.
-Two escape hatches:
+| Protocol | Terminals | tglow |
+| --- | --- | --- |
+| Kitty graphics | kitty, Ghostty, WezTerm, Konsole | preferred — a picture that scrolls is *moved*, not resent |
+| Sixel | GNOME Terminal, GNOME Console, foot, xterm, Contour, mlterm | used when Kitty's is not offered |
+| neither | **Alacritty** | the chafa drawing, and `O` for the real thing |
+
+Escape hatches:
 
 ```sh
-TGLOW_GRAPHICS=on   tglow   # a terminal tglow does not recognise yet
-TGLOW_GRAPHICS=off  tglow   # keep the drawing
+TGLOW_GRAPHICS=off    tglow   # keep the drawing everywhere
+TGLOW_GRAPHICS=on     tglow   # force Kitty graphics on a terminal tglow does not know
+TGLOW_CELL_SIZE=8x16  tglow   # Sixel measures in pixels; say what a cell is if 10x20 is wrong
 ```
 
 Reactions are tallied under the message: `👍 3  ❤️ 1  [😂] 2`. The brackets mark

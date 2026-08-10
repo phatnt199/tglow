@@ -25,6 +25,7 @@
     "hono": "^4.12.33",
     "react": "19.2.8",
     "reflect-metadata": "0.2.2",
+    "sixel": "^0.16.0",
     "teleproto": "1.228.5"
   },
   "devDependencies": {

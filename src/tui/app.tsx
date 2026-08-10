@@ -30,7 +30,8 @@ import { describePresence, PresenceKinds } from '../core/presence.ts';
 import { renderImage } from './image-renderer.ts';
 import { formatClock } from './clock.ts';
 import { CommandNames, completeCommand, describeUnknown, parseCommand } from './command-line.ts';
-import { forget, place, supportsGraphics, transmit, type IImagePlacement } from './kitty-graphics.ts';
+import { forget, place, supportsGraphics, transmit, type IImagePlacement, type IRgbaImage } from './kitty-graphics.ts';
+import { drawImage, resolveCellSize, supportsSixel } from './sixel-graphics.ts';
 import { resolveReactionKey } from './reaction-picker.ts';
 import { measureTextWidth, toGraphemes } from './text-width.ts';
 import { formatPeerKind } from './status-segments.ts';
@@ -491,13 +492,31 @@ export const App = (props: IAppProps) => {
    * change while tglow is running, and asking per frame would be asking the
    * same question a hundred times a second.
    */
-  const graphicsCapable = useMemo(() => supportsGraphics({ environment: process.env }), []);
+  /**
+   * Which protocol this terminal takes, in order of preference.
+   *
+   * Kitty first where both are offered: it keeps images as addressable
+   * placements, so a picture that scrolls is moved for a few dozen bytes,
+   * where Sixel has to be redrawn in full. Sixel second, because it reaches a
+   * different and much larger set of terminals -- GNOME Terminal and Console
+   * through VTE, foot, xterm, Contour. Neither, and the chafa drawing stands.
+   */
+  const protocol = useMemo((): 'kitty' | 'sixel' | 'none' => {
+    if (supportsGraphics({ environment: process.env })) {
+      return 'kitty';
+    }
+    return supportsSixel({ environment: process.env }) ? 'sixel' : 'none';
+  }, []);
+  const graphicsCapable = protocol !== 'none';
+  const cellSize = useMemo(() => resolveCellSize({ environment: process.env }), []);
   /** Images already handed to the terminal, so each is sent once rather than once per frame. */
   const transmittedRef = useRef<Set<number>>(new Set());
   /** Where the pictures currently are, so the per-frame repaint has something to re-place without re-deriving it. */
   const placementsRef = useRef<IImagePlacement[]>([]);
   /** Which pictures the terminal is currently showing, so the ones that scroll away can be taken down. */
   const placedRef = useRef<Set<number>>(new Set());
+  /** The decoded pixels, kept only for Sixel -- which has no image the terminal remembers. */
+  const pixelsRef = useRef<Map<number, IRgbaImage>>(new Map());
   /**
    * Whether the press being handled right now is the one that opened a menu.
    * Children handle a press before the root does, so without this the root
@@ -1726,6 +1745,31 @@ export const App = (props: IAppProps) => {
     }
     const repaint = (): void => {
       const current = placementsRef.current;
+
+      // Sixel: no placements to move or delete, so every visible picture is
+      // simply drawn again where it now belongs. More bytes than kitty's
+      // few-dozen re-place, and the reason kitty is preferred where both are
+      // on offer.
+      if (protocol === 'sixel') {
+        const drawings = current
+          .map(placement => {
+            const image = pixelsRef.current.get(placement.id);
+            return image === undefined ? '' : drawImage({
+              image,
+              row: placement.row,
+              column: placement.column,
+              columns: placement.columns,
+              rows: placement.rows,
+              cell: cellSize,
+            });
+          })
+          .filter(drawing => drawing !== '');
+        if (drawings.length > 0) {
+          writeToTerminal({ text: drawings.join('') });
+        }
+        return;
+      }
+
       const showing = new Set(current.map(placement => placement.id));
 
       // Anything that has scrolled out is taken off the screen. Re-placing
@@ -1754,7 +1798,7 @@ export const App = (props: IAppProps) => {
     };
     renderer.addPostProcessFn(repaint);
     return (): void => { renderer.removePostProcessFn(repaint); };
-  }, [graphicsCapable, renderer]);
+  }, [protocol, graphicsCapable, renderer, cellSize]);
 
 
   // Pictures for whatever is on screen.
@@ -1804,9 +1848,14 @@ export const App = (props: IAppProps) => {
         // message: transmitting is the expensive half and the terminal keeps
         // it until told otherwise. The pixels come from the same decode the
         // drawing used, so nothing is decoded twice.
-        if (graphicsCapable && !transmittedRef.current.has(message.id)) {
+        if (protocol === 'kitty' && !transmittedRef.current.has(message.id)) {
           transmittedRef.current.add(message.id);
           writeToTerminal({ text: transmit({ id: message.id, pixels: rendered.pixels }) });
+        }
+        // Sixel has no notion of an image the terminal holds: the pixels go
+        // out with every draw, so they are kept here to draw from.
+        if (protocol === 'sixel') {
+          pixelsRef.current.set(message.id, rendered.pixels);
         }
 
         const next = new Map(store.getState().imagesByMessageId);
