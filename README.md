@@ -15,22 +15,9 @@ window.
 [![GitHub](https://img.shields.io/badge/Source-phatnt199/tglow-87AFAF?style=for-the-badge&logo=github&logoColor=080808)](https://github.com/phatnt199/tglow)
 [![phatnt.com](https://img.shields.io/badge/phatnt.com-7DB9B6?style=for-the-badge&logo=firefoxbrowser&logoColor=080808)](https://phatnt.com)
 
-```
-┌─ Folders ─────────────┬─ Alice ───────────────────┬─ #general ────────────────┐
-│▎All               999+│   14 09:12 Alice   the    │   87 08:55 dana   ship it │
-│ Unread              12│                    branch │                           │
-│ Work                 4│                    is     │   88 09:03 lee    ✓ done  │
-├─ Chats ───────────────┤                    green  │                           │
-│▎ Alice           09:41│                           ├─ #releases ───────────────┤
-│ typing…               │   15 09:41 me    ✓✓ merged│   12 09:40 bot   v0.5.0   │
-│  #general        09:03│                           │                  tagged   │
-│ lee: ✓ done          2│  ────────────────────────  │                           │
-│  #releases       09:40│  ❯ nice, shipping now_    │                           │
-└───────────────────────┴───────────────────────────┴───────────────────────────┘
- NORMAL   Alice · online · 2 unread              #4821  09:41  ✓✓  50/50  \ for keys
-```
+<img src="docs/screenshot.svg" alt="tglow showing two conversations side by side: a chat list with unread badges on the left, a conversation with a relative-number gutter, read ticks and a reaction in the middle, and a second chat in its own column on the right." width="100%">
 
-<sub>A layout sketch, not a screenshot — the conversations are invented.</sub>
+<sub>Rendered by <a href="scripts/screenshot.tsx"><code>scripts/screenshot.tsx</code></a> through the real components, the real theme and the real layout code — the colours are read back per span rather than drawn by hand. The conversations in it are invented, because the alternative is a photograph of somebody's private Telegram.</sub>
 
 ## What it does
 
@@ -67,22 +54,38 @@ window.
 tglow ships as one self-contained binary. There is nothing else to install — no
 runtime, no `node_modules`, no repository.
 
-1. Download `tglow` and `tglow.sha256`, check it, and make it executable. The
-   binary is built per platform; `bun run build` produces one for whatever you
-   build it on.
+| Platform | File |
+| --- | --- |
+| Linux x64 | `tglow-linux-x64` |
+| macOS Apple silicon | `tglow-macos-arm64` |
+| macOS Intel | `tglow-macos-x64` |
+| Windows x64 | `tglow-windows-x64.exe` |
+
+All four are built from one machine by `scripts/build-all.sh`, and all four are
+verified as far as their file format and the renderer inside them. Only the
+Linux one is *run* before release — if a macOS or Windows build misbehaves,
+[say so](https://github.com/phatnt199/tglow/issues), because you found it
+before we did.
+
+1. Download the file for your platform and `tglow.sha256`, check it, and make
+   it executable.
 
    ```sh
    sha256sum -c tglow.sha256
-   chmod +x tglow
-   mv tglow ~/.local/bin/tglow      # or anywhere on your PATH
+   chmod +x tglow-linux-x64
+   mv tglow-linux-x64 ~/.local/bin/tglow      # or anywhere on your PATH
    ```
+
+   On macOS, Gatekeeper will refuse an unsigned binary downloaded from the
+   internet the first time: `xattr -d com.apple.quarantine tglow-macos-arm64`.
 
 2. **Get your own `api_id` and `api_hash`** from <https://my.telegram.org> (log
    in, then "API development tools"). tglow ships no keys and never will: these
    identify *your* application to Telegram, they are issued against your own
    account, and nobody can obtain them for you. It takes about a minute.
 
-3. Write them to `~/.config/tglow/config.toml`:
+3. Write them to `~/.config/tglow/config.toml` — or, on Windows,
+   `%APPDATA%\tglow\config.toml`:
 
    ```toml
    api_id = 1234567
@@ -101,10 +104,15 @@ runtime, no `node_modules`, no repository.
    not echoed. tglow then goes straight into the interface — there is no second
    launch — and later runs skip all of this.
 
-Everything tglow stores lives under `~/.local/share/tglow/`: the session, the
-message cache and the log. Deleting that directory makes this machine forget
-your account, but leaves the session authorised on Telegram's side — use
-`:logout` to end it properly.
+Everything tglow stores lives under `~/.local/share/tglow/` — on Windows,
+`%LOCALAPPDATA%\tglow\`: the session, the message cache, the thumbnails and the
+log. Deleting that directory makes this machine forget your account, but leaves
+the session authorised on Telegram's side — use `:logout` to end it properly.
+
+macOS gets the same `~/.config` and `~/.local/share` as Linux rather than
+`~/Library/Application Support`. That directory is right for an application
+with a window; tglow is configured by hand-editing a file, which is a thing
+every neighbour it has on a Mac keeps in `~/.config`.
 
 ## The interface
 
@@ -163,7 +171,8 @@ palette = "nocturne"
 
 ### Writing your own
 
-Drop a `.toml` into `~/.config/tglow/themes/` and name it in `palette`. A file
+Drop a `.toml` into `themes/` beside your config file and name it in
+`palette`. A file
 there **shadows a built-in of the same name**, so `themes/sage.toml` overrides
 the shipped sage — the same way a colorscheme in `~/.config/nvim/colors` wins
 over one from a plugin. That is how you adjust a palette without rebuilding.
