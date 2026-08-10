@@ -1,11 +1,66 @@
 # tglow
 
-A vim-native Telegram client for the terminal, themed with devglow and built to
-the IGNIS Code Style Standard.
+**Telegram, with your hands where you left them.**
+
+A Telegram client for the terminal that is vim the whole way down — `j` and `k`
+move, `dd` deletes, `3dj` takes three, `.` repeats it, `"+yy` reaches the system
+clipboard, `<C-w>\` splits the screen. Not vim-*like*: the same operators over
+the same motions, with counts and registers that compose the way you already
+expect them to.
+
+One self-contained binary. No runtime, no `node_modules`, no Electron, no
+window.
 
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy_Me_A_Coffee-EBC17A?style=for-the-badge&logo=buymeacoffee&logoColor=080808)](https://buymeacoffee.com/tanphat199)
 [![GitHub](https://img.shields.io/badge/Source-phatnt199/tglow-87AFAF?style=for-the-badge&logo=github&logoColor=080808)](https://github.com/phatnt199/tglow)
 [![phatnt.com](https://img.shields.io/badge/phatnt.com-7DB9B6?style=for-the-badge&logo=firefoxbrowser&logoColor=080808)](https://phatnt.com)
+
+```
+┌─ Folders ─────────────┬─ Alice ───────────────────┬─ #general ────────────────┐
+│▎All               999+│   14 09:12 Alice   the    │   87 08:55 dana   ship it │
+│ Unread              12│                    branch │                           │
+│ Work                 4│                    is     │   88 09:03 lee    ✓ done  │
+├─ Chats ───────────────┤                    green  │                           │
+│▎ Alice           09:41│                           ├─ #releases ───────────────┤
+│ typing…               │   15 09:41 me    ✓✓ merged│   12 09:40 bot   v0.5.0   │
+│  #general        09:03│                           │                  tagged   │
+│ lee: ✓ done          2│  ────────────────────────  │                           │
+│  #releases       09:40│  ❯ nice, shipping now_    │                           │
+└───────────────────────┴───────────────────────────┴───────────────────────────┘
+ NORMAL   Alice · online · 2 unread              #4821  09:41  ✓✓  50/50  \ for keys
+```
+
+<sub>A layout sketch, not a screenshot — the conversations are invented.</sub>
+
+## What it does
+
+- **vim, properly.** Operators compose with motions (`d3j`, `yk`), counts
+  multiply the way vim's do — `2d3j` spans six — `.` repeats the last change
+  and rescales it, and registers include `"+` for the system clipboard over
+  OSC 52.
+- **Several chats at once.** Conversations tile as columns you can stack into
+  rows. Unfocused panes stay live — they keep receiving and hold their own
+  scroll position — but only the focused one has a composer, so `Enter` is
+  never ambiguous.
+- **Real pictures.** Photos and stickers are sent to the terminal as pixels
+  through the [Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
+  or Sixel, not drawn out of characters. Where neither exists, chafa draws them
+  and `O` opens the original in your desktop viewer.
+- **Everything a chat client owes you.** Replies, edits, deletes, pins,
+  forwards, reactions, emoji, file sending, search, folders, online and
+  last-seen, typing indicators, unread counts that follow your other devices.
+- **Twelve themes**, and yours if none of them fit.
+- **Yours alone.** Your credentials, your session, your cache — all on your
+  disk, at `0600`, never leaving it. See [Security](#security).
+
+## Contents
+
+[Install](#install) · [The interface](#the-interface) · [Themes](#themes) ·
+[Run from source](#run-from-source) · [Build the binary](#build-the-binary) ·
+[The status line](#the-status-line) ·
+[Media, reactions and emoji](#media-reactions-and-emoji) ·
+[History](#history) · [Commands](#commands) · [Keys](#keys) ·
+[Security](#security) · [Development](#development)
 
 ## Install
 
@@ -53,10 +108,12 @@ your account, but leaves the session authorised on Telegram's side — use
 
 ## The interface
 
-Two panes inside one frame. The sidebar stacks your Telegram **folders** over
-the **chat list**; the conversation and its composer share the pane on the
-right. The focused pane's border is drawn in the palette's accent, so which
-pane has focus is visible without hunting for the cursor.
+One frame, divided. The sidebar stacks your Telegram **folders** over the
+**chat list** and keeps the left edge; everything right of it belongs to the
+conversations, which start as one and split into as many as four — see
+[Several chats at once](#several-chats-at-once). The focused pane's border is
+drawn in the palette's accent, so which pane has focus is visible without
+hunting for the cursor.
 
 Folders are your own, read from Telegram. `]f` and `[f` move between them.
 tglow evaluates the folders you build by picking chats exactly; a folder built

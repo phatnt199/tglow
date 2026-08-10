@@ -2,6 +2,7 @@ import { TelegramClient } from 'teleproto';
 import { StringSession } from 'teleproto/sessions';
 import { Logger } from 'teleproto/extensions/Logger';
 
+import { APPLICATION_VERSION } from '../common/index.ts';
 import type { IApplicationConfiguration } from './common/index.ts';
 import type { SessionStoreService } from './session-store.ts';
 
@@ -25,7 +26,7 @@ export class TelegramClientService {
       autoReconnect: true,
       deviceModel: 'tglow',
       systemVersion: process.platform,
-      appVersion: '0.1.0',
+      appVersion: APPLICATION_VERSION,
       baseLogger: new Logger('error' as never),
     });
 
