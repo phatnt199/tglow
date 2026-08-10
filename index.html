@@ -92,6 +92,10 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--gold);outline-offse
 /* inline links row */
 .links{font-size:.9rem}
 .links .sep{color:var(--rule);margin:0 .6rem}
+/* The platform list breaks as one unit or not at all. "Linux x64" used to fit
+   on the line beside the download link; three platform names do not, and the
+   default was to leave "Windows" stranded on a line by itself. */
+.links .platforms{white-space:nowrap}
 
 /* a status line in its confirming state — the one place sage RED belongs */
 .statusdemo{
@@ -196,7 +200,7 @@ footer{margin-top:4.5rem;padding-bottom:2rem;color:var(--dim);font-size:.82rem}
         <span class="sep" aria-hidden="true">·</span>
         <a href="https://github.com/phatnt199/tglow/releases/latest">Download v0.6.0</a>
         <span class="sep" aria-hidden="true">·</span>
-        <span class="muted">Linux · macOS · Windows</span>
+        <span class="muted platforms">Linux · macOS · Windows</span>
       </p>
 
       <div class="frame" role="img" aria-label="A tglow message view: four messages with a relative-number gutter, timestamps, sender names, a link, inline code and read receipts.">
