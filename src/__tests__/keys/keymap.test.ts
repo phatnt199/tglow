@@ -423,10 +423,13 @@ test('Alt+Shift plus h/j/k/l moves the focus without the prefix', () => {
   expect(press('L')).toEqual([{ type: ActionTypes.PANE_FOCUS, direction: 'right' }]);
 });
 
-// `|` and `-` are the shapes of the divider each one creates, which is how
-// vim's own <C-w>| and <C-w>- read too. v and s are kept as synonyms because
-// muscle memory from vim reaches for those first.
-test('<C-w>| and <C-w>- split each way, with v and s as synonyms', () => {
+// `\` and `-` are the shapes of the divider each one creates. Backslash
+// rather than vim's own pipe because it needs no Shift: `|` is Shift+backslash
+// and reaches the keymap as either `|` or <S-|> depending on whether the
+// terminal speaks the kitty keyboard protocol, so it worked on neither
+// consistently. v and s stay as synonyms because muscle memory from vim
+// reaches for those first.
+test('<C-w>\\ and <C-w>- split each way, with v and s as synonyms', () => {
   const { keymapService, engine } = build();
   const keymap = keymapService.getBindings();
   const after = (key: string): unknown[] => {
@@ -434,7 +437,7 @@ test('<C-w>| and <C-w>- split each way, with v and s as synonyms', () => {
     return engine.resolve({ state: pending.state, key: buildKey(key), keymap }).actions;
   };
 
-  expect(after('|')).toEqual([{ type: ActionTypes.PANE_SPLIT, direction: 'vertical' }]);
+  expect(after('\\')).toEqual([{ type: ActionTypes.PANE_SPLIT, direction: 'vertical' }]);
   expect(after('v')).toEqual([{ type: ActionTypes.PANE_SPLIT, direction: 'vertical' }]);
   expect(after('-')).toEqual([{ type: ActionTypes.PANE_SPLIT, direction: 'horizontal' }]);
   expect(after('s')).toEqual([{ type: ActionTypes.PANE_SPLIT, direction: 'horizontal' }]);

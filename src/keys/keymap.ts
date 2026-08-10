@@ -218,19 +218,18 @@ export class KeymapService {
     // The rest of vim's window family, meaning here what it means there.
     // `|` and `-` are the shapes of the divider each one creates, which is
     // how vim's own <C-w>| and <C-w>- read too.
+    // Backslash rather than the pipe vim uses, and unshifted is the whole
+    // reason. `|` is Shift+backslash: a terminal speaking the kitty keyboard
+    // protocol reports the shift, so the press canonicalizes to <S-|> and
+    // matched nothing, while a terminal in legacy mode sends the bare byte and
+    // produces `|`. One key, two spellings, and the binding worked on neither
+    // consistently. `\` needs no modifier and has exactly one encoding.
+    //
+    // It does not collide with the bare `\` that opens the which-key popup:
+    // this is a two-token sequence, and a `\` pressed with <C-w> already
+    // pending completes it rather than starting over.
     {
-      context: '*', mode: VimModes.NORMAL, keys: '<C-w>|', description: 'Split into a column',
-      action: () => [{ type: ActionTypes.PANE_SPLIT, direction: 'vertical' }],
-    },
-    // The same key, reported the other way. `|` is Shift+backslash, and a
-    // terminal speaking the kitty keyboard protocol says so -- the press
-    // arrives as name "|" *with* shift, which canonicalizes to <S-|> and
-    // matches nothing spelled plainly. A terminal in legacy mode sends the
-    // bare byte and produces `|`. Both are real, so both are bound; measured
-    // against each encoding rather than guessed, after the plain spelling
-    // alone left <C-w>| doing nothing at all on a modern terminal.
-    {
-      context: '*', mode: VimModes.NORMAL, keys: '<C-w><S-|>', description: 'Split into a column', alias: true,
+      context: '*', mode: VimModes.NORMAL, keys: '<C-w>\\', description: 'Split into a column',
       action: () => [{ type: ActionTypes.PANE_SPLIT, direction: 'vertical' }],
     },
     {
