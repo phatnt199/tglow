@@ -547,6 +547,11 @@ export const buildDialogAdapter = (opts: { client: TelegramClient }): IDialogAda
         // which has no such field, versus node_modules/telegram/tl/api.d.ts's
         // `class Dialog`, which declares `readOutboxMaxId: int` at line 2455).
         readOutboxMaxId: dialog.dialog.readOutboxMaxId ?? 0,
+        // On the same raw TL object and for the same reason -- the wrapper
+        // promotes unreadCount but neither of the two read pointers
+        // (node_modules/teleproto/tl/custom/dialog.d.ts lists one property;
+        // the generated `class Dialog` declares both).
+        readInboxMaxId: dialog.dialog.readInboxMaxId ?? 0,
         presence: toPresence({ status: entity.status, now }),
       };
     });

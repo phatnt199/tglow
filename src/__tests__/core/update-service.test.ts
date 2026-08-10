@@ -256,7 +256,7 @@ test('IMessageAdapter exposes subscribeToNewMessages, so removing it cannot sile
 test('a live message increments the unread count', () => {
   const { adapter, emit } = buildAdapter();
   const { service, database } = buildService(adapter);
-  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 5, lastMessageAt: 100, topMessageId: 1, readOutboxMaxId: 0 });
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 5, lastMessageAt: 100, topMessageId: 1, readOutboxMaxId: 0, readInboxMaxId: 0 });
   service.start();
 
   emit(buildRawMessage({ id: 2, peerId: 'u1', date: 200 }));
@@ -274,7 +274,7 @@ test('a live message increments the unread count', () => {
 test('a backfilled message leaves the unread count exactly where the server put it', () => {
   const { adapter } = buildAdapter();
   const { service, database } = buildService(adapter);
-  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 5, lastMessageAt: 100, topMessageId: 1, readOutboxMaxId: 0 });
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 5, lastMessageAt: 100, topMessageId: 1, readOutboxMaxId: 0, readInboxMaxId: 0 });
 
   service.apply({ message: buildRawMessage({ id: 2, peerId: 'u1', date: 200 }), origin: MessageOrigins.BACKFILL });
 
@@ -288,7 +288,7 @@ test('a backfilled message leaves the unread count exactly where the server put 
 test('a live message the user sent themselves still never counts as unread', () => {
   const { adapter, emit } = buildAdapter();
   const { service, database } = buildService(adapter);
-  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 5, lastMessageAt: 100, topMessageId: 1, readOutboxMaxId: 0 });
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 5, lastMessageAt: 100, topMessageId: 1, readOutboxMaxId: 0, readInboxMaxId: 0 });
   service.start();
 
   emit(buildRawMessage({ id: 2, peerId: 'u1', date: 200, out: 1 }));
@@ -368,7 +368,7 @@ test('updateShortMessage, the other private-chat delivery shape, carries its pts
 test('a read receipt advances the chat readOutboxMaxId, so the ticks turn read', () => {
   const { adapter, emitReadReceipt } = buildAdapter();
   const { service, database } = buildService(adapter);
-  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 9, readOutboxMaxId: 3 });
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 9, readOutboxMaxId: 3, readInboxMaxId: 0 });
   service.start();
 
   emitReadReceipt({ peerId: 'u1', maxId: 9, direction: ReadDirections.OUTBOX, stillUnreadCount: null });
@@ -382,7 +382,7 @@ test('a read receipt advances the chat readOutboxMaxId, so the ticks turn read',
 test('a read receipt republishes the dialogs, which is what redraws the ticks', () => {
   const { adapter, emitReadReceipt } = buildAdapter();
   const { service, database, store } = buildService(adapter);
-  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 9, readOutboxMaxId: 0 });
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 9, readOutboxMaxId: 0, readInboxMaxId: 0 });
   store.setState({ patch: { dialogs: database.listDialogs() } });
   service.start();
 
@@ -397,7 +397,7 @@ test('a read receipt republishes the dialogs, which is what redraws the ticks', 
 test('a receipt with a lower maxId than one already applied does not walk the ticks backwards', () => {
   const { adapter, emitReadReceipt } = buildAdapter();
   const { service, database } = buildService(adapter);
-  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 9, readOutboxMaxId: 9 });
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 9, readOutboxMaxId: 9, readInboxMaxId: 0 });
   service.start();
 
   emitReadReceipt({ peerId: 'u1', maxId: 4, direction: ReadDirections.OUTBOX, stillUnreadCount: null });
@@ -496,7 +496,7 @@ test('a channel inbox read reads its bare channelId, like its outbox twin', () =
 test('reading a chat elsewhere clears its unread badge here', () => {
   const { adapter, emitReadReceipt } = buildAdapter();
   const { service, database, store } = buildService(adapter);
-  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 7, lastMessageAt: 100, topMessageId: 9, readOutboxMaxId: 0 });
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 7, lastMessageAt: 100, topMessageId: 9, readOutboxMaxId: 0, readInboxMaxId: 0 });
   store.setState({ patch: { dialogs: database.listDialogs() } });
   service.start();
 
@@ -512,7 +512,7 @@ test('reading a chat elsewhere clears its unread badge here', () => {
 test('a partial read elsewhere takes the server count rather than clearing the badge', () => {
   const { adapter, emitReadReceipt } = buildAdapter();
   const { service, database } = buildService(adapter);
-  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 7, lastMessageAt: 100, topMessageId: 9, readOutboxMaxId: 0 });
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 7, lastMessageAt: 100, topMessageId: 9, readOutboxMaxId: 0, readInboxMaxId: 0 });
   service.start();
 
   emitReadReceipt({ peerId: 'u1', maxId: 5, direction: ReadDirections.INBOX, stillUnreadCount: 3 });
@@ -525,7 +525,7 @@ test('a partial read elsewhere takes the server count rather than clearing the b
 test('an inbox read leaves the outbox ticks alone', () => {
   const { adapter, emitReadReceipt } = buildAdapter();
   const { service, database } = buildService(adapter);
-  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 7, lastMessageAt: 100, topMessageId: 9, readOutboxMaxId: 4 });
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 7, lastMessageAt: 100, topMessageId: 9, readOutboxMaxId: 4, readInboxMaxId: 0 });
   service.start();
 
   emitReadReceipt({ peerId: 'u1', maxId: 9, direction: ReadDirections.INBOX, stillUnreadCount: 0 });
@@ -539,7 +539,7 @@ test('an inbox read leaves the outbox ticks alone', () => {
 test('an outbox receipt leaves the unread badge alone', () => {
   const { adapter, emitReadReceipt } = buildAdapter();
   const { service, database } = buildService(adapter);
-  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 7, lastMessageAt: 100, topMessageId: 9, readOutboxMaxId: 0 });
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 7, lastMessageAt: 100, topMessageId: 9, readOutboxMaxId: 0, readInboxMaxId: 0 });
   service.start();
 
   emitReadReceipt({ peerId: 'u1', maxId: 9, direction: ReadDirections.OUTBOX, stillUnreadCount: null });
@@ -552,7 +552,7 @@ test('an outbox receipt leaves the unread badge alone', () => {
 test('an inbox read older than one already applied does not resurrect the badge', () => {
   const { adapter, emitReadReceipt } = buildAdapter();
   const { service, database } = buildService(adapter);
-  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 7, lastMessageAt: 100, topMessageId: 9, readOutboxMaxId: 0 });
+  database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 7, lastMessageAt: 100, topMessageId: 9, readOutboxMaxId: 0, readInboxMaxId: 0 });
   service.start();
 
   emitReadReceipt({ peerId: 'u1', maxId: 9, direction: ReadDirections.INBOX, stillUnreadCount: 0 });
@@ -655,7 +655,7 @@ test('a message arriving in the chat being read does not count as unread', () =>
   const harness = buildHarness();
   harness.database.upsertPeer({ id: 'u1', type: 'user', accessHash: 'h', title: 'Alice', username: null });
   harness.database.upsertDialog({
-    peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 1, readOutboxMaxId: 0,
+    peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 1, readOutboxMaxId: 0, readInboxMaxId: 0,
   });
   harness.store.setState({
     patch: { activePeerId: 'u1', messages: [], messageCursor: 0, dialogs: harness.database.listDialogs() },

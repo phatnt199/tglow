@@ -13,7 +13,7 @@ const buildFolder = (overrides: Partial<IFolderRow> = {}): IFolderRow => ({
 
 const buildDialog = (peerId: string, overrides: Partial<IDialogRow> = {}): IDialogRow => ({
   peerId, title: peerId, pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 1,
-  readOutboxMaxId: 0, preview: null, ...overrides,
+  readOutboxMaxId: 0, readInboxMaxId: 0, preview: null, ...overrides,
 });
 
 const dialogs: IDialogRow[] = [

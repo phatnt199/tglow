@@ -18,6 +18,8 @@ export interface IRawDialog {
   topMessageId: number;
   /** See IDialogInput.readOutboxMaxId (src/core/cache/database.ts). */
   readOutboxMaxId: number;
+  /** See IDialogInput.readInboxMaxId (src/core/cache/database.ts). */
+  readInboxMaxId: number;
   /** Whether the other person is online, and when they were last seen. UNKNOWN for a group or a channel, which have no such thing. */
   presence: IPresence;
 }
@@ -97,6 +99,7 @@ export class DialogService {
           lastMessageAt: dialog.lastMessageAt,
           topMessageId: dialog.topMessageId,
           readOutboxMaxId: dialog.readOutboxMaxId,
+          readInboxMaxId: dialog.readInboxMaxId,
         });
       }
 

@@ -12,7 +12,7 @@ const message = (overrides: Partial<IMessageRow> = {}): IMessageRow => ({
 
 const dialog = (overrides: Partial<IDialogRow> = {}): IDialogRow => ({
   peerId: 'u1', title: 'Alice', pinned: 0, unreadCount: 0, lastMessageAt: 100,
-  topMessageId: 1, readOutboxMaxId: 0, preview: null, ...overrides,
+  topMessageId: 1, readOutboxMaxId: 0, readInboxMaxId: 0, preview: null, ...overrides,
 });
 
 const actionsOf = (items: { action: string }[]): string[] => items.map(item => item.action);

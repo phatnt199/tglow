@@ -446,7 +446,7 @@ test('a failed markRead is logged and does not reject', async () => {
 // restart the way it did before this task.
 test("a successful markRead clears the dialog's unread count in the cache and republishes the dialog list", async () => {
   const harness = buildService(buildAdapter({ markRead: async (): Promise<void> => {} }));
-  harness.database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 5, lastMessageAt: 100, topMessageId: 3, readOutboxMaxId: 0 });
+  harness.database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 5, lastMessageAt: 100, topMessageId: 3, readOutboxMaxId: 0, readInboxMaxId: 0 });
   await harness.service.markRead({ peerId: 'u1', maxId: 3 });
 
   expect(harness.database.listDialogs().find(dialog => dialog.peerId === 'u1')?.unreadCount).toBe(0);
@@ -459,7 +459,7 @@ test("a successful markRead clears the dialog's unread count in the cache and re
 // badge staying up is correct, not a bug.
 test('a failed markRead leaves the unread count untouched', async () => {
   const harness = buildService(buildAdapter({ markRead: async () => { throw new Error('offline'); } }));
-  harness.database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 5, lastMessageAt: 100, topMessageId: 3, readOutboxMaxId: 0 });
+  harness.database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 5, lastMessageAt: 100, topMessageId: 3, readOutboxMaxId: 0, readInboxMaxId: 0 });
   await harness.service.markRead({ peerId: 'u1', maxId: 3 });
 
   expect(harness.database.listDialogs().find(dialog => dialog.peerId === 'u1')?.unreadCount).toBe(5);
@@ -485,7 +485,7 @@ test('markRead for a peer with no dialog row yet does not throw', async () => {
 // on paper without exercising the real cross-service path.
 test('a message arriving after a chat is marked read counts as a fresh unread, not a resurrected one', async () => {
   const harness = buildService(buildAdapter({ markRead: async (): Promise<void> => {} }));
-  harness.database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 5, lastMessageAt: 100, topMessageId: 3, readOutboxMaxId: 0 });
+  harness.database.upsertDialog({ peerId: 'u1', pinned: 0, unreadCount: 5, lastMessageAt: 100, topMessageId: 3, readOutboxMaxId: 0, readInboxMaxId: 0 });
   await harness.service.markRead({ peerId: 'u1', maxId: 3 });
   expect(harness.database.listDialogs().find(dialog => dialog.peerId === 'u1')?.unreadCount).toBe(0);
 

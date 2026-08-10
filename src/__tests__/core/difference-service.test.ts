@@ -145,7 +145,7 @@ test('a backfilled message does not raise a dialog unread count the server alrea
   harness.database.setSyncState({ key: 'pts', value: 100 });
   // What dialogService.sync() wrote from the server a moment earlier.
   harness.database.upsertDialog({
-    peerId: 'u1', pinned: 0, unreadCount: 5, lastMessageAt: 100, topMessageId: 1, readOutboxMaxId: 0,
+    peerId: 'u1', pinned: 0, unreadCount: 5, lastMessageAt: 100, topMessageId: 1, readOutboxMaxId: 0, readInboxMaxId: 0,
   });
 
   await harness.service.catchUp();
@@ -332,10 +332,10 @@ const buildTooLongHarness = (history: (opts: { peerId: string }) => IRawMessage[
   // jump has just made untrustworthy.
   harness.database.upsertPeer({ id: 'u2', type: 'user', accessHash: 'h2', title: 'Bob', username: null });
   harness.database.upsertDialog({
-    peerId: 'u1', pinned: 0, unreadCount: 3, lastMessageAt: 200, topMessageId: 9, readOutboxMaxId: 0,
+    peerId: 'u1', pinned: 0, unreadCount: 3, lastMessageAt: 200, topMessageId: 9, readOutboxMaxId: 0, readInboxMaxId: 0,
   });
   harness.database.upsertDialog({
-    peerId: 'u2', pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 4, readOutboxMaxId: 0,
+    peerId: 'u2', pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 4, readOutboxMaxId: 0, readInboxMaxId: 0,
   });
   return harness;
 };

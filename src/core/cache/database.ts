@@ -28,6 +28,17 @@ export interface IDialogInput {
   topMessageId: number;
   /** The highest id of the user's own messages the other side has read. Drives the tick in message-view.tsx; unrelated to markRead, which moves the inbox pointer instead. */
   readOutboxMaxId: number;
+  /**
+   * The highest id *this* account has read, wherever it read it.
+   *
+   * The inbox mirror of readOutboxMaxId, and what advanceReadInboxMaxId moves
+   * when a read receipt arrives from another device. It was missing here for a
+   * long time: the column existed, the update path wrote it, and the sync that
+   * creates the row never did -- so every channel and group sat at 0 until a
+   * receipt happened to arrive during a session, and a fresh cache started
+   * every chat claiming nothing had ever been read in it.
+   */
+  readInboxMaxId: number;
 }
 
 export interface IMessageInput {
@@ -56,6 +67,8 @@ export interface IDialogRow {
   topMessageId: number | null;
   /** See IDialogInput.readOutboxMaxId. */
   readOutboxMaxId: number;
+  /** See IDialogInput.readInboxMaxId. */
+  readInboxMaxId: number;
   /**
    * The text of the chat's newest cached message, for the preview line every
    * graphical Telegram client shows under a chat's name.
@@ -278,6 +291,7 @@ export class DatabaseService {
         lastMessageAt: dialog.lastMessageAt,
         topMessageId: dialog.topMessageId,
         readOutboxMaxId: dialog.readOutboxMaxId,
+        readInboxMaxId: dialog.readInboxMaxId,
       })
       .onConflictDoUpdate({
         target: dialogs.peerId,
@@ -287,6 +301,12 @@ export class DatabaseService {
           lastMessageAt: dialog.lastMessageAt,
           topMessageId: dialog.topMessageId,
           readOutboxMaxId: dialog.readOutboxMaxId,
+          // Raised, never lowered -- the same monotonic rule
+          // advanceReadInboxMaxId enforces, and for the same reason: read
+          // state carries no ordering guarantee, so a sync that started
+          // before a receipt landed must not undo it. A sync and a live
+          // update racing is the ordinary case, not the exotic one.
+          readInboxMaxId: sql`max(${dialogs.readInboxMaxId}, ${dialog.readInboxMaxId})`,
         },
       })
       .run();
@@ -462,6 +482,7 @@ export class DatabaseService {
         lastMessageAt: dialogs.lastMessageAt,
         topMessageId: dialogs.topMessageId,
         readOutboxMaxId: dialogs.readOutboxMaxId,
+        readInboxMaxId: dialogs.readInboxMaxId,
         // A correlated subquery rather than a join to `messages`: joining would
         // multiply each dialog by its message count and need a GROUP BY to
         // collapse again, and the newest row is not necessarily topMessageId --

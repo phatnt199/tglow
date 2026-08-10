@@ -96,6 +96,10 @@ export class UpdateService {
       lastMessageAt: message.date,
       topMessageId: message.id,
       readOutboxMaxId: existing?.readOutboxMaxId ?? 0,
+      // Zero rather than a carried-over value, and safe because upsertDialog
+      // only ever raises this one: a message arriving says nothing about how
+      // far the account has read, so the row keeps whatever it already had.
+      readInboxMaxId: 0,
     });
   };
 
