@@ -338,10 +338,37 @@ by accident.
 | `gg` / `G` | oldest loaded / newest |
 | `<C-d>` / `<C-u>` | half page down / up |
 | `nf` | focus the chat list |
-| `<C-w>h` / `<C-w>l` | move focus between chat list and messages |
 | `]f` / `[f` | next / previous chat folder |
 | `Enter` (chat list) | open the chat |
 | `Esc` (chat list) | back to messages, without opening anything |
+
+### Several chats at once
+
+Conversations arrange themselves as columns, each of which can be stacked
+into rows. Four at most, and a split is refused with a reason rather than
+drawn when there is no room for it — forty columns and eight rows each.
+
+Splitting leaves the focus in the chat list, because the reason to want a
+second pane is a second chat: `<C-w>\`, then pick one, then `Enter`.
+`Esc` comes back to the new pane instead, still showing what it was split
+from.
+
+| Key | Action |
+| --- | --- |
+| `<C-w>\` | split into a column (`<C-w>v` too) |
+| `<C-w>-` | split the column into another row (`<C-w>s` too) |
+| `<C-w>h` `j` `k` `l` | move the focus — left and right change column, up and down move within one |
+| `<A-S-h>` `j` `k` `l` | the same four moves, without the prefix |
+| `<C-w>w` | the next conversation, wrapping |
+| `<C-w>c` | close this one (the last one stays) |
+
+`<C-w>h` from the leftmost column still lands in the chat list, which is
+what it always did.
+
+Only the focused pane has a composer. The others are live views — they
+keep receiving messages and hold their own scroll position, so two views
+of one chat can sit at different places in it, but there is never a
+question about which conversation `Enter` sends to.
 
 ### Messages
 
