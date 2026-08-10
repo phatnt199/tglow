@@ -329,9 +329,10 @@ footer{margin-top:4.5rem;padding-bottom:2rem;color:var(--dim);font-size:.82rem}
 
       <div class="step">
         <h3 data-n="1">Get the binary</h3>
-        <p class="muted" style="font-size:.93rem;margin-top:.5rem">From <a href="https://github.com/phatnt199/tglow/releases/latest">the latest release</a>.</p>
-        <div class="cmd">chmod +x tglow-linux-x64
-sha256sum -c tglow.sha256</div>
+        <p class="muted" style="font-size:.93rem;margin-top:.5rem">From <a href="https://github.com/phatnt199/tglow/releases/latest">the latest release</a> — <code>tglow-linux-x64</code>, <code>tglow-macos-arm64</code>, <code>tglow-macos-x64</code> or <code>tglow-windows-x64.exe</code>.</p>
+        <div class="cmd">sha256sum -c tglow.sha256
+chmod +x tglow-linux-x64</div>
+        <p class="muted" style="font-size:.82rem;margin-top:.5rem">macOS refuses an unsigned download the first time: <code>xattr -d com.apple.quarantine tglow-macos-arm64</code>.</p>
       </div>
 
       <div class="step">
@@ -363,7 +364,8 @@ printf 'api_id = 0\napi_hash = ""\n' &gt; ~/.config/tglow/config.toml</div>
         <li>Animated stickers draw their still frame. Playing them means a Lottie renderer, which is a larger thing than it sounds.</li>
         <li>Themes are chosen in the config file. There is a command line now, but no <code>:theme</code> on it — switching still needs a restart.</li>
         <li>Conversations split into columns and rows, but the layout is not remembered between runs.</li>
-        <li>Linux x64 only.</li>
+        <li>The macOS and Windows binaries are cross-built and checked as far as their format and the renderer inside them. Only the Linux one is run before release.</li>
+        <li>No arm64 Linux or Windows build yet, though both are one line of the build script away.</li>
       </ul>
     </div>
   </section>
