@@ -255,14 +255,23 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
             : 'No room for another row',
         };
       }
-      // The conversation fields are left exactly as they are: the new pane is
-      // a second view of the same chat, so what was on screen is already what
-      // belongs in it. Only which slot owns them changes.
+      // The conversation fields are left exactly as they are: the new pane
+      // starts as a second view of the same chat, so what was on screen is
+      // already what belongs in it. Only which slot owns them changes.
+      //
+      // But the focus goes to the chat list, not to the new pane. Splitting a
+      // file in vim to see two parts of it is the point; splitting a chat
+      // client to read the same conversation twice is not -- the reason to
+      // want a second pane is a second *chat*. Landing in the chat list makes
+      // the next key press the one that chooses it, so the whole gesture is
+      // <C-w>| then a chat, rather than <C-w>| then remembering that `nf`
+      // exists. Escape comes straight back to the new pane, still showing what
+      // it was split from, for anyone who did want two views of one chat.
       return {
         paneGrid: result.grid,
         activePane: result.active,
-        engine: { ...state.engine, context: VimContexts.MESSAGES },
-        statusMessage: null,
+        engine: { ...state.engine, context: VimContexts.CHAT_LIST },
+        statusMessage: 'Choose a chat for the new pane',
       };
     }
 

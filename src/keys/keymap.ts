@@ -222,6 +222,17 @@ export class KeymapService {
       context: '*', mode: VimModes.NORMAL, keys: '<C-w>|', description: 'Split into a column',
       action: () => [{ type: ActionTypes.PANE_SPLIT, direction: 'vertical' }],
     },
+    // The same key, reported the other way. `|` is Shift+backslash, and a
+    // terminal speaking the kitty keyboard protocol says so -- the press
+    // arrives as name "|" *with* shift, which canonicalizes to <S-|> and
+    // matches nothing spelled plainly. A terminal in legacy mode sends the
+    // bare byte and produces `|`. Both are real, so both are bound; measured
+    // against each encoding rather than guessed, after the plain spelling
+    // alone left <C-w>| doing nothing at all on a modern terminal.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: '<C-w><S-|>', description: 'Split into a column', alias: true,
+      action: () => [{ type: ActionTypes.PANE_SPLIT, direction: 'vertical' }],
+    },
     {
       context: '*', mode: VimModes.NORMAL, keys: '<C-w>-', description: 'Split into a row',
       action: () => [{ type: ActionTypes.PANE_SPLIT, direction: 'horizontal' }],

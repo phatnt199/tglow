@@ -630,6 +630,15 @@ test('search.cycle skips a matched id no longer present in state.messages', () =
 
 const ROOMY: Partial<IApplicationState> = { conversationWidth: 400, conversationHeight: 100 };
 
+/**
+ * A split leaves the focus in the chat list, waiting for the chat the new pane
+ * is for. These tests are about moving between panes, which happens once that
+ * choice is made -- so they stand where Enter or Escape would have left them.
+ */
+const inMessages: Partial<IApplicationState> = {
+  engine: { ...INITIAL_ENGINE_STATE, context: VimContexts.MESSAGES },
+};
+
 test('a vertical split opens a column on the same conversation and focuses it', () => {
   const patch = applyAction({
     state: buildState({ ...ROOMY, activePeerId: 'u1', messageCursor: 2 }),
@@ -640,6 +649,10 @@ test('a vertical split opens a column on the same conversation and focuses it', 
   expect(patch.activePane).toEqual({ column: 1, row: 0 });
   // The conversation on screen is already the new pane's, so it is left alone.
   expect(patch.messages).toBeUndefined();
+  // And the focus goes where the next decision is: which chat this pane is
+  // for. A second view of the same conversation is not the reason to split a
+  // chat client, so the gesture does not stop half way there.
+  expect(patch.engine!.context).toBe(VimContexts.CHAT_LIST);
 });
 
 test('a horizontal split stacks a row inside the column it was called from', () => {
@@ -676,6 +689,7 @@ test('moving to another pane swaps the conversations over', () => {
   const twoChats = buildState({
     ...ROOMY,
     ...split,
+    ...inMessages,
     activePeerId: 'u2',
     messages: [{ peerId: 'u2', id: 9, fromId: 'u2', date: 900, text: 'from the other chat', out: 0, entities: [], replyToMessageId: null }],
     messageCursor: 0,
@@ -697,7 +711,7 @@ test('up and down move between stacked conversations', () => {
     state: buildState({ ...ROOMY, activePeerId: 'u1' }),
     action: { type: ActionTypes.PANE_SPLIT, direction: 'horizontal' },
   });
-  const stacked = buildState({ ...ROOMY, ...split, activePeerId: 'u2' } as Partial<IApplicationState>);
+  const stacked = buildState({ ...ROOMY, ...split, ...inMessages, activePeerId: 'u2' } as Partial<IApplicationState>);
 
   const up = applyAction({ state: stacked, action: { type: ActionTypes.PANE_FOCUS, direction: 'up' } });
   expect(up.activePane).toEqual({ column: 0, row: 0 });
@@ -709,13 +723,13 @@ test('a draft stays with the pane it was typed in', () => {
     state: buildState({ ...ROOMY, activePeerId: 'u1' }),
     action: { type: ActionTypes.PANE_SPLIT, direction: 'vertical' },
   });
-  const typed = buildState({ ...ROOMY, ...split, composerText: 'half a sentence' } as Partial<IApplicationState>);
+  const typed = buildState({ ...ROOMY, ...split, ...inMessages, composerText: 'half a sentence' } as Partial<IApplicationState>);
 
   const left = applyAction({ state: typed, action: { type: ActionTypes.PANE_FOCUS, direction: 'left' } });
   expect(left.composerText).toBe('');
 
   const right = applyAction({
-    state: buildState({ ...ROOMY, ...left } as Partial<IApplicationState>),
+    state: buildState({ ...ROOMY, ...left, ...inMessages } as Partial<IApplicationState>),
     action: { type: ActionTypes.PANE_FOCUS, direction: 'right' },
   });
   expect(right.composerText).toBe('half a sentence');
@@ -761,7 +775,7 @@ test('cycling wraps between panes without visiting the chat list', () => {
     action: { type: ActionTypes.PANE_SPLIT, direction: 'vertical' },
   });
   const wrapped = applyAction({
-    state: buildState({ ...ROOMY, ...split } as Partial<IApplicationState>),
+    state: buildState({ ...ROOMY, ...split, ...inMessages } as Partial<IApplicationState>),
     action: { type: ActionTypes.PANE_CYCLE, delta: 1 },
   });
 
