@@ -1,4 +1,7 @@
-import { image2sixel } from 'sixel';
+// Encoded here rather than by the `sixel` package -- see sixel-encoder.ts for
+// why. The package remains a devDependency, because its *decoder* is what the
+// tests read the encoder's output back with.
+import { encodeSixel } from './sixel-encoder.ts';
 
 import type { IRgbaImage } from './kitty-graphics.ts';
 
@@ -17,15 +20,6 @@ import type { IRgbaImage } from './kitty-graphics.ts';
 
 /** Device Control String ... String Terminator, which is how Sixel is framed. */
 const DCS = 'P';
-
-/**
- * How many colours the palette gets.
- *
- * Sixel's own ceiling is 256 and most terminals implement exactly that. Fewer
- * would encode faster and look worse; there is no reason to ask for less than
- * the format allows.
- */
-const PALETTE_SIZE = 256;
 
 /** Sixel draws six pixel rows at a time; that is what the format is named after. */
 const SIXEL_BAND_HEIGHT = 6;
@@ -125,7 +119,7 @@ export const drawImage = (opts: {
     return '';
   }
 
-  const sixel = image2sixel(new Uint8Array(scaled.data), scaled.width, scaled.height, PALETTE_SIZE);
+  const sixel = encodeSixel({ image: scaled });
   // Save, move, draw, restore.
   return `7[${row};${column}H${sixel}8`;
 };

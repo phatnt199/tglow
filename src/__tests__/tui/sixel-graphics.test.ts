@@ -6,6 +6,19 @@ import { drawImage, resolveCellSize, scaleRgba, supportsSixel } from '../../tui/
 /** Built rather than typed, so the file stays free of raw control characters. */
 const ESC = String.fromCharCode(27);
 
+/**
+ * The sixel body, without the DCS wrapper.
+ *
+ * `decode` takes the data alone. Handed the framed sequence it reads the
+ * introducer's own bytes as pixels -- `q` is 0x71, squarely inside the sixel
+ * data range -- and reports a picture three columns wider than the one that
+ * was encoded. Which looked like an encoder bug for a while, and was not.
+ */
+const bodyOf = (sequence: string): string => {
+  const start = sequence.indexOf(`${ESC}P`);
+  return sequence.slice(sequence.indexOf('q', start) + 1, sequence.indexOf(`${ESC}\\`, start));
+};
+
 /** A picture with a recognisable shape in it: a red block on a blue field. */
 const swatch = (opts: { width: number; height: number }): { width: number; height: number; data: Uint8Array } => {
   const { width, height } = opts;
@@ -89,8 +102,7 @@ test('what is encoded decodes back, and fits inside the cells it was given', () 
     row: 1, column: 1, columns: 8, rows: 4, cell,
   });
 
-  const sixel = sequence.slice(sequence.indexOf(`${ESC}P`), sequence.lastIndexOf(`${ESC}8`));
-  const decoded = decode(sixel);
+  const decoded = decode(bodyOf(sequence));
 
   expect(decoded.width).toBe(8 * cell.width);
   expect(decoded.height).toBeLessThanOrEqual(4 * cell.height);
@@ -105,7 +117,7 @@ test('the decoded picture still has both colours in it', () => {
     image: swatch({ width: 64, height: 64 }),
     row: 1, column: 1, columns: 8, rows: 4, cell: { width: 10, height: 20 },
   });
-  const decoded = decode(sequence.slice(sequence.indexOf(`${ESC}P`), sequence.lastIndexOf(`${ESC}8`)));
+  const decoded = decode(bodyOf(sequence));
 
   const colours = new Set<number>();
   for (let index = 0; index < decoded.data32.length; index += 1) {
