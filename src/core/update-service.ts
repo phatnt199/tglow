@@ -78,14 +78,21 @@ export class UpdateService {
    * was spoken to while tglow was closed genuinely belongs at the top of the
    * list with that message on it.
    */
-  private touchDialog = (opts: { message: IRawMessage; origin: TMessageOrigin }): void => {
-    const { message, origin } = opts;
+  private touchDialog = (opts: { message: IRawMessage; origin: TMessageOrigin; reading: boolean }): void => {
+    const { message, origin, reading } = opts;
     const existing = this._database.listDialogs().find(dialog => dialog.peerId === message.peerId);
     const carriedOver = existing?.unreadCount ?? 0;
+    // `reading` is the third thing that does not count, alongside a message
+    // the user sent and one a backfill is replaying: it arrived in the chat
+    // they have open, at the bottom, where the cursor is following. Counting
+    // that was why the badge climbed on the one chat they were demonstrably
+    // reading -- which is what "it does not mark as read" looked like from
+    // the outside.
+    const counted = !message.out && origin !== MessageOrigins.BACKFILL && !reading;
     this._database.upsertDialog({
       peerId: message.peerId,
       pinned: existing?.pinned ?? 0,
-      unreadCount: message.out || origin === MessageOrigins.BACKFILL ? carriedOver : carriedOver + 1,
+      unreadCount: counted ? carriedOver + 1 : reading ? 0 : carriedOver,
       lastMessageAt: message.date,
       topMessageId: message.id,
       readOutboxMaxId: existing?.readOutboxMaxId ?? 0,
@@ -122,9 +129,26 @@ export class UpdateService {
           replyToMessageId: message.replyToMessageId,
         }],
       });
-      this.touchDialog({ message, origin });
-
+      // Read before touchDialog, because whether this counts as unread
+      // depends on where the cursor was *before* the message arrived.
       const state = this._store.getState();
+      const atNewest = state.messageCursor >= state.messages.length - 1;
+      const reading = origin === MessageOrigins.LIVE
+        && message.peerId === state.activePeerId
+        && atNewest
+        && !message.out;
+
+      this.touchDialog({ message, origin, reading });
+
+      // Told to Telegram too, or the chat stays unread on every other device
+      // and the next launch's sync puts the badge straight back.
+      if (reading) {
+        void this._adapter.markRead({ peerId: message.peerId, maxId: message.id })
+          .catch(error => {
+            this._logger.for('apply').error('Could not mark the open chat read | Reason: %s', error);
+          });
+      }
+
       const patch: Partial<IApplicationState> = { dialogs: this._database.listDialogs() };
 
       if (message.peerId === state.activePeerId) {
@@ -146,9 +170,8 @@ export class UpdateService {
         // message it was on. `>=` (not `===`) also covers the empty-history
         // case -- messageCursor's initial 0 with zero messages should still
         // count as "at the newest" and follow.
-        const wasAtNewest = state.messageCursor >= state.messages.length - 1;
         patch.messages = nextMessages;
-        patch.messageCursor = wasAtNewest ? Math.max(nextMessages.length - 1, 0) : state.messageCursor;
+        patch.messageCursor = atNewest ? Math.max(nextMessages.length - 1, 0) : state.messageCursor;
       }
 
       this._store.setState({ patch });

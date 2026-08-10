@@ -644,3 +644,62 @@ test('a reaction in another chat is cached without touching the open one', async
     .toEqual([{ emoji: '🎉', count: 1, chosen: false }]);
   harness.database.close();
 });
+
+// ── reading a chat you already have open ──────────────────────────────────
+
+// Reported: messages were not being marked read. Opening a chat marks it, but
+// a message arriving *while you are sitting in that chat, at the newest
+// message* was counted as unread anyway -- so the badge climbed on the one
+// chat the user was demonstrably reading.
+test('a message arriving in the chat being read does not count as unread', () => {
+  const harness = buildHarness();
+  harness.database.upsertPeer({ id: 'u1', type: 'user', accessHash: 'h', title: 'Alice', username: null });
+  harness.database.upsertDialog({
+    peerId: 'u1', pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 1, readOutboxMaxId: 0,
+  });
+  harness.store.setState({
+    patch: { activePeerId: 'u1', messages: [], messageCursor: 0, dialogs: harness.database.listDialogs() },
+  });
+
+  harness.adapter.emit(buildRawMessage({ peerId: 'u1', id: 2, date: 200, out: 0 }));
+
+  const dialog = harness.store.getState().dialogs.find(row => row.peerId === 'u1');
+  expect(dialog?.unreadCount).toBe(0);
+  harness.database.close();
+});
+
+// The guarantee that keeps: a chat you are not looking at still counts. This
+// is the whole reason the badge exists.
+test('a message in another chat still counts as unread', () => {
+  const harness = buildHarness();
+  for (const id of ['u1', 'u2']) {
+    harness.database.upsertPeer({ id, type: 'user', accessHash: 'h', title: id, username: null });
+  }
+  harness.store.setState({ patch: { activePeerId: 'u1', messages: [], messageCursor: 0 } });
+
+  harness.adapter.emit(buildRawMessage({ peerId: 'u2', id: 5, date: 200, out: 0 }));
+
+  const dialog = harness.store.getState().dialogs.find(row => row.peerId === 'u2');
+  expect(dialog?.unreadCount).toBe(1);
+  harness.database.close();
+});
+
+// Scrolled back through history is not reading the newest message, so what
+// arrives at the bottom is genuinely unread -- the same distinction the cursor
+// already makes when it decides whether to follow.
+test('a message arriving while scrolled back still counts', () => {
+  const harness = buildHarness();
+  harness.database.upsertPeer({ id: 'u1', type: 'user', accessHash: 'h', title: 'Alice', username: null });
+  harness.database.insertMessages({
+    messages: [1, 2, 3].map(id => ({
+      peerId: 'u1', id, fromId: 'u1', date: id * 100, text: `m${id}`, out: 0, entities: [], replyToMessageId: null,
+    })),
+  });
+  const loaded = [...harness.database.listMessages({ peerId: 'u1', limit: 10 })].reverse();
+  harness.store.setState({ patch: { activePeerId: 'u1', messages: loaded, messageCursor: 0 } });
+
+  harness.adapter.emit(buildRawMessage({ peerId: 'u1', id: 9, date: 900, out: 0 }));
+
+  expect(harness.store.getState().dialogs.find(row => row.peerId === 'u1')?.unreadCount).toBe(1);
+  harness.database.close();
+});
