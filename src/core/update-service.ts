@@ -183,12 +183,14 @@ export class UpdateService {
       // The focused pane's own slot is skipped: its messages are the flat
       // state patched just above, and writing a second copy here would fight
       // that one.
-      const affectedPanes = state.panes
-        .map((pane, index) => ({ pane, index }))
-        .filter(({ pane, index }) => index !== state.activePaneIndex && pane.peerId === message.peerId);
-      if (affectedPanes.length > 0) {
-        const panes = [...state.panes];
-        for (const { pane, index } of affectedPanes) {
+      let touchedAnyPane = false;
+      const paneGrid = state.paneGrid.map((column, columnIndex) =>
+        column.map((pane, rowIndex) => {
+          const isFocused = columnIndex === state.activePane.column && rowIndex === state.activePane.row;
+          if (isFocused || pane.peerId !== message.peerId) {
+            return pane;
+          }
+          touchedAnyPane = true;
           const rows = this.forDisplay({
             rows: this._database.listMessages({
               peerId: message.peerId,
@@ -200,13 +202,14 @@ export class UpdateService {
           // different places, and a message arriving must not drag the one
           // reading history back down to the bottom.
           const paneAtNewest = pane.messageCursor >= pane.messages.length - 1;
-          panes[index] = {
+          return {
             ...pane,
             messages: rows,
             messageCursor: paneAtNewest ? Math.max(rows.length - 1, 0) : pane.messageCursor,
           };
-        }
-        patch.panes = panes;
+        }));
+      if (touchedAnyPane) {
+        patch.paneGrid = paneGrid;
       }
 
       this._store.setState({ patch });

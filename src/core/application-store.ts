@@ -5,7 +5,7 @@ import type { IDialogRow, IFolderRow, IMessageRow } from './cache/index.ts';
 import type { IPresence } from './presence.ts';
 import type { IImageCell } from '../tui/image-renderer.ts';
 import type { IActiveTyping } from './typing-status.ts';
-import { createPane, type IConversationPane } from './conversation-panes.ts';
+import { createGrid, type IPanePosition, type TPaneGrid } from './conversation-panes.ts';
 
 export type TConnectionState = 'offline' | 'connecting' | 'connected';
 
@@ -112,7 +112,8 @@ export interface IApplicationState {
    */
   reachedOldest: boolean;
   /**
-   * The conversation panes on screen, left to right.
+   * The conversation panes on screen: columns left to right, each a stack of
+   * conversations top to bottom.
    *
    * The focused pane's slot here is a snapshot that goes stale the moment it
    * takes the focus: its live conversation is `activePeerId`/`messages`/
@@ -122,9 +123,9 @@ export interface IApplicationState {
    * core/conversation-panes.ts, which is where the whole arrangement is
    * explained.
    */
-  panes: IConversationPane[];
+  paneGrid: TPaneGrid;
   /** Which pane the conversation fields below belong to. */
-  activePaneIndex: number;
+  activePane: IPanePosition;
   /**
    * How many columns the conversation area has, sidebar and frame already
    * taken off.
@@ -136,6 +137,8 @@ export interface IApplicationState {
    * or the sidebar changes size.
    */
   conversationWidth: number;
+  /** The same, down the page, for deciding whether another row fits. */
+  conversationHeight: number;
   activePeerId: string | null;
   chatCursor: number;
   messageCursor: number;
@@ -276,10 +279,11 @@ const INITIAL_STATE: IApplicationState = {
   reachedOldest: false,
   // One pane, holding nothing, which is what tglow looked like before it
   // could hold more than one.
-  panes: [createPane()],
-  activePaneIndex: 0,
+  paneGrid: createGrid(),
+  activePane: { column: 0, row: 0 },
   // Corrected by App on its first frame; nothing splits before then.
   conversationWidth: 0,
+  conversationHeight: 0,
   activePeerId: null,
   chatCursor: 0,
   messageCursor: 0,

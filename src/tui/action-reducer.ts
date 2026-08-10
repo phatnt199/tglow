@@ -11,13 +11,15 @@ import type { IApplicationState } from '../core/application-store.ts';
 import type { IMessageRow } from '../core/cache/database.ts';
 import { ActionTypes, Operators, UNNAMED_REGISTER, VimContexts, VimModes, type TAction } from '../keys/common/index.ts';
 import {
-  capture,
   closePane,
   cyclePane,
-  paneCapacity,
+  move,
+  paneAt,
   restore,
-  splitPane,
-  stepPane,
+  splitHorizontal,
+  splitVertical,
+  withActive,
+  type IPanePosition,
 } from '../core/conversation-panes.ts';
 import { extractLinkUrls } from './entities.ts';
 
@@ -73,6 +75,32 @@ export const resolveSearchMatchIndices = (opts: { messages: IMessageRow[]; match
  * One engine action to one state patch. Pure and synchronous: actions with side
  * effects (sending, opening a chat, quitting) are handled by App, not here.
  */
+/**
+ * Hand the focus to another pane, carrying both conversations with it.
+ *
+ * The swap the whole arrangement rests on: what is on screen goes into the
+ * pane being left, and the pane being entered brings its own back out. See
+ * core/conversation-panes.ts.
+ */
+const focusPane = (opts: { state: IApplicationState; at: IPanePosition }): Partial<IApplicationState> => {
+  const { state, at } = opts;
+  if (at.column === state.activePane.column && at.row === state.activePane.row) {
+    return { engine: { ...state.engine, context: VimContexts.MESSAGES } };
+  }
+
+  const paneGrid = withActive({ grid: state.paneGrid, active: state.activePane, conversation: state });
+  const target = paneAt({ grid: paneGrid, at });
+  if (target === null) {
+    return {};
+  }
+  return {
+    paneGrid,
+    activePane: at,
+    ...restore({ pane: target }),
+    engine: { ...state.engine, context: VimContexts.MESSAGES },
+  };
+};
+
 export const applyAction = (opts: { state: IApplicationState; action: TAction }): Partial<IApplicationState> => {
   const { state, action } = opts;
 
@@ -211,41 +239,44 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
     }
 
     case ActionTypes.PANE_SPLIT: {
-      const result = splitPane({
-        panes: state.panes,
-        activeIndex: state.activePaneIndex,
-        capacity: paneCapacity({ width: state.conversationWidth }),
-        conversation: state,
-      });
+      const result = action.direction === 'vertical'
+        ? splitVertical({
+          grid: state.paneGrid, active: state.activePane, conversation: state,
+          width: state.conversationWidth,
+        })
+        : splitHorizontal({
+          grid: state.paneGrid, active: state.activePane, conversation: state,
+          height: state.conversationHeight,
+        });
       if (!result.split) {
-        return { statusMessage: 'No room for another conversation' };
+        return {
+          statusMessage: action.direction === 'vertical'
+            ? 'No room for another column'
+            : 'No room for another row',
+        };
       }
       // The conversation fields are left exactly as they are: the new pane is
       // a second view of the same chat, so what was on screen is already what
       // belongs in it. Only which slot owns them changes.
       return {
-        panes: result.panes,
-        activePaneIndex: result.activeIndex,
+        paneGrid: result.grid,
+        activePane: result.active,
         engine: { ...state.engine, context: VimContexts.MESSAGES },
         statusMessage: null,
       };
     }
 
     case ActionTypes.PANE_CLOSE: {
-      const result = closePane({
-        panes: state.panes,
-        activeIndex: state.activePaneIndex,
-        conversation: state,
-      });
+      const result = closePane({ grid: state.paneGrid, active: state.activePane, conversation: state });
       if (!result.closed) {
         return { statusMessage: 'The last conversation pane stays open' };
       }
       return {
-        panes: result.panes,
-        activePaneIndex: result.activeIndex,
-        // The neighbour that inherits the focus brings its own conversation
-        // back into the flat fields.
-        ...restore({ pane: result.panes[result.activeIndex]! }),
+        paneGrid: result.grid,
+        activePane: result.active,
+        // The pane that inherits the focus brings its own conversation back
+        // into the flat fields.
+        ...restore({ pane: paneAt({ grid: result.grid, at: result.active })! }),
         engine: { ...state.engine, context: VimContexts.MESSAGES },
         statusMessage: null,
       };
@@ -254,37 +285,29 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
     case ActionTypes.PANE_FOCUS: {
       // Leaving the chat list rightwards is a focus change, not a pane
       // change -- the conversation the sidebar was sitting beside is the one
-      // to go back to.
+      // to go back to. Up and down do nothing there: the chat list has its own
+      // j and k, and stealing them would make the sidebar unnavigable.
       if (state.engine.context === VimContexts.CHAT_LIST) {
-        return action.delta > 0
+        return action.direction === 'right'
           ? { engine: { ...state.engine, context: VimContexts.MESSAGES } }
           : {};
       }
-      // Leftwards off the leftmost pane is what `<C-w>h` always meant. Only
-      // for the direction keys: `<C-w>w` cycles among conversations and never
-      // lands in the sidebar, the same way it never leaves the windows in vim.
-      if (!action.wrap && action.delta < 0 && state.activePaneIndex === 0) {
+      // Leftwards off the leftmost column is what `<C-w>h` always meant.
+      if (action.direction === 'left' && state.activePane.column === 0) {
         return { engine: { ...state.engine, context: VimContexts.CHAT_LIST } };
       }
 
-      const index = action.wrap
-        ? cyclePane({ count: state.panes.length, activeIndex: state.activePaneIndex, delta: action.delta })
-        : stepPane({ count: state.panes.length, activeIndex: state.activePaneIndex, delta: action.delta });
-      if (index === state.activePaneIndex) {
-        return { engine: { ...state.engine, context: VimContexts.MESSAGES } };
-      }
+      return focusPane({
+        state,
+        at: move({ grid: state.paneGrid, active: state.activePane, direction: action.direction }),
+      });
+    }
 
-      // The swap the whole arrangement rests on: the conversation on screen
-      // goes into the pane being left, and the pane being entered brings its
-      // own back out. See core/conversation-panes.ts.
-      const panes = state.panes.map((pane, at) =>
-        at === state.activePaneIndex ? capture({ conversation: state }) : pane);
-      return {
-        panes,
-        activePaneIndex: index,
-        ...restore({ pane: panes[index]! }),
-        engine: { ...state.engine, context: VimContexts.MESSAGES },
-      };
+    case ActionTypes.PANE_CYCLE: {
+      return focusPane({
+        state,
+        at: cyclePane({ grid: state.paneGrid, active: state.activePane, delta: action.delta }),
+      });
     }
 
     case ActionTypes.COMPOSER_INSERT_TEXT: {

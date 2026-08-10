@@ -3,14 +3,19 @@ import type { IMessageRow } from './cache/index.ts';
 /**
  * Several conversations on screen at once.
  *
- * The model is vim's, because tglow's is: `<C-w>v` splits, `<C-w>c` closes,
- * `<C-w>w` cycles, and `<C-w>h`/`<C-w>l` walk left and right across everything
- * on screen -- the sidebar included, which is where those two already went
- * before there was more than one conversation to walk between.
+ * The model is vim's, because tglow's is: `<C-w>|` splits into a new column,
+ * `<C-w>-` splits the current column into another row, `<C-w>c` closes, and
+ * `<C-w>h`/`j`/`k`/`l` move between them the way they move anywhere else.
  *
- * Vertical splits only. A terminal is far wider than it is tall and a
- * conversation is a column of text: splitting horizontally would give two
- * chats six lines each, which is not a way to read either of them.
+ * ## Columns of rows, not a window tree
+ *
+ * vim nests windows arbitrarily. This does not: the layout is a list of
+ * columns, and each column is a stack of conversations. `<C-w>|` adds a
+ * column, `<C-w>-` adds a row to the column you are in, and that covers every
+ * arrangement anyone actually builds out of a chat client while staying
+ * something h/j/k/l can describe exactly -- left and right change column, up
+ * and down move within one. A tree would buy arbitrary nesting and cost a
+ * layout nobody can predict from the keys they pressed.
  *
  * ## Where a pane's state actually lives
  *
@@ -20,12 +25,12 @@ import type { IMessageRow } from './cache/index.ts';
  * keeps doing so: the reducer, the key bindings, the composer, search, the
  * image cache. None of them learned about panes, and none of them had to.
  *
- * The panes in this list carry a *snapshot* instead, and the snapshot in the
+ * The panes in the grid carry a *snapshot* instead, and the snapshot in the
  * focused pane's own slot is stale by construction -- `capture` writes the flat
  * state into it at the moment focus leaves, and `restore` reads the incoming
  * pane's snapshot back out. Anything that needs every pane's current
  * conversation (drawing them, delivering a live message to one that is not
- * focused) must go through `withActive` below, which hands back the list with
+ * focused) must go through `withActive` below, which hands back the grid with
  * that stale slot filled in.
  */
 
@@ -45,6 +50,15 @@ export interface IConversationPane {
   composerTextBeforeEdit: string | null;
 }
 
+/** The layout: columns left to right, each a stack of panes top to bottom. */
+export type TPaneGrid = IConversationPane[][];
+
+/** Where the focus is. */
+export interface IPanePosition {
+  column: number;
+  row: number;
+}
+
 /** The flat conversation fields, as they appear on IApplicationState. */
 export interface IConversationState {
   activePeerId: string | null;
@@ -56,21 +70,32 @@ export interface IConversationState {
   composerTextBeforeEdit: string | null;
 }
 
+export type TPaneDirection = 'left' | 'right' | 'up' | 'down';
+
 /**
- * The narrowest a conversation may be squeezed before splitting again is
+ * The narrowest a conversation may be squeezed before another column is
  * refused.
  *
  * Forty columns is about where a wrapped message stops being a paragraph and
- * starts being a ragged strip of two or three words a line. Below that a second
- * pane costs more reading than it adds.
+ * starts being a ragged strip of two or three words a line.
  */
 export const MINIMUM_CONVERSATION_WIDTH = 40;
 
 /**
- * A ceiling regardless of how wide the terminal is.
+ * The shortest a conversation may be squeezed before another row is refused.
+ *
+ * Eight rows is a divider, a composer, and about five messages -- the point
+ * below which a second conversation stops being readable and starts being
+ * proof that it is there. A terminal is much wider than it is tall, so this is
+ * the limit that actually bites: two rows is usually fine, three rarely.
+ */
+export const MINIMUM_CONVERSATION_HEIGHT = 8;
+
+/**
+ * A ceiling on the whole grid regardless of how large the terminal is.
  *
  * Not a technical limit -- four conversations is already more than anyone
- * follows at once, and an ultrawide terminal splitting into seven is a way to
+ * follows at once, and an ultrawide terminal splitting into nine is a way to
  * lose the one you were reading rather than a feature.
  */
 export const MAXIMUM_PANES = 4;
@@ -107,124 +132,204 @@ export const restore = (opts: { pane: IConversationPane }): IConversationState =
   composerTextBeforeEdit: opts.pane.composerTextBeforeEdit,
 });
 
+/** The starting layout: one column, one conversation, which is what tglow always was. */
+export const createGrid = (): TPaneGrid => [[createPane()]];
+
+/** How many conversations the grid holds. */
+export const countPanes = (opts: { grid: TPaneGrid }): number =>
+  opts.grid.reduce((total, column) => total + column.length, 0);
+
+/** The pane at a position, or null when the position names nothing. */
+export const paneAt = (opts: { grid: TPaneGrid; at: IPanePosition }): IConversationPane | null =>
+  opts.grid[opts.at.column]?.[opts.at.row] ?? null;
+
 /**
- * The list with the focused pane's stale slot filled in from the flat state.
+ * The grid with the focused pane's stale slot filled in from the flat state.
  *
  * What anything drawing or delivering to *all* panes must use. Reading the
- * list directly would show the focused conversation as it was when focus last
+ * grid directly would show the focused conversation as it was when focus last
  * left it, which is a pane that stops updating the moment you look at it.
  */
 export const withActive = (opts: {
-  panes: IConversationPane[];
-  activeIndex: number;
+  grid: TPaneGrid;
+  active: IPanePosition;
   conversation: IConversationState;
-}): IConversationPane[] =>
-  opts.panes.map((pane, index) =>
-    index === opts.activeIndex ? capture({ conversation: opts.conversation }) : pane);
+}): TPaneGrid =>
+  opts.grid.map((column, columnIndex) =>
+    column.map((pane, rowIndex) =>
+      columnIndex === opts.active.column && rowIndex === opts.active.row
+        ? capture({ conversation: opts.conversation })
+        : pane));
 
 /**
- * How many panes this width can hold, sidebar already subtracted.
+ * A position clamped back inside the grid.
  *
- * Returned rather than assumed so splitting can refuse before it happens, and
- * so a terminal narrowed after the fact has a number to fold panes back down
- * to instead of drawing them one character wide.
+ * Columns hold different numbers of rows, so moving between them has to bring
+ * the row with it: stepping right from row 3 into a column with two rows lands
+ * on its last one rather than on nothing.
  */
-export const paneCapacity = (opts: { width: number }): number => {
-  if (opts.width < MINIMUM_CONVERSATION_WIDTH) {
-    // Always at least one: a terminal too narrow for the minimum still has to
-    // show the conversation, just cramped. Refusing to draw anything would be
-    // a worse answer than drawing it badly.
-    return 1;
-  }
-  return Math.max(1, Math.min(MAXIMUM_PANES, Math.floor(opts.width / MINIMUM_CONVERSATION_WIDTH)));
+export const clampPosition = (opts: { grid: TPaneGrid; at: IPanePosition }): IPanePosition => {
+  const column = Math.max(0, Math.min(opts.grid.length - 1, opts.at.column));
+  const rows = opts.grid[column]?.length ?? 1;
+  return { column, row: Math.max(0, Math.min(rows - 1, opts.at.row)) };
 };
 
 /**
- * Each pane's width in columns, sharing the space and giving the remainder to
- * the leftmost panes.
+ * Add a column beside the focused one, holding a second view of the same chat.
  *
- * Integer columns, distributed rather than rounded per pane: three panes across
+ * Which is what `:vsplit` does -- two views of what you were just reading --
+ * and the far more common next action is to point one of them somewhere else,
+ * which the chat list already does.
+ *
+ * Refused rather than silently ignored when there is no room, so the caller
+ * has something to say about it.
+ */
+export const splitVertical = (opts: {
+  grid: TPaneGrid;
+  active: IPanePosition;
+  conversation: IConversationState;
+  width: number;
+}): { grid: TPaneGrid; active: IPanePosition; split: boolean } => {
+  const current = withActive(opts);
+  const wouldBe = current.length + 1;
+  if (countPanes({ grid: current }) >= MAXIMUM_PANES
+    || Math.floor(opts.width / wouldBe) < MINIMUM_CONVERSATION_WIDTH) {
+    return { grid: current, active: opts.active, split: false };
+  }
+
+  const grid = [
+    ...current.slice(0, opts.active.column + 1),
+    [capture({ conversation: opts.conversation })],
+    ...current.slice(opts.active.column + 1),
+  ];
+  return { grid, active: { column: opts.active.column + 1, row: 0 }, split: true };
+};
+
+/**
+ * Add a row beneath the focused pane, inside its own column.
+ *
+ * The height limit is the one that actually bites: a terminal is far wider
+ * than it is tall, so a third row is usually refused where a third column
+ * would not be.
+ */
+export const splitHorizontal = (opts: {
+  grid: TPaneGrid;
+  active: IPanePosition;
+  conversation: IConversationState;
+  height: number;
+}): { grid: TPaneGrid; active: IPanePosition; split: boolean } => {
+  const current = withActive(opts);
+  const column = current[opts.active.column];
+  if (column === undefined) {
+    return { grid: current, active: opts.active, split: false };
+  }
+  const wouldBe = column.length + 1;
+  if (countPanes({ grid: current }) >= MAXIMUM_PANES
+    || Math.floor(opts.height / wouldBe) < MINIMUM_CONVERSATION_HEIGHT) {
+    return { grid: current, active: opts.active, split: false };
+  }
+
+  const rows = [
+    ...column.slice(0, opts.active.row + 1),
+    capture({ conversation: opts.conversation }),
+    ...column.slice(opts.active.row + 1),
+  ];
+  const grid = current.map((existing, index) => (index === opts.active.column ? rows : existing));
+  return { grid, active: { column: opts.active.column, row: opts.active.row + 1 }, split: true };
+};
+
+/**
+ * Close the focused pane, and its column too when that empties it.
+ *
+ * The last pane never closes: vim refuses the same way, and a tglow with no
+ * conversation on screen is a chat client showing a chat list and nothing
+ * else. The focus goes to what was above, or failing that to the column on the
+ * left -- the eye is already there.
+ */
+export const closePane = (opts: {
+  grid: TPaneGrid;
+  active: IPanePosition;
+  conversation: IConversationState;
+}): { grid: TPaneGrid; active: IPanePosition; closed: boolean } => {
+  const current = withActive(opts);
+  if (countPanes({ grid: current }) <= 1) {
+    return { grid: current, active: opts.active, closed: false };
+  }
+
+  const column = current[opts.active.column] ?? [];
+  const rows = column.filter((_, index) => index !== opts.active.row);
+  if (rows.length > 0) {
+    const grid = current.map((existing, index) => (index === opts.active.column ? rows : existing));
+    return {
+      grid,
+      active: clampPosition({ grid, at: { column: opts.active.column, row: opts.active.row - 1 } }),
+      closed: true,
+    };
+  }
+
+  const grid = current.filter((_, index) => index !== opts.active.column);
+  return {
+    grid,
+    active: clampPosition({ grid, at: { column: opts.active.column - 1, row: opts.active.row } }),
+    closed: true,
+  };
+};
+
+/**
+ * The position one step in a direction, stopping at the edges.
+ *
+ * Stopping rather than wrapping: h/j/k/l name a direction, and a left that
+ * reappears on the far right is how you lose track of which pane you are in.
+ * It is also what lets the reducer read "already leftmost, asked to go left"
+ * as "they meant the chat list".
+ */
+export const move = (opts: {
+  grid: TPaneGrid;
+  active: IPanePosition;
+  direction: TPaneDirection;
+}): IPanePosition => {
+  const { grid, active, direction } = opts;
+  switch (direction) {
+    case 'left':
+    case 'right': {
+      const column = active.column + (direction === 'right' ? 1 : -1);
+      // The row comes along, clamped: columns hold different numbers of rows.
+      return clampPosition({ grid, at: { column, row: active.row } });
+    }
+    default: {
+      const row = active.row + (direction === 'down' ? 1 : -1);
+      return clampPosition({ grid, at: { column: active.column, row } });
+    }
+  }
+};
+
+/**
+ * The next pane in reading order, wrapping -- what `<C-w>w` has always meant.
+ *
+ * Across columns as well as down them, so one key reaches every conversation
+ * however the grid is arranged.
+ */
+export const cyclePane = (opts: { grid: TPaneGrid; active: IPanePosition; delta: number }): IPanePosition => {
+  const order: IPanePosition[] = opts.grid.flatMap((column, columnIndex) =>
+    column.map((_, rowIndex) => ({ column: columnIndex, row: rowIndex })));
+  if (order.length === 0) {
+    return opts.active;
+  }
+  const current = order.findIndex(at => at.column === opts.active.column && at.row === opts.active.row);
+  const next = (((Math.max(0, current) + opts.delta) % order.length) + order.length) % order.length;
+  return order[next]!;
+};
+
+/**
+ * Sizes shared out along one axis, giving the remainder to the first slots.
+ *
+ * Integer cells, distributed rather than rounded per slot: three panes across
  * 100 columns are 34/33/33 and not 33/33/33 with a column of the frame left
  * unpainted down the right-hand side.
  */
-export const splitConversationWidth = (opts: { width: number; count: number }): number[] => {
+export const shareEvenly = (opts: { total: number; count: number }): number[] => {
   const count = Math.max(1, opts.count);
-  const base = Math.floor(opts.width / count);
-  const remainder = opts.width - base * count;
+  const base = Math.floor(opts.total / count);
+  const remainder = opts.total - base * count;
   return Array.from({ length: count }, (_, index) => base + (index < remainder ? 1 : 0));
 };
-
-/**
- * Split the focused pane, putting the new one immediately to its right.
- *
- * The new pane opens on the same conversation, which is what `:vsplit` does --
- * two views of what you were just reading -- and the far more common next
- * action is to point one of them somewhere else, which the chat list already
- * does.
- *
- * Returns the list unchanged when there is no room, so the caller can tell
- * (and say so) rather than silently ending up with the same number of panes.
- */
-export const splitPane = (opts: {
-  panes: IConversationPane[];
-  activeIndex: number;
-  capacity: number;
-  conversation: IConversationState;
-}): { panes: IConversationPane[]; activeIndex: number; split: boolean } => {
-  const current = withActive(opts);
-  if (current.length >= Math.min(opts.capacity, MAXIMUM_PANES)) {
-    return { panes: current, activeIndex: opts.activeIndex, split: false };
-  }
-
-  const clone = capture({ conversation: opts.conversation });
-  const panes = [
-    ...current.slice(0, opts.activeIndex + 1),
-    clone,
-    ...current.slice(opts.activeIndex + 1),
-  ];
-  return { panes, activeIndex: opts.activeIndex + 1, split: true };
-};
-
-/**
- * Close the focused pane and focus its neighbour.
- *
- * The last pane never closes: vim refuses the same way, and a tglow with no
- * conversation on screen is a chat client showing a chat list and nothing else.
- * Focus goes to the pane on the left when there is one, matching what closing a
- * window does -- the eye is already there.
- */
-export const closePane = (opts: {
-  panes: IConversationPane[];
-  activeIndex: number;
-  conversation: IConversationState;
-}): { panes: IConversationPane[]; activeIndex: number; closed: boolean } => {
-  const current = withActive(opts);
-  if (current.length <= 1) {
-    return { panes: current, activeIndex: opts.activeIndex, closed: false };
-  }
-
-  const panes = current.filter((_, index) => index !== opts.activeIndex);
-  return { panes, activeIndex: Math.max(0, opts.activeIndex - 1), closed: true };
-};
-
-/**
- * The pane `delta` steps away, wrapping.
- *
- * Wrapping because `<C-w>w` wraps in vim, and with two panes it is the only
- * thing that makes one key enough to go back and forth.
- */
-export const cyclePane = (opts: { count: number; activeIndex: number; delta: number }): number => {
-  const count = Math.max(1, opts.count);
-  return (((opts.activeIndex + opts.delta) % count) + count) % count;
-};
-
-/**
- * The pane `delta` steps away, stopping at the ends.
- *
- * `<C-w>h` and `<C-w>l` name a direction rather than a rotation, and a
- * left that wraps to the far right is how you lose track of which pane you are
- * in. Stopping is also what makes `<C-w>h` from the leftmost pane mean "the
- * sidebar" unambiguously -- see the keymap.
- */
-export const stepPane = (opts: { count: number; activeIndex: number; delta: number }): number =>
-  Math.max(0, Math.min(Math.max(0, opts.count - 1), opts.activeIndex + opts.delta));

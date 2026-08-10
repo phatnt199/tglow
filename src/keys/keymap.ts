@@ -1,5 +1,5 @@
 import { ActionTypes, Operators, VimContexts, VimModes } from './common/index.ts';
-import type { IKeyBinding, TVimContext, TVimMode } from './common/index.ts';
+import type { IKeyBinding, TAction, TPaneDirection, TVimContext, TVimMode } from './common/index.ts';
 
 const HALF_PAGE_MESSAGES = 10;
 
@@ -20,6 +20,21 @@ interface IIntrinsicKeyDescriptor {
 }
 
 /** The M1a binding table. One table drives dispatch and the which-key popup, so they cannot drift. */
+/**
+ * The four directions, and the letters vim spends on them.
+ *
+ * A table rather than twelve hand-written bindings: each direction earns three
+ * (the <C-w> prefix, and two spellings of Alt+Shift that different terminals
+ * each insist on), and writing those out by hand is how one of them ends up
+ * pointing the wrong way.
+ */
+const PANE_DIRECTIONS: readonly { key: string; direction: TPaneDirection; description: string }[] = [
+  { key: 'h', direction: 'left', description: 'Focus the pane left' },
+  { key: 'j', direction: 'down', description: 'Focus the pane below' },
+  { key: 'k', direction: 'up', description: 'Focus the pane above' },
+  { key: 'l', direction: 'right', description: 'Focus the pane right' },
+];
+
 export class KeymapService {
   private readonly _bindings: IKeyBinding[] = [
     // Movement
@@ -177,18 +192,49 @@ export class KeymapService {
     // lands in the chat list, but from a pane further right it steps one pane
     // left first. Which of the two it means depends on where the focus already
     // is, so the decision belongs to the reducer -- see PANE_FOCUS there.
-    {
-      context: '*', mode: VimModes.NORMAL, keys: '<C-w>h', description: 'Focus left',
-      action: () => [{ type: ActionTypes.PANE_FOCUS, delta: -1, wrap: false }],
-    },
-    {
-      context: '*', mode: VimModes.NORMAL, keys: '<C-w>l', description: 'Focus right',
-      action: () => [{ type: ActionTypes.PANE_FOCUS, delta: 1, wrap: false }],
-    },
+    ...PANE_DIRECTIONS.flatMap(({ key, direction, description }): IKeyBinding[] => [
+      {
+        context: '*', mode: VimModes.NORMAL, keys: `<C-w>${key}`, description,
+        action: (): TAction[] => [{ type: ActionTypes.PANE_FOCUS, direction }],
+      },
+      // The same four moves without the prefix, for anyone who would rather
+      // not reach for <C-w> every time. Alt+Shift rather than plain Alt: a
+      // bare <A-j> is a plausible thing to want for something else later,
+      // where this combination is not spoken for anywhere in tglow.
+      //
+      // `<A-S-H>`, with the capital: measured, not assumed. A plain Shift-G
+      // does reach the keymap lowercased as `<S-g>` (see the comment on that
+      // binding above), but an alt-modified key arrives as the escape prefix
+      // followed by the raw byte the terminal sent -- and that byte is already
+      // the capital. So Alt+Shift+h reports name "H" *and* shift, and
+      // canonicalizes to <A-S-H>. Spelling it <A-S-h> here bound nothing at
+      // all, silently, which is why this was checked against a real terminal
+      // rather than reasoned about.
+      {
+        context: '*', mode: VimModes.NORMAL, keys: `<A-S-${key.toUpperCase()}>`, description, alias: true,
+        action: (): TAction[] => [{ type: ActionTypes.PANE_FOCUS, direction }],
+      },
+    ]),
     // The rest of vim's window family, meaning here what it means there.
+    // `|` and `-` are the shapes of the divider each one creates, which is
+    // how vim's own <C-w>| and <C-w>- read too.
     {
-      context: '*', mode: VimModes.NORMAL, keys: '<C-w>v', description: 'Split conversation',
-      action: () => [{ type: ActionTypes.PANE_SPLIT }],
+      context: '*', mode: VimModes.NORMAL, keys: '<C-w>|', description: 'Split into a column',
+      action: () => [{ type: ActionTypes.PANE_SPLIT, direction: 'vertical' }],
+    },
+    {
+      context: '*', mode: VimModes.NORMAL, keys: '<C-w>-', description: 'Split into a row',
+      action: () => [{ type: ActionTypes.PANE_SPLIT, direction: 'horizontal' }],
+    },
+    // vim's own vsplit/split letters, kept as synonyms: muscle memory from
+    // vim reaches for these first, and they cost nothing to honour.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: '<C-w>v', description: 'Split into a column', alias: true,
+      action: () => [{ type: ActionTypes.PANE_SPLIT, direction: 'vertical' }],
+    },
+    {
+      context: '*', mode: VimModes.NORMAL, keys: '<C-w>s', description: 'Split into a row', alias: true,
+      action: () => [{ type: ActionTypes.PANE_SPLIT, direction: 'horizontal' }],
     },
     {
       context: '*', mode: VimModes.NORMAL, keys: '<C-w>c', description: 'Close pane',
@@ -196,7 +242,7 @@ export class KeymapService {
     },
     {
       context: '*', mode: VimModes.NORMAL, keys: '<C-w>w', description: 'Next pane',
-      action: count => [{ type: ActionTypes.PANE_FOCUS, delta: count, wrap: true }],
+      action: count => [{ type: ActionTypes.PANE_CYCLE, delta: count }],
     },
     {
       context: VimContexts.CHAT_LIST, mode: VimModes.NORMAL, keys: 'j', description: 'Next chat',
@@ -383,6 +429,9 @@ export class KeymapService {
     const { mode, context } = opts;
 
     const tableDriven = this._bindings
+      // Aliases are left out: they do what something already listed does, and
+      // a popup that lists every spelling grows past the bottom of the screen.
+      .filter(binding => binding.alias !== true)
       .filter(binding => this.matchesMode({ entry: binding, mode }) && this.matchesContext({ entry: binding, context }))
       .map(binding => ({ keys: binding.keys, description: binding.description }));
 

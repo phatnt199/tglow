@@ -393,21 +393,7 @@ test('<C-w> alone stays pending and resolves to nothing', () => {
 // already in, which the keymap cannot see. So they emit one action and the
 // reducer decides -- see the pane tests in tui/action-reducer.test.ts, which
 // is where the chat-list-at-the-left-edge behaviour is now pinned.
-test('<C-w>h and <C-w>l ask to move the focus left and right', () => {
-  const { keymapService, engine } = build();
-  const keymap = keymapService.getBindings();
-
-  const pendingLeft = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('w', { ctrl: true }), keymap });
-  expect(engine.resolve({ state: pendingLeft.state, key: buildKey('h'), keymap }).actions)
-    .toEqual([{ type: ActionTypes.PANE_FOCUS, delta: -1, wrap: false }]);
-
-  const pendingRight = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('w', { ctrl: true }), keymap });
-  expect(engine.resolve({ state: pendingRight.state, key: buildKey('l'), keymap }).actions)
-    .toEqual([{ type: ActionTypes.PANE_FOCUS, delta: 1, wrap: false }]);
-});
-
-// The rest of vim's window family, meaning here what it means there.
-test('<C-w>v splits, <C-w>c closes, <C-w>w cycles', () => {
+test('<C-w> plus h/j/k/l asks to move the focus that way', () => {
   const { keymapService, engine } = build();
   const keymap = keymapService.getBindings();
   const after = (key: string): unknown[] => {
@@ -415,9 +401,45 @@ test('<C-w>v splits, <C-w>c closes, <C-w>w cycles', () => {
     return engine.resolve({ state: pending.state, key: buildKey(key), keymap }).actions;
   };
 
-  expect(after('v')).toEqual([{ type: ActionTypes.PANE_SPLIT }]);
+  expect(after('h')).toEqual([{ type: ActionTypes.PANE_FOCUS, direction: 'left' }]);
+  expect(after('j')).toEqual([{ type: ActionTypes.PANE_FOCUS, direction: 'down' }]);
+  expect(after('k')).toEqual([{ type: ActionTypes.PANE_FOCUS, direction: 'up' }]);
+  expect(after('l')).toEqual([{ type: ActionTypes.PANE_FOCUS, direction: 'right' }]);
+});
+
+// The same four without the prefix, and the capital is the point. An
+// alt-modified key arrives as the escape prefix plus the raw byte the terminal
+// sent, which for Alt+Shift+h is already "H" -- so it reports name "H" and
+// shift together. Measured against a real terminal: <A-S-h> bound nothing.
+test('Alt+Shift plus h/j/k/l moves the focus without the prefix', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+  const press = (name: string): unknown[] =>
+    engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey(name, { alt: true, shift: true }), keymap }).actions;
+
+  expect(press('H')).toEqual([{ type: ActionTypes.PANE_FOCUS, direction: 'left' }]);
+  expect(press('J')).toEqual([{ type: ActionTypes.PANE_FOCUS, direction: 'down' }]);
+  expect(press('K')).toEqual([{ type: ActionTypes.PANE_FOCUS, direction: 'up' }]);
+  expect(press('L')).toEqual([{ type: ActionTypes.PANE_FOCUS, direction: 'right' }]);
+});
+
+// `|` and `-` are the shapes of the divider each one creates, which is how
+// vim's own <C-w>| and <C-w>- read too. v and s are kept as synonyms because
+// muscle memory from vim reaches for those first.
+test('<C-w>| and <C-w>- split each way, with v and s as synonyms', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+  const after = (key: string): unknown[] => {
+    const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('w', { ctrl: true }), keymap });
+    return engine.resolve({ state: pending.state, key: buildKey(key), keymap }).actions;
+  };
+
+  expect(after('|')).toEqual([{ type: ActionTypes.PANE_SPLIT, direction: 'vertical' }]);
+  expect(after('v')).toEqual([{ type: ActionTypes.PANE_SPLIT, direction: 'vertical' }]);
+  expect(after('-')).toEqual([{ type: ActionTypes.PANE_SPLIT, direction: 'horizontal' }]);
+  expect(after('s')).toEqual([{ type: ActionTypes.PANE_SPLIT, direction: 'horizontal' }]);
   expect(after('c')).toEqual([{ type: ActionTypes.PANE_CLOSE }]);
-  expect(after('w')).toEqual([{ type: ActionTypes.PANE_FOCUS, delta: 1, wrap: true }]);
+  expect(after('w')).toEqual([{ type: ActionTypes.PANE_CYCLE, delta: 1 }]);
 });
 
 // The "I changed my mind" key -- without it, `nf` into the chat list was a

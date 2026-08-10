@@ -85,17 +85,22 @@ export class ActionTypes {
   static readonly PIN_TOGGLE = 'pin.toggle';
   static readonly FORWARD_START = 'forward.start';
   static readonly MEDIA_OPEN = 'media.open';
-  /** Split the focused conversation, giving the same chat a second pane beside it. */
+  /**
+   * Split the focused conversation into a second view of the same chat:
+   * `vertical` puts it in a new column beside this one, `horizontal` stacks it
+   * underneath inside the same column.
+   */
   static readonly PANE_SPLIT = 'pane.split';
   /** Close the focused conversation pane. The last one never closes. */
   static readonly PANE_CLOSE = 'pane.close';
   /**
-   * Move the focus between conversation panes. `wrap` tells the two apart:
-   * `<C-w>w` cycles round, while `<C-w>h` and `<C-w>l` name a direction and
-   * stop at the ends -- which is what lets a left from the leftmost pane mean
-   * the sidebar.
+   * Move the focus between conversation panes, one step in a direction,
+   * stopping at the edges -- which is what lets a left from the leftmost pane
+   * mean the chat list.
    */
   static readonly PANE_FOCUS = 'pane.focus';
+  /** Move the focus to the next conversation in reading order, wrapping. `<C-w>w`. */
+  static readonly PANE_CYCLE = 'pane.cycle';
 }
 
 const SUPPORTED_MODES: readonly string[] = [

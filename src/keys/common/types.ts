@@ -17,6 +17,16 @@ export interface IRawKeyEvent {
   shift: boolean;
 }
 
+/**
+ * Which way `<C-w>h/j/k/l` asks the focus to move.
+ *
+ * Spelled out here rather than imported from core/conversation-panes.ts, which
+ * is where the grid that interprets it lives: keys/ describes what was pressed
+ * and stays independent of anything that acts on it. Structurally the same
+ * union, and the reducer is where the two meet.
+ */
+export type TPaneDirection = 'left' | 'right' | 'up' | 'down';
+
 export type TCursorUnit = 'message' | 'chat';
 export type TCursorEdge = 'first' | 'last';
 /** The three overlays that exist. A union of bare literals, like TCursorUnit/TCursorEdge above, not a class: nothing else keys off it. */
@@ -40,9 +50,10 @@ export type TAction =
   | { type: typeof ActionTypes.REGISTER_SET; name: string }
   | { type: typeof ActionTypes.MODE_SET; mode: TVimMode }
   | { type: typeof ActionTypes.FOCUS_SET; context: TVimContext }
-  | { type: typeof ActionTypes.PANE_SPLIT }
+  | { type: typeof ActionTypes.PANE_SPLIT; direction: 'vertical' | 'horizontal' }
   | { type: typeof ActionTypes.PANE_CLOSE }
-  | { type: typeof ActionTypes.PANE_FOCUS; delta: number; wrap: boolean }
+  | { type: typeof ActionTypes.PANE_FOCUS; direction: TPaneDirection }
+  | { type: typeof ActionTypes.PANE_CYCLE; delta: number }
   | { type: typeof ActionTypes.CHAT_OPEN }
   | { type: typeof ActionTypes.COMPOSER_SEND }
   | { type: typeof ActionTypes.COMPOSER_INSERT_TEXT; text: string }
@@ -138,6 +149,16 @@ export interface IKeyBinding {
   action: (count: number) => TAction[];
   /** Shown in the which-key popup; every binding must have one. */
   description: string;
+  /**
+   * A second way to press something already listed, kept out of the which-key
+   * popup.
+   *
+   * `<A-S-h>` does exactly what `<C-w>h` does, and `<C-w>v` exactly what
+   * `<C-w>|` does. Listing every spelling separately doubled the pane section
+   * of the popup and pushed the keys below it off the bottom of the screen --
+   * an alias is a convenience, not a thirteenth thing to learn.
+   */
+  alias?: boolean;
 }
 
 export type TResolveStatus = 'pending' | 'resolved' | 'unmapped' | 'ambiguous';
