@@ -12,4 +12,4 @@
  * package.json cannot import this, so the two are kept in step by a test that
  * reads both and refuses to let them disagree, rather than by remembering.
  */
-export const APPLICATION_VERSION = '0.5.0';
+export const APPLICATION_VERSION = '0.6.0';
