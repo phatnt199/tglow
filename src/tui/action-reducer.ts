@@ -10,6 +10,15 @@ import type { IApplicationState } from '../core/application-store.ts';
 // cache/database.ts, and this stays off the core/ barrel's crash path too.
 import type { IMessageRow } from '../core/cache/database.ts';
 import { ActionTypes, Operators, UNNAMED_REGISTER, VimContexts, VimModes, type TAction } from '../keys/common/index.ts';
+import {
+  capture,
+  closePane,
+  cyclePane,
+  paneCapacity,
+  restore,
+  splitPane,
+  stepPane,
+} from '../core/conversation-panes.ts';
 import { extractLinkUrls } from './entities.ts';
 
 const clamp = (opts: { value: number; maximum: number }): number => {
@@ -199,6 +208,83 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
 
     case ActionTypes.FOCUS_SET: {
       return { engine: { ...state.engine, context: action.context } };
+    }
+
+    case ActionTypes.PANE_SPLIT: {
+      const result = splitPane({
+        panes: state.panes,
+        activeIndex: state.activePaneIndex,
+        capacity: paneCapacity({ width: state.conversationWidth }),
+        conversation: state,
+      });
+      if (!result.split) {
+        return { statusMessage: 'No room for another conversation' };
+      }
+      // The conversation fields are left exactly as they are: the new pane is
+      // a second view of the same chat, so what was on screen is already what
+      // belongs in it. Only which slot owns them changes.
+      return {
+        panes: result.panes,
+        activePaneIndex: result.activeIndex,
+        engine: { ...state.engine, context: VimContexts.MESSAGES },
+        statusMessage: null,
+      };
+    }
+
+    case ActionTypes.PANE_CLOSE: {
+      const result = closePane({
+        panes: state.panes,
+        activeIndex: state.activePaneIndex,
+        conversation: state,
+      });
+      if (!result.closed) {
+        return { statusMessage: 'The last conversation pane stays open' };
+      }
+      return {
+        panes: result.panes,
+        activePaneIndex: result.activeIndex,
+        // The neighbour that inherits the focus brings its own conversation
+        // back into the flat fields.
+        ...restore({ pane: result.panes[result.activeIndex]! }),
+        engine: { ...state.engine, context: VimContexts.MESSAGES },
+        statusMessage: null,
+      };
+    }
+
+    case ActionTypes.PANE_FOCUS: {
+      // Leaving the chat list rightwards is a focus change, not a pane
+      // change -- the conversation the sidebar was sitting beside is the one
+      // to go back to.
+      if (state.engine.context === VimContexts.CHAT_LIST) {
+        return action.delta > 0
+          ? { engine: { ...state.engine, context: VimContexts.MESSAGES } }
+          : {};
+      }
+      // Leftwards off the leftmost pane is what `<C-w>h` always meant. Only
+      // for the direction keys: `<C-w>w` cycles among conversations and never
+      // lands in the sidebar, the same way it never leaves the windows in vim.
+      if (!action.wrap && action.delta < 0 && state.activePaneIndex === 0) {
+        return { engine: { ...state.engine, context: VimContexts.CHAT_LIST } };
+      }
+
+      const index = action.wrap
+        ? cyclePane({ count: state.panes.length, activeIndex: state.activePaneIndex, delta: action.delta })
+        : stepPane({ count: state.panes.length, activeIndex: state.activePaneIndex, delta: action.delta });
+      if (index === state.activePaneIndex) {
+        return { engine: { ...state.engine, context: VimContexts.MESSAGES } };
+      }
+
+      // The swap the whole arrangement rests on: the conversation on screen
+      // goes into the pane being left, and the pane being entered brings its
+      // own back out. See core/conversation-panes.ts.
+      const panes = state.panes.map((pane, at) =>
+        at === state.activePaneIndex ? capture({ conversation: state }) : pane);
+      return {
+        panes,
+        activePaneIndex: index,
+        ...restore({ pane: panes[index]! }),
+        engine: { ...state.engine, context: VimContexts.MESSAGES },
+      };
     }
 
     case ActionTypes.COMPOSER_INSERT_TEXT: {

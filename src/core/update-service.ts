@@ -174,6 +174,41 @@ export class UpdateService {
         patch.messageCursor = atNewest ? Math.max(nextMessages.length - 1, 0) : state.messageCursor;
       }
 
+      // The same, for every conversation on screen that is not the focused
+      // one. Without this a split pane freezes the moment you look away from
+      // it -- which is the one thing a second pane exists not to do -- and
+      // would still be showing that stale history when you focused it back,
+      // because focusing restores exactly what the pane was holding.
+      //
+      // The focused pane's own slot is skipped: its messages are the flat
+      // state patched just above, and writing a second copy here would fight
+      // that one.
+      const affectedPanes = state.panes
+        .map((pane, index) => ({ pane, index }))
+        .filter(({ pane, index }) => index !== state.activePaneIndex && pane.peerId === message.peerId);
+      if (affectedPanes.length > 0) {
+        const panes = [...state.panes];
+        for (const { pane, index } of affectedPanes) {
+          const rows = this.forDisplay({
+            rows: this._database.listMessages({
+              peerId: message.peerId,
+              limit: resolveRefreshLimit({ loaded: pane.messages.length }),
+            }),
+          });
+          // Each pane follows or holds its own position, exactly as the
+          // focused one does: two views of one chat can be scrolled to
+          // different places, and a message arriving must not drag the one
+          // reading history back down to the bottom.
+          const paneAtNewest = pane.messageCursor >= pane.messages.length - 1;
+          panes[index] = {
+            ...pane,
+            messages: rows,
+            messageCursor: paneAtNewest ? Math.max(rows.length - 1, 0) : pane.messageCursor,
+          };
+        }
+        patch.panes = panes;
+      }
+
       this._store.setState({ patch });
       return true;
     } catch (error) {

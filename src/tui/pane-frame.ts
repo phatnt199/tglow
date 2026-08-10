@@ -118,12 +118,26 @@ export const resolvePaneWidths = (opts: {
  * the panes below it stop lining up with the edge above them -- the arithmetic
  * that, got wrong, produced M1a's interleaved-text report.
  */
+/**
+ * The conversation area, when it holds more than one conversation.
+ *
+ * One entry per pane, left to right, each with the chat it is showing. Their
+ * widths plus the junctions between them come to the conversation area's own
+ * width -- see splitConversationWidth in core/conversation-panes.ts, which is
+ * what works them out.
+ */
+export interface IConversationSpan {
+  width: number;
+  title: string;
+}
+
 const buildEdge = (opts: {
   widths: IPaneWidths;
   left: string;
   right: string;
   junction: string;
   titles: { rail: string; sidebar: string; messages: string } | null;
+  conversations?: IConversationSpan[];
 }): string => {
   const { widths, left, right, junction, titles } = opts;
 
@@ -146,16 +160,21 @@ const buildEdge = (opts: {
     return `${TITLE_PREFIX}${shown}${TITLE_SUFFIX}${HORIZONTAL.repeat(Math.max(0, span - used))}`;
   };
 
-  const spans = widths.rail > 0
-    ? [
-      { width: widths.rail, title: titles?.rail ?? null },
-      { width: widths.sidebar, title: titles?.sidebar ?? null },
-      { width: widths.messages, title: titles?.messages ?? null },
-    ]
-    : [
-      { width: widths.sidebar, title: titles?.sidebar ?? null },
-      { width: widths.messages, title: titles?.messages ?? null },
-    ];
+  // One span per conversation pane when there are several, so each gets its
+  // own titled stretch of edge and its own junction -- a split that shared one
+  // heading would leave the right-hand chat unlabelled.
+  const conversationSpans = opts.conversations && opts.conversations.length > 0
+    ? opts.conversations.map(span => ({
+      width: span.width,
+      title: titles === null ? null : span.title,
+    }))
+    : [{ width: widths.messages, title: titles?.messages ?? null }];
+
+  const spans = [
+    ...(widths.rail > 0 ? [{ width: widths.rail, title: titles?.rail ?? null }] : []),
+    { width: widths.sidebar, title: titles?.sidebar ?? null },
+    ...conversationSpans,
+  ];
 
   return left
     + spans.map(span => segment(span.width, span.title)).join(junction)
@@ -165,13 +184,16 @@ const buildEdge = (opts: {
 export const buildTopEdge = (opts: {
   widths: IPaneWidths;
   titles: { rail: string; sidebar: string; messages: string };
+  /** One per conversation pane when the conversation area is split. */
+  conversations?: IConversationSpan[];
 }): string => {
   return buildEdge({ ...opts, left: TOP_LEFT, right: TOP_RIGHT, junction: TOP_JUNCTION });
 };
 
-export const buildBottomEdge = (opts: { widths: IPaneWidths }): string => {
+export const buildBottomEdge = (opts: { widths: IPaneWidths; conversations?: IConversationSpan[] }): string => {
   return buildEdge({
     widths: opts.widths,
+    conversations: opts.conversations,
     left: BOTTOM_LEFT,
     right: BOTTOM_RIGHT,
     junction: BOTTOM_JUNCTION,

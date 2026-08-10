@@ -171,13 +171,32 @@ export class KeymapService {
     // <C-w>h/l echo vim's own window-navigation keys. Unlike nf (into the
     // chat list only, one-way) these move in both directions and work from
     // any context, so they double as the way out of the chat list too.
+    //
+    // With conversation panes they name a direction across everything on
+    // screen rather than a fixed destination: h from the leftmost pane still
+    // lands in the chat list, but from a pane further right it steps one pane
+    // left first. Which of the two it means depends on where the focus already
+    // is, so the decision belongs to the reducer -- see PANE_FOCUS there.
     {
-      context: '*', mode: VimModes.NORMAL, keys: '<C-w>h', description: 'Focus chat list',
-      action: () => [{ type: ActionTypes.FOCUS_SET, context: VimContexts.CHAT_LIST }],
+      context: '*', mode: VimModes.NORMAL, keys: '<C-w>h', description: 'Focus left',
+      action: () => [{ type: ActionTypes.PANE_FOCUS, delta: -1, wrap: false }],
     },
     {
-      context: '*', mode: VimModes.NORMAL, keys: '<C-w>l', description: 'Focus messages',
-      action: () => [{ type: ActionTypes.FOCUS_SET, context: VimContexts.MESSAGES }],
+      context: '*', mode: VimModes.NORMAL, keys: '<C-w>l', description: 'Focus right',
+      action: () => [{ type: ActionTypes.PANE_FOCUS, delta: 1, wrap: false }],
+    },
+    // The rest of vim's window family, meaning here what it means there.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: '<C-w>v', description: 'Split conversation',
+      action: () => [{ type: ActionTypes.PANE_SPLIT }],
+    },
+    {
+      context: '*', mode: VimModes.NORMAL, keys: '<C-w>c', description: 'Close pane',
+      action: () => [{ type: ActionTypes.PANE_CLOSE }],
+    },
+    {
+      context: '*', mode: VimModes.NORMAL, keys: '<C-w>w', description: 'Next pane',
+      action: count => [{ type: ActionTypes.PANE_FOCUS, delta: count, wrap: true }],
     },
     {
       context: VimContexts.CHAT_LIST, mode: VimModes.NORMAL, keys: 'j', description: 'Next chat',

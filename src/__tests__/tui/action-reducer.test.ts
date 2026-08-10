@@ -620,3 +620,139 @@ test('search.cycle skips a matched id no longer present in state.messages', () =
   const patch = applyAction({ state, action: { type: ActionTypes.SEARCH_CYCLE, direction: 'next' } });
   expect(patch.messageCursor).toBe(2);
 });
+
+// ── conversation panes ────────────────────────────────────────────────────
+//
+// The arrangement under test: the focused pane's conversation lives in the
+// flat state, and only moves into its pane slot when the focus leaves. These
+// are the moments that swap, and getting one wrong shows a pane someone else's
+// messages.
+
+const WIDE_ENOUGH = 200;
+
+test('splitting opens a second pane on the same conversation and focuses it', () => {
+  const patch = applyAction({
+    state: buildState({ conversationWidth: WIDE_ENOUGH, activePeerId: 'u1', messageCursor: 2 }),
+    action: { type: ActionTypes.PANE_SPLIT },
+  });
+
+  expect(patch.panes).toHaveLength(2);
+  expect(patch.activePaneIndex).toBe(1);
+  expect(patch.panes!.every(pane => pane.peerId === 'u1')).toBe(true);
+  // The conversation on screen is already the new pane's, so it is left alone.
+  expect(patch.messages).toBeUndefined();
+});
+
+test('splitting a terminal with no room for it says so instead', () => {
+  const patch = applyAction({
+    state: buildState({ conversationWidth: 50 }),
+    action: { type: ActionTypes.PANE_SPLIT },
+  });
+
+  expect(patch.panes).toBeUndefined();
+  expect(patch.statusMessage).toBe('No room for another conversation');
+});
+
+// The one that matters: moving between panes has to carry each conversation
+// with it, or the pane you left keeps drawing the messages you took with you.
+test('moving to another pane swaps the conversations over', () => {
+  const split = applyAction({
+    state: buildState({ conversationWidth: WIDE_ENOUGH, activePeerId: 'u1', messageCursor: 3 }),
+    action: { type: ActionTypes.PANE_SPLIT },
+  });
+  // The right-hand pane is now looking at a different chat.
+  const twoChats = buildState({
+    ...split,
+    activePeerId: 'u2',
+    messages: [{ peerId: 'u2', id: 9, fromId: 'u2', date: 900, text: 'from the other chat', out: 0, entities: [], replyToMessageId: null }],
+    messageCursor: 0,
+  } as Partial<IApplicationState>);
+
+  const back = applyAction({ state: twoChats, action: { type: ActionTypes.PANE_FOCUS, delta: -1, wrap: false } });
+
+  expect(back.activePaneIndex).toBe(0);
+  // The left pane's own conversation comes back to the flat state...
+  expect(back.activePeerId).toBe('u1');
+  expect(back.messageCursor).toBe(3);
+  // ...and the one that was on screen is safely in the pane just left.
+  expect(back.panes![1]!.peerId).toBe('u2');
+  expect(back.panes![1]!.messages).toHaveLength(1);
+});
+
+test('a draft stays with the pane it was typed in', () => {
+  const split = applyAction({
+    state: buildState({ conversationWidth: WIDE_ENOUGH, activePeerId: 'u1' }),
+    action: { type: ActionTypes.PANE_SPLIT },
+  });
+  const typed = buildState({ ...split, composerText: 'half a sentence' } as Partial<IApplicationState>);
+
+  const left = applyAction({ state: typed, action: { type: ActionTypes.PANE_FOCUS, delta: -1, wrap: false } });
+  expect(left.composerText).toBe('');
+
+  const right = applyAction({
+    state: buildState({ ...left } as Partial<IApplicationState>),
+    action: { type: ActionTypes.PANE_FOCUS, delta: 1, wrap: false },
+  });
+  expect(right.composerText).toBe('half a sentence');
+});
+
+// <C-w>h kept its old meaning at the left edge, which is the whole reason the
+// direction keys stop rather than wrap.
+test('left from the leftmost pane still lands in the chat list', () => {
+  const patch = applyAction({
+    state: buildState({ engine: { ...INITIAL_ENGINE_STATE, context: VimContexts.MESSAGES } }),
+    action: { type: ActionTypes.PANE_FOCUS, delta: -1, wrap: false },
+  });
+
+  expect(patch.engine!.context).toBe(VimContexts.CHAT_LIST);
+  expect(patch.activePaneIndex).toBeUndefined();
+});
+
+test('right from the chat list goes back to the conversation, not to another pane', () => {
+  const patch = applyAction({
+    state: buildState({ engine: { ...INITIAL_ENGINE_STATE, context: VimContexts.CHAT_LIST } }),
+    action: { type: ActionTypes.PANE_FOCUS, delta: 1, wrap: false },
+  });
+
+  expect(patch.engine!.context).toBe(VimContexts.MESSAGES);
+  expect(patch.activePaneIndex).toBeUndefined();
+});
+
+// <C-w>w cycles among conversations the way it cycles among windows in vim --
+// it never falls out into the sidebar.
+test('cycling wraps between panes without visiting the chat list', () => {
+  const split = applyAction({
+    state: buildState({ conversationWidth: WIDE_ENOUGH, activePeerId: 'u1' }),
+    action: { type: ActionTypes.PANE_SPLIT },
+  });
+  const wrapped = applyAction({
+    state: buildState({ ...split } as Partial<IApplicationState>),
+    action: { type: ActionTypes.PANE_FOCUS, delta: 1, wrap: true },
+  });
+
+  expect(wrapped.activePaneIndex).toBe(0);
+  expect(wrapped.engine!.context).toBe(VimContexts.MESSAGES);
+});
+
+test('closing a pane hands the focus and the conversation to its neighbour', () => {
+  const split = applyAction({
+    state: buildState({ conversationWidth: WIDE_ENOUGH, activePeerId: 'u1', messageCursor: 2 }),
+    action: { type: ActionTypes.PANE_SPLIT },
+  });
+  const closed = applyAction({
+    state: buildState({ ...split, activePeerId: 'u2' } as Partial<IApplicationState>),
+    action: { type: ActionTypes.PANE_CLOSE },
+  });
+
+  expect(closed.panes).toHaveLength(1);
+  expect(closed.activePaneIndex).toBe(0);
+  expect(closed.activePeerId).toBe('u1');
+  expect(closed.messageCursor).toBe(2);
+});
+
+test('the last pane refuses to close, and says why', () => {
+  const patch = applyAction({ state: buildState(), action: { type: ActionTypes.PANE_CLOSE } });
+
+  expect(patch.panes).toBeUndefined();
+  expect(patch.statusMessage).toBe('The last conversation pane stays open');
+});

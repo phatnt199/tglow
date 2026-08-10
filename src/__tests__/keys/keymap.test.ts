@@ -387,31 +387,37 @@ test('<C-w> alone stays pending and resolves to nothing', () => {
   expect(result.actions).toEqual([]);
 });
 
-test('<C-w>h focuses the chat list and <C-w>l focuses messages', () => {
+// <C-w>h and <C-w>l name a direction rather than a destination now that there
+// can be several conversations to walk between: whether left means "the pane
+// beside this one" or "the chat list" depends on which pane the focus is
+// already in, which the keymap cannot see. So they emit one action and the
+// reducer decides -- see the pane tests in tui/action-reducer.test.ts, which
+// is where the chat-list-at-the-left-edge behaviour is now pinned.
+test('<C-w>h and <C-w>l ask to move the focus left and right', () => {
   const { keymapService, engine } = build();
   const keymap = keymapService.getBindings();
 
-  const pendingToList = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('w', { ctrl: true }), keymap });
-  expect(engine.resolve({ state: pendingToList.state, key: buildKey('h'), keymap }).actions)
-    .toEqual([{ type: ActionTypes.FOCUS_SET, context: VimContexts.CHAT_LIST }]);
+  const pendingLeft = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('w', { ctrl: true }), keymap });
+  expect(engine.resolve({ state: pendingLeft.state, key: buildKey('h'), keymap }).actions)
+    .toEqual([{ type: ActionTypes.PANE_FOCUS, delta: -1, wrap: false }]);
 
-  const pendingToMessages = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('w', { ctrl: true }), keymap });
-  expect(engine.resolve({ state: pendingToMessages.state, key: buildKey('l'), keymap }).actions)
-    .toEqual([{ type: ActionTypes.FOCUS_SET, context: VimContexts.MESSAGES }]);
+  const pendingRight = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('w', { ctrl: true }), keymap });
+  expect(engine.resolve({ state: pendingRight.state, key: buildKey('l'), keymap }).actions)
+    .toEqual([{ type: ActionTypes.PANE_FOCUS, delta: 1, wrap: false }]);
 });
 
-test('a round trip: <C-w>h to the chat list and <C-w>l back to messages', () => {
+// The rest of vim's window family, meaning here what it means there.
+test('<C-w>v splits, <C-w>c closes, <C-w>w cycles', () => {
   const { keymapService, engine } = build();
   const keymap = keymapService.getBindings();
-  expect(INITIAL_ENGINE_STATE.context).toBe(VimContexts.MESSAGES);
+  const after = (key: string): unknown[] => {
+    const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('w', { ctrl: true }), keymap });
+    return engine.resolve({ state: pending.state, key: buildKey(key), keymap }).actions;
+  };
 
-  const pendingToList = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('w', { ctrl: true }), keymap });
-  const toList = engine.resolve({ state: pendingToList.state, key: buildKey('h'), keymap });
-  expect(toList.state.context).toBe(VimContexts.CHAT_LIST);
-
-  const pendingToMessages = engine.resolve({ state: toList.state, key: buildKey('w', { ctrl: true }), keymap });
-  const toMessages = engine.resolve({ state: pendingToMessages.state, key: buildKey('l'), keymap });
-  expect(toMessages.state.context).toBe(VimContexts.MESSAGES);
+  expect(after('v')).toEqual([{ type: ActionTypes.PANE_SPLIT }]);
+  expect(after('c')).toEqual([{ type: ActionTypes.PANE_CLOSE }]);
+  expect(after('w')).toEqual([{ type: ActionTypes.PANE_FOCUS, delta: 1, wrap: true }]);
 });
 
 // The "I changed my mind" key -- without it, `nf` into the chat list was a

@@ -40,6 +40,9 @@ export type TAction =
   | { type: typeof ActionTypes.REGISTER_SET; name: string }
   | { type: typeof ActionTypes.MODE_SET; mode: TVimMode }
   | { type: typeof ActionTypes.FOCUS_SET; context: TVimContext }
+  | { type: typeof ActionTypes.PANE_SPLIT }
+  | { type: typeof ActionTypes.PANE_CLOSE }
+  | { type: typeof ActionTypes.PANE_FOCUS; delta: number; wrap: boolean }
   | { type: typeof ActionTypes.CHAT_OPEN }
   | { type: typeof ActionTypes.COMPOSER_SEND }
   | { type: typeof ActionTypes.COMPOSER_INSERT_TEXT; text: string }

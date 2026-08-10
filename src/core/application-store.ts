@@ -5,6 +5,7 @@ import type { IDialogRow, IFolderRow, IMessageRow } from './cache/index.ts';
 import type { IPresence } from './presence.ts';
 import type { IImageCell } from '../tui/image-renderer.ts';
 import type { IActiveTyping } from './typing-status.ts';
+import { createPane, type IConversationPane } from './conversation-panes.ts';
 
 export type TConnectionState = 'offline' | 'connecting' | 'connected';
 
@@ -110,6 +111,31 @@ export interface IApplicationState {
    * about the application.
    */
   reachedOldest: boolean;
+  /**
+   * The conversation panes on screen, left to right.
+   *
+   * The focused pane's slot here is a snapshot that goes stale the moment it
+   * takes the focus: its live conversation is `activePeerId`/`messages`/
+   * `messageCursor` and the composer fields below, exactly where they were
+   * when there was only ever one conversation. Anything that needs every
+   * pane's *current* state has to merge the two with `withActive` from
+   * core/conversation-panes.ts, which is where the whole arrangement is
+   * explained.
+   */
+  panes: IConversationPane[];
+  /** Which pane the conversation fields below belong to. */
+  activePaneIndex: number;
+  /**
+   * How many columns the conversation area has, sidebar and frame already
+   * taken off.
+   *
+   * In state purely so splitting can refuse before it happens. The reducer is
+   * a pure function of state and has no terminal to measure, and a split that
+   * only discovered there was no room at render time would already have
+   * created the pane it could not draw. App writes this whenever the terminal
+   * or the sidebar changes size.
+   */
+  conversationWidth: number;
   activePeerId: string | null;
   chatCursor: number;
   messageCursor: number;
@@ -248,6 +274,12 @@ const INITIAL_STATE: IApplicationState = {
   messages: [],
   loadingOlder: false,
   reachedOldest: false,
+  // One pane, holding nothing, which is what tglow looked like before it
+  // could hold more than one.
+  panes: [createPane()],
+  activePaneIndex: 0,
+  // Corrected by App on its first frame; nothing splits before then.
+  conversationWidth: 0,
   activePeerId: null,
   chatCursor: 0,
   messageCursor: 0,

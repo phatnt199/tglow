@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 
 import { useKeyboard, useRenderer, useTerminalDimensions } from '@opentui/react';
 import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
@@ -27,7 +27,7 @@ import { ALL_CHATS_FOLDER_ID, resolveFolderMembership } from '../core/folder-ser
 import { readTypingStatus } from '../core/typing-status.ts';
 import { MediaKinds } from '../core/media.ts';
 import { describePresence, PresenceKinds } from '../core/presence.ts';
-import { renderImage } from './image-renderer.ts';
+import { renderImage, type IImageCell } from './image-renderer.ts';
 import { formatClock } from './clock.ts';
 import { CommandNames, completeCommand, describeUnknown, parseCommand } from './command-line.ts';
 import { forget, place, supportsGraphics, transmit, type IImagePlacement, type IRgbaImage } from './kitty-graphics.ts';
@@ -59,6 +59,7 @@ import {
   resolvePaneWidths,
 } from './pane-frame.ts';
 import { ChatList, Composer, COMPOSER_PROMPT_WIDTH, FolderRail, MessageView, StatusLine, type IImageRowPlacement } from './panes/index.ts';
+import { splitConversationWidth, withActive } from '../core/conversation-panes.ts';
 import type { ITokens } from './theme/index.ts';
 
 export interface IAppProps {
@@ -131,6 +132,14 @@ const SIDEBAR_WIDTH = 22;
 const COMPOSER_RULE_HEIGHT = 1;
 const COMPOSER_PROMPT_HEIGHT = 1;
 const COMPOSER_RULE = '─';
+/**
+ * What an unfocused pane hands MessageView instead of the picture cache.
+ *
+ * A shared empty map rather than a fresh one per render: a new Map every
+ * frame is a new prop every frame, which is a re-render of every unfocused
+ * conversation for no change at all.
+ */
+const EMPTY_IMAGES: Map<number, IImageCell[][]> = new Map();
 /** The status line is always exactly one row, whichever chrome sits above it. */
 const STATUS_LINE_HEIGHT = 1;
 /** Composer grows by exactly this many rows while a reply is pending -- see the comment on chromeHeight below. */
@@ -1739,6 +1748,16 @@ export const App = (props: IAppProps) => {
    * already holds -- which is exactly why transmitting and placing are
    * separate calls.
    */
+  // The reducer decides whether a split fits, and it has no terminal to
+  // measure -- so the measurement is published to it here. Written only when
+  // it actually changes: this runs on every resize, and a setState per frame
+  // would be a re-render per frame.
+  useEffect(() => {
+    if (state.conversationWidth !== paneWidths.messages) {
+      store.setState({ patch: { conversationWidth: paneWidths.messages } });
+    }
+  }, [store, state.conversationWidth, paneWidths.messages]);
+
   useEffect(() => {
     if (!graphicsCapable) {
       return;
@@ -2122,6 +2141,42 @@ export const App = (props: IAppProps) => {
       ? activeDialog.title
       : `${activeDialog.title} · ${activeTyping.phrase}`;
 
+  // ── the conversation panes ──────────────────────────────────────────────
+  //
+  // The focused pane's conversation is the flat state, so the list has to be
+  // merged before anything draws from it -- otherwise the one pane that is
+  // certainly up to date is the one drawn stale. See core/conversation-panes.ts.
+  const conversationPanes = withActive({
+    panes: state.panes,
+    activeIndex: state.activePaneIndex,
+    conversation: state,
+  });
+  // Each internal divider costs a column, exactly like the ones either side of
+  // the sidebar, so the panes share what is left rather than what was asked
+  // for -- otherwise the rightmost pane is pushed a column off the screen per
+  // split.
+  const conversationWidths = splitConversationWidth({
+    width: Math.max(0, paneWidths.messages - (conversationPanes.length - 1) * FRAME_VERTICAL_COST),
+    count: conversationPanes.length,
+  });
+  const paneTitle = (pane: { peerId: string | null }): string => {
+    const dialog = state.dialogs.find(row => row.peerId === pane.peerId);
+    if (dialog === undefined) {
+      return 'tglow';
+    }
+    // readTypingStatus rather than the map directly: a status carries its own
+    // expiry, and one left behind by somebody who closed their app must go
+    // stale rather than sit in the frame claiming they are still typing.
+    const typing = pane.peerId === null
+      ? null
+      : readTypingStatus({ typing: state.typingByPeer, peerId: pane.peerId, now });
+    return typing === null ? dialog.title : `${dialog.title} · ${typing.phrase}`;
+  };
+  const conversationSpans = conversationPanes.map((pane, index) => ({
+    width: conversationWidths[index] ?? 0,
+    title: paneTitle(pane),
+  }));
+
   // What the status line shows beyond the M1 four. Derived here rather than
   // inside the component: everything below reads state the component has no
   // business holding, and none of it changes what the line does -- only what
@@ -2177,6 +2232,7 @@ export const App = (props: IAppProps) => {
             sidebar: folderSectionHeight > 0 ? 'Folders' : 'Chats',
             messages: activeChatTitle,
           },
+          conversations: conversationSpans,
         })}
       </text>
 
@@ -2234,49 +2290,78 @@ export const App = (props: IAppProps) => {
             nests without disturbing the frame: the chat list still draws
             paneHeight rows on the left while these draw paneHeight rows on the
             right. */}
-        <box flexDirection="column" width={paneWidths.messages} height={paneHeight} flexShrink={0}>
-          <MessageView
-            messages={state.messages}
-            cursor={state.messageCursor}
-            focused={state.engine.context === VimContexts.MESSAGES}
-            tokens={tokens}
-            width={paneWidths.messages}
-            height={messageHeight}
-            resolveSenderName={resolveSenderName}
-            revealedSpoilers={state.revealedSpoilers}
-            imagesByMessageId={state.imagesByMessageId}
-            onImageRows={placeImages}
-            imagesDrawnByTerminal={graphicsCapable}
-            readOutboxMaxId={activeDialog?.readOutboxMaxId ?? 0}
-            onMessagePress={pressMessage}
-            onScroll={({ delta }) => { scrollBy({ unit: 'message', delta }); }}
-            showGutter={state.showGutter}
-            showTime={state.showTime}
-          />
+        {conversationPanes.map((pane, index) => {
+          const paneWidth = conversationWidths[index] ?? 0;
+          const isActive = index === state.activePaneIndex;
+          // Only the focused pane owns the composer, and only it can be
+          // scrolled or clicked into: every key binding and every side effect
+          // in this file works on the conversation in the flat state, which is
+          // this pane's. An unfocused pane is a live view, not a second place
+          // to type -- one Enter would otherwise be ambiguous about which chat
+          // it sends to.
+          const paneDialog = state.dialogs.find(row => row.peerId === pane.peerId);
+          return (
+            <Fragment key={`pane-${index}`}>
+              {index > 0 ? (
+                <FrameColumn height={paneHeight} colour={frameColour} />
+              ) : null}
+              <box flexDirection="column" width={paneWidth} height={paneHeight} flexShrink={0}>
+                <MessageView
+                  messages={pane.messages}
+                  cursor={pane.messageCursor}
+                  focused={isActive && state.engine.context === VimContexts.MESSAGES}
+                  tokens={tokens}
+                  width={paneWidth}
+                  height={messageHeight}
+                  resolveSenderName={resolveSenderName}
+                  revealedSpoilers={state.revealedSpoilers}
+                  // Drawn pictures belong to the focused conversation: the
+                  // cache is keyed by message id alone and is refilled per
+                  // pane width, so handing it to a pane of a different width
+                  // would draw one chat's photos at another's size.
+                  imagesByMessageId={isActive ? state.imagesByMessageId : EMPTY_IMAGES}
+                  onImageRows={isActive ? placeImages : undefined}
+                  imagesDrawnByTerminal={graphicsCapable}
+                  readOutboxMaxId={paneDialog?.readOutboxMaxId ?? 0}
+                  onMessagePress={isActive ? pressMessage : undefined}
+                  onScroll={isActive ? ({ delta }) => { scrollBy({ unit: 'message', delta }); } : undefined}
+                  showGutter={state.showGutter}
+                  showTime={state.showTime}
+                />
 
-          {isOverlayOpen ? null : (
-            <>
-              <text height={1} flexShrink={0} fg={tokens.border}>
-                {COMPOSER_RULE.repeat(Math.max(0, paneWidths.messages))}
-              </text>
-              <Composer
-                text={state.composerText}
-                mode={state.engine.mode}
-                focused={state.engine.context === VimContexts.COMPOSER}
-                tokens={tokens}
-                width={paneWidths.messages}
-                replyingTo={replyingTo}
-                editing={isEditing}
-              />
-            </>
-          )}
-        </box>
+                {isOverlayOpen ? null : (
+                  <>
+                    <text height={1} flexShrink={0} fg={tokens.border}>
+                      {COMPOSER_RULE.repeat(Math.max(0, paneWidth))}
+                    </text>
+                    {isActive ? (
+                      <Composer
+                        text={state.composerText}
+                        mode={state.engine.mode}
+                        focused={state.engine.context === VimContexts.COMPOSER}
+                        tokens={tokens}
+                        width={paneWidth}
+                        replyingTo={replyingTo}
+                        editing={isEditing}
+                      />
+                    ) : (
+                      // The same height as a composer, so the conversations
+                      // above stay level with each other rather than one pane
+                      // running a row deeper than its neighbour.
+                      <box height={Math.max(0, composerHeight - COMPOSER_RULE_HEIGHT)} width={paneWidth} flexShrink={0} />
+                    )}
+                  </>
+                )}
+              </box>
+            </Fragment>
+          );
+        })}
 
         <FrameColumn height={paneHeight} colour={frameColour} />
       </box>
 
       <text height={1} flexShrink={0} fg={frameColour}>
-        {buildBottomEdge({ widths: paneWidths })}
+        {buildBottomEdge({ widths: paneWidths, conversations: conversationSpans })}
       </text>
 
       {/* Absolutely positioned at the pointer, so it sits over the pane it was
