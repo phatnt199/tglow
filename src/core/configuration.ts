@@ -4,6 +4,8 @@ import { dirname, join } from 'node:path';
 
 import { getError } from '@venizia/ignis-inversion';
 
+import { resolvePlatformDirectories, type IPlatformDirectories } from './platform-paths.ts';
+
 import type { IApplicationConfiguration } from './common/index.ts';
 
 const DEFAULT_PALETTE = 'sage';
@@ -65,8 +67,15 @@ export const parseTomlPairs = (opts: { source: string }): Record<string, string 
 };
 
 export class ConfigurationService {
+  /** Where the platform expects tglow's files to live. See platform-paths.ts. */
+  private directories = (): IPlatformDirectories => resolvePlatformDirectories({
+    platform: process.platform,
+    homeDirectory: homedir(),
+    environment: process.env,
+  });
+
   getDefaultPath = (): string => {
-    return join(homedir(), '.config', 'tglow', 'config.toml');
+    return join(this.directories().configDirectory, 'config.toml');
   };
 
   private parse = parseTomlPairs;
@@ -93,7 +102,7 @@ export class ConfigurationService {
       });
     }
 
-    const dataHome = process.env.XDG_DATA_HOME ?? join(homedir(), '.local', 'share');
+    const { dataDirectory } = this.directories();
 
     return {
       apiId: raw.api_id,
@@ -102,10 +111,10 @@ export class ConfigurationService {
       timeoutMilliseconds: typeof raw.timeout_milliseconds === 'number'
         ? raw.timeout_milliseconds
         : DEFAULT_TIMEOUT_MILLISECONDS,
-      sessionPath: join(dataHome, 'tglow', 'session'),
-      cachePath: join(dataHome, 'tglow', 'cache.sqlite'),
-      thumbnailDirectory: join(dataHome, 'tglow', 'thumbnails'),
-      logPath: join(dataHome, 'tglow', 'tglow.log'),
+      sessionPath: join(dataDirectory, 'session'),
+      cachePath: join(dataDirectory, 'cache.sqlite'),
+      thumbnailDirectory: join(dataDirectory, 'thumbnails'),
+      logPath: join(dataDirectory, 'tglow.log'),
       // Beside the config file, not under dataHome: themes are hand-edited
       // input like config.toml, not state tglow writes. Derived from the
       // config file's own directory so a --config elsewhere keeps its themes
