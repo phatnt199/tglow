@@ -85,13 +85,19 @@ export interface IApplicationState {
    */
   presenceByPeer: Map<string, IPresence>;
   /**
-   * The drawn picture for a message, by id.
+   * The drawn picture for a message at a width, keyed by both.
    *
    * Cells rather than bytes: the bytes live on disk and are decoded once per
    * pane width, and keeping megabytes of JPEG in application state to redo
    * that work on every render would be the wrong half to remember.
+   *
+   * The width is in the key because chafa renders to a fixed number of cells,
+   * so one photograph at 40 columns and the same one at 80 are two different
+   * results. Keyed by message id alone -- which is what this was -- splitting
+   * the screen halved every pane and left the pre-split cells in place, to be
+   * drawn into a pane that could not hold them. See tui/image-layout.ts.
    */
-  imagesByMessageId: Map<number, IImageCell[][]>;
+  imagesByKey: Map<string, IImageCell[][]>;
   messages: IMessageRow[];
   /**
    * True while an older page is in flight.
@@ -273,7 +279,7 @@ const INITIAL_STATE: IApplicationState = {
   peerKinds: new Map(),
   typingByPeer: new Map(),
   presenceByPeer: new Map(),
-  imagesByMessageId: new Map(),
+  imagesByKey: new Map(),
   messages: [],
   loadingOlder: false,
   reachedOldest: false,

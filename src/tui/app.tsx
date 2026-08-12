@@ -28,6 +28,13 @@ import { readTypingStatus } from '../core/typing-status.ts';
 import { MediaKinds } from '../core/media.ts';
 import { describePresence, PresenceKinds } from '../core/presence.ts';
 import { renderImage, type IImageCell } from './image-renderer.ts';
+import {
+  imageCacheKey,
+  planImageFetches,
+  resolveImageWidth,
+  resolvePaneOrigin,
+  toTerminalImageId,
+} from './image-layout.ts';
 import { formatClock } from './clock.ts';
 import { CommandNames, completeCommand, describeUnknown, parseCommand } from './command-line.ts';
 import { forget, place, supportsGraphics, transmit, type IImagePlacement, type IRgbaImage } from './kitty-graphics.ts';
@@ -132,14 +139,6 @@ const SIDEBAR_WIDTH = 22;
 const COMPOSER_RULE_HEIGHT = 1;
 const COMPOSER_PROMPT_HEIGHT = 1;
 const COMPOSER_RULE = '─';
-/**
- * What an unfocused pane hands MessageView instead of the picture cache.
- *
- * A shared empty map rather than a fresh one per render: a new Map every
- * frame is a new prop every frame, which is a re-render of every unfocused
- * conversation for no change at all.
- */
-const EMPTY_IMAGES: Map<number, IImageCell[][]> = new Map();
 /** The status line is always exactly one row, whichever chrome sits above it. */
 const STATUS_LINE_HEIGHT = 1;
 /** Composer grows by exactly this many rows while a reply is pending -- see the comment on chromeHeight below. */
@@ -522,6 +521,11 @@ export const App = (props: IAppProps) => {
   const transmittedRef = useRef<Set<number>>(new Set());
   /** Where the pictures currently are, so the per-frame repaint has something to re-place without re-deriving it. */
   const placementsRef = useRef<IImagePlacement[]>([]);
+  /**
+   * Which placements each column contributed last time, so a column can
+   * replace its own without disturbing its neighbours'.
+   */
+  const paneOwnedRef = useRef<Map<number, Set<number>>>(new Map());
   /** Which pictures the terminal is currently showing, so the ones that scroll away can be taken down. */
   const placedRef = useRef<Set<number>>(new Set());
   /** The decoded pixels, kept only for Sixel -- which has no image the terminal remembers. */
@@ -1567,6 +1571,15 @@ export const App = (props: IAppProps) => {
     sidebarWidth: state.sidebarWidth ?? SIDEBAR_WIDTH,
     minimumPane: MINIMUM_PANE_WIDTH,
   });
+
+  const paneGrid = withActive({ grid: state.paneGrid, active: state.activePane, conversation: state });
+  // Each internal divider costs a column, exactly like the ones either side of
+  // the sidebar, so the columns share what is left rather than what was asked
+  // for -- otherwise the rightmost is pushed a column off the screen per split.
+  const conversationWidths = shareEvenly({
+    total: Math.max(0, paneWidths.messages - (paneGrid.length - 1) * FRAME_VERTICAL_COST),
+    count: paneGrid.length,
+  });
   // The folder section takes what its folders need, capped so the chat list
   // always keeps the larger half: folders are how you reach chats, not a thing
   // to look at on their own. Zero hides it, divider included.
@@ -1720,19 +1733,40 @@ export const App = (props: IAppProps) => {
    * reason to preserve something it does not know about, so the placement is
    * re-sent -- which costs a few dozen bytes, unlike the image.
    */
-  const placeImages = useCallback((placements: IImageRowPlacement[]): void => {
+  const placeImages = useCallback((opts: {
+    column: number;
+    widths: number[];
+    keyFor: (messageId: number) => string;
+    placements: IImageRowPlacement[];
+  }): void => {
     if (!graphicsCapable) {
       return;
     }
-    const paneLeft = dividerColumn + FRAME_DIVIDER_COLUMNS;
-    placementsRef.current = placements.map(placement => ({
-      id: placement.messageId,
+    // The pane's own left edge, not the first column's. Measuring every
+    // placement from the first column is how a right-hand pane's photographs
+    // were drawn on top of the left-hand pane's.
+    const paneLeft = resolvePaneOrigin({
+      conversationLeft: dividerColumn + FRAME_DIVIDER_COLUMNS,
+      widths: opts.widths,
+      column: opts.column,
+      dividerColumns: FRAME_DIVIDER_COLUMNS,
+    });
+    const mine = opts.placements.map(placement => ({
+      id: toTerminalImageId({ key: opts.keyFor(placement.messageId) }),
       // One-based, which is what a cursor position is.
       row: FRAME_TOP_ROWS + placement.paneRow + 1,
       column: paneLeft + placement.paneColumn + 1,
       columns: placement.columns,
       rows: placement.rows,
     }));
+    // Joined to the other panes' rather than replacing them. Every pane calls
+    // this during the same render, so an assignment left only whichever pane
+    // happened to run last with any pictures at all.
+    placementsRef.current = [
+      ...placementsRef.current.filter(placement => !paneOwnedRef.current.get(opts.column)?.has(placement.id)),
+      ...mine,
+    ];
+    paneOwnedRef.current.set(opts.column, new Set(mine.map(placement => placement.id)));
   }, [graphicsCapable, dividerColumn]);
 
   /**
@@ -1835,58 +1869,68 @@ export const App = (props: IAppProps) => {
     // cannot draw, but the still in its `thumbs` is an ordinary image -- so
     // what gets drawn is one frame of it, which is what a sticker looks like
     // anywhere it is not moving.
-    const drawable = state.messages.filter(message =>
-      message.media?.kind === MediaKinds.PHOTO || message.media?.kind === MediaKinds.STICKER);
-    if (drawable.length === 0 || state.activePeerId === null) {
+    // Every pane, not just the focused one -- and each at its own width. Both
+    // of those were wrong before: a split pane showed no pictures at all, and
+    // the ones that did appear were sized to the whole conversation area,
+    // which is roughly twice the width of a pane once the screen is split.
+    const requests = planImageFetches({
+      grid: paneGrid,
+      widths: conversationWidths,
+      drawableOf: pane => pane.messages
+        .filter(message => message.media?.kind === MediaKinds.PHOTO || message.media?.kind === MediaKinds.STICKER)
+        .map(message => ({ id: message.id, sticker: message.media?.kind === MediaKinds.STICKER })),
+    }).filter(request => !state.imagesByKey.has(request.key));
+    if (requests.length === 0) {
       return;
     }
 
     let live = true;
-    const peerId = state.activePeerId;
     void (async (): Promise<void> => {
-      for (const message of drawable) {
-        const bytes = await onThumbnail({ peerId, messageId: message.id });
+      for (const request of requests) {
+        const bytes = await onThumbnail({ peerId: request.peerId, messageId: request.messageId });
         if (!live || bytes === null) {
           continue;
         }
 
-        const sticker = message.media?.kind === MediaKinds.STICKER;
-        const available = Math.max(1, paneWidths.messages - IMAGE_RAIL_ALLOWANCE);
         const rendered = await renderImage({
           bytes,
-          maximumColumns: sticker ? Math.min(available, MAXIMUM_STICKER_COLUMNS) : available,
-          maximumRows: sticker ? MAXIMUM_STICKER_ROWS : MAXIMUM_IMAGE_ROWS,
+          maximumColumns: request.maximumColumns,
+          maximumRows: request.maximumRows,
         });
-        // Checked again after the await: a chat switched away from mid-render
-        // must not have another conversation's pictures land in it.
-        if (!live || rendered === null || store.getState().activePeerId !== peerId) {
+        // Checked again after the await: the pane this was for may be gone.
+        // Keyed by width, a picture that arrives late is simply stored -- it
+        // cannot land in the wrong pane the way an id-keyed one could.
+        if (!live || rendered === null) {
           continue;
         }
-
-        // The picture itself, for a terminal that can hold one. Sent once per
-        // message: transmitting is the expensive half and the terminal keeps
-        // it until told otherwise. The pixels come from the same decode the
-        // drawing used, so nothing is decoded twice.
-        if (protocol === 'kitty' && !transmittedRef.current.has(message.id)) {
-          transmittedRef.current.add(message.id);
-          writeToTerminal({ text: transmit({ id: message.id, pixels: rendered.pixels }) });
+        // The picture itself, for a terminal that can hold one. Transmitted
+        // under the cache key rather than the message id: the same photograph
+        // at two pane widths is two different images to the terminal, and
+        // giving both the message's id made the second overwrite the first.
+        const terminalId = toTerminalImageId({ key: request.key });
+        if (protocol === 'kitty' && !transmittedRef.current.has(terminalId)) {
+          transmittedRef.current.add(terminalId);
+          writeToTerminal({ text: transmit({ id: terminalId, pixels: rendered.pixels }) });
         }
         // Sixel has no notion of an image the terminal holds: the pixels go
         // out with every draw, so they are kept here to draw from.
         if (protocol === 'sixel') {
-          pixelsRef.current.set(message.id, rendered.pixels);
+          pixelsRef.current.set(terminalId, rendered.pixels);
         }
 
-        const next = new Map(store.getState().imagesByMessageId);
-        next.set(message.id, rendered.cells);
-        store.setState({ patch: { imagesByMessageId: next } });
+        const next = new Map(store.getState().imagesByKey);
+        next.set(request.key, rendered.cells);
+        store.setState({ patch: { imagesByKey: next } });
       }
     })();
 
     return (): void => {
       live = false;
     };
-  }, [state.messages, state.activePeerId, paneWidths.messages]);
+    // conversationWidths is derived from paneGrid and the terminal width, so
+    // its identity changes every render -- joined into a string so a resize or
+    // a split re-runs this and a plain repaint does not.
+  }, [paneGrid, conversationWidths.join(','), state.imagesByKey]);
 
 
   // The terminal's own cursor, parked on the composer's caret while typing.
@@ -2146,14 +2190,6 @@ export const App = (props: IAppProps) => {
   // The focused pane's conversation is the flat state, so the list has to be
   // merged before anything draws from it -- otherwise the one pane that is
   // certainly up to date is the one drawn stale. See core/conversation-panes.ts.
-  const paneGrid = withActive({ grid: state.paneGrid, active: state.activePane, conversation: state });
-  // Each internal divider costs a column, exactly like the ones either side of
-  // the sidebar, so the columns share what is left rather than what was asked
-  // for -- otherwise the rightmost is pushed a column off the screen per split.
-  const conversationWidths = shareEvenly({
-    total: Math.max(0, paneWidths.messages - (paneGrid.length - 1) * FRAME_VERTICAL_COST),
-    count: paneGrid.length,
-  });
   const paneTitle = (pane: { peerId: string | null }): string => {
     const dialog = state.dialogs.find(row => row.peerId === pane.peerId);
     if (dialog === undefined) {
@@ -2312,6 +2348,21 @@ export const App = (props: IAppProps) => {
                   const showComposer = isActive && !isOverlayOpen;
                   const bodyHeight = Math.max(1, rowHeight - (showComposer ? composerHeight : 0));
                   const paneDialog = state.dialogs.find(row => row.peerId === pane.peerId);
+                  // This pane's pictures, at this pane's width. MessageView
+                  // still looks a picture up by message id, so the width-keyed
+                  // cache is narrowed to one pane here rather than pushed down
+                  // into the component -- which keeps the component ignorant
+                  // of panes, as it has been throughout.
+                  const pictureWidth = resolveImageWidth({ paneWidth: columnWidth, sticker: false });
+                  const stickerWidth = resolveImageWidth({ paneWidth: columnWidth, sticker: true });
+                  const paneImages = new Map<number, IImageCell[][]>();
+                  for (const message of pane.messages) {
+                    const width = message.media?.kind === MediaKinds.STICKER ? stickerWidth : pictureWidth;
+                    const cells = state.imagesByKey.get(imageCacheKey({ messageId: message.id, width }));
+                    if (cells !== undefined) {
+                      paneImages.set(message.id, cells);
+                    }
+                  }
                   return (
                     <Fragment key={`pane-${columnIndex}-${rowIndex}`}>
                       {/* The conversation a column *starts* with is named on
@@ -2337,8 +2388,15 @@ export const App = (props: IAppProps) => {
                         // refilled per pane width, so handing it to a pane of
                         // a different width would draw one chat's photos at
                         // another's size.
-                        imagesByMessageId={isActive ? state.imagesByMessageId : EMPTY_IMAGES}
-                        onImageRows={isActive ? placeImages : undefined}
+                        imagesByMessageId={paneImages}
+                        onImageRows={rows => {
+                          placeImages({
+                            column: columnIndex,
+                            widths: conversationWidths,
+                            keyFor: messageId => imageCacheKey({ messageId, width: pictureWidth }),
+                            placements: rows,
+                          });
+                        }}
                         imagesDrawnByTerminal={graphicsCapable}
                         readOutboxMaxId={paneDialog?.readOutboxMaxId ?? 0}
                         onMessagePress={isActive ? pressMessage : undefined}

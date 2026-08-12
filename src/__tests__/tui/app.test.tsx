@@ -12,6 +12,11 @@ import { BindingKeys } from '../../common/index.ts';
 import { ApplicationStoreService } from '../../core/application-store.ts';
 import { DatabaseService, type IDialogRow, type IFolderRow, type IMessageRow } from '../../core/cache/index.ts';
 import { MediaKinds } from '../../core/media.ts';
+import { createPane } from '../../core/conversation-panes.ts';
+import type { IImageCell } from '../../tui/image-renderer.ts';
+import { imageCacheKey, planImageFetches, resolveImageWidth } from '../../tui/image-layout.ts';
+import { shareEvenly } from '../../core/conversation-panes.ts';
+import { FRAME_VERTICAL_COST } from '../../tui/pane-frame.ts';
 // Concrete module, not the core/ barrel -- same reasoning as
 // ApplicationStoreService above (src/tui/action-reducer.ts explains why):
 // a value import (mount() below constructs one), off the root barrel's
@@ -3737,4 +3742,106 @@ test(':view reaches the same place the key does', async () => {
   await renderer.flush();
 
   expect(openedMedia).toEqual([{ peerId: 'u1', messageId: 5 }]);
+});
+
+// ── pictures across several panes ─────────────────────────────────────────
+//
+// Reported: "chia pane có rất nhiều lỗi, ảnh render không đúng." Every path a
+// picture takes was written when a conversation was the only thing right of
+// the sidebar, and each of these pins one of the ways that showed.
+
+/** A block of image cells whose glyph identifies which pane it belongs to. */
+const imageCells = (opts: { glyph: string; columns: number; rows: number }): IImageCell[][] =>
+  Array.from({ length: opts.rows }, () =>
+    Array.from({ length: opts.columns }, () => ({
+      char: opts.glyph, foreground: '#c0c0c0', background: null,
+    })));
+
+const photoMessage = (opts: { peerId: string; id: number }): IMessageRow => ({
+  peerId: opts.peerId, id: opts.id, fromId: opts.peerId, date: opts.id * 100,
+  text: '', out: 0, entities: [], replyToMessageId: null,
+  media: { kind: MediaKinds.PHOTO } as IMessageRow['media'],
+});
+
+const splitWithPictures = async (): Promise<{ renderer: TestRendererSetup; store: ApplicationStoreService }> => {
+  const dialogs: IDialogRow[] = [
+    { peerId: 'u1', title: 'Alice', pinned: 0, unreadCount: 0, lastMessageAt: 100, topMessageId: 1, readOutboxMaxId: 0, readInboxMaxId: 0, preview: null },
+    { peerId: 'u2', title: 'Bob', pinned: 0, unreadCount: 0, lastMessageAt: 90, topMessageId: 2, readOutboxMaxId: 0, readInboxMaxId: 0, preview: null },
+  ];
+  const left = [photoMessage({ peerId: 'u1', id: 1 })];
+  const right = [photoMessage({ peerId: 'u2', id: 2 })];
+  const { renderer, store } = await mount({ dialogs, messages: left, width: 140, height: 26 });
+
+  act(() => {
+    store.setState({
+      patch: {
+        activePeerId: 'u1',
+        messages: left,
+        messageCursor: 0,
+        paneGrid: [
+          [{ ...createPane({ peerId: 'u1' }), messages: left, messageCursor: 0 }],
+          [{ ...createPane({ peerId: 'u2' }), messages: right, messageCursor: 0 }],
+        ],
+        activePane: { column: 0, row: 0 },
+        imagesByKey: new Map(),
+      },
+    });
+  });
+  await renderer.flush();
+  return { renderer, store };
+};
+
+// The plainest failure: split the screen, and the pane you are not in shows
+// no pictures at all -- it was handed an empty map on purpose.
+test('a pane that does not have the focus still draws its pictures', async () => {
+  const { renderer, store } = await splitWithPictures();
+  // Derived, not guessed, and *per column*: shareEvenly gives the remainder to
+  // the leftmost, so the two panes differ by a column and their pictures are
+  // genuinely two different widths. Seeding both at one width is how this test
+  // first failed -- which is the cache refusing cells drawn for a pane that is
+  // not this one, exactly as it should.
+  const [leftColumn, rightColumn] = shareEvenly({
+    total: store.getState().conversationWidth - FRAME_VERTICAL_COST,
+    count: 2,
+  });
+
+  act(() => {
+    store.setState({
+      patch: {
+        imagesByKey: new Map([
+          [imageCacheKey({ messageId: 1, width: resolveImageWidth({ paneWidth: leftColumn!, sticker: false }) }),
+            imageCells({ glyph: 'L', columns: 6, rows: 2 })],
+          [imageCacheKey({ messageId: 2, width: resolveImageWidth({ paneWidth: rightColumn!, sticker: false }) }),
+            imageCells({ glyph: 'R', columns: 6, rows: 2 })],
+        ]),
+      },
+    });
+  });
+  await renderer.flush();
+  const frame = renderer.captureCharFrame();
+
+  expect(frame).toContain('LLLLLL');
+  expect(frame).toContain('RRRRRR');
+});
+
+// And the sizing: a picture drawn for the whole conversation area is roughly
+// twice as wide as the pane holding it once the screen is split.
+test('a picture is drawn no wider than the pane holding it', async () => {
+  const { renderer, store } = await splitWithPictures();
+  const { paneGrid, conversationWidth } = store.getState();
+
+  // Whatever the panes actually are, each asks at its own width -- never at
+  // the width of the area they share.
+  const requests = planImageFetches({
+    grid: paneGrid,
+    widths: [Math.floor(conversationWidth / 2), Math.floor(conversationWidth / 2)],
+    drawableOf: pane => pane.messages.map(message => ({ id: message.id, sticker: false })),
+  });
+
+  expect(requests).toHaveLength(2);
+  for (const request of requests) {
+    expect(request.maximumColumns).toBeLessThan(conversationWidth);
+    expect(request.maximumColumns).toBeLessThanOrEqual(request.paneWidth);
+  }
+  renderer.renderer.destroy();
 });
