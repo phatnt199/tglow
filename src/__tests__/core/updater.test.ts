@@ -6,7 +6,9 @@ import {
   buildAssetUrl,
   describeUpdate,
   isNewer,
+  isTransportFailure,
   isTrustedAssetUrl,
+  releasePageUrl,
   parseChecksums,
   parseRelease,
   parseVersion,
@@ -297,4 +299,39 @@ test('every published asset name builds a trusted url', () => {
   for (const assetName of ['tglow-linux-x64', 'tglow-macos-arm64', 'tglow-macos-x64', 'tglow-windows-x64.exe']) {
     expect(isTrustedAssetUrl({ url: buildAssetUrl({ update: { version: '1.2.3', assetName, size: 1 } }) })).toBe(true);
   }
+});
+
+// ── telling a dropped connection from a real answer ───────────────────────
+
+// The two want opposite things from the user: a refused download is worth
+// trying again in a minute, a checksum mismatch is not worth trying again at
+// all. Measured against the real endpoint, which drops connections in bursts.
+test('a dropped connection is recognised as transport, not as an answer', () => {
+  for (const message of [
+    'The socket connection was closed unexpectedly',
+    'fetch failed',
+    'ECONNRESET',
+    'ETIMEDOUT',
+    'EAI_AGAIN github.com',
+    'The operation was aborted due to timeout',
+  ]) {
+    expect(isTransportFailure({ message })).toBe(true);
+  }
+});
+
+test('a real answer is not mistaken for a dropped connection', () => {
+  for (const message of [
+    'the download did not match its published checksum',
+    'the download is too small to be tglow',
+    'EACCES: permission denied',
+  ]) {
+    expect(isTransportFailure({ message })).toBe(false);
+  }
+});
+
+test('the manual fallback points at the release, on the release host', () => {
+  const url = releasePageUrl({ version: '0.8.0' });
+
+  expect(url).toBe(`https://${ASSET_HOST}/phatnt199/tglow/releases/tag/v0.8.0`);
+  expect(isTrustedAssetUrl({ url })).toBe(true);
 });

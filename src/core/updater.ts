@@ -287,3 +287,17 @@ export const describeUpdate = (opts: { outcome: TCheckOutcome; currentVersion: s
  */
 export const buildAssetUrl = (opts: { update: IAvailableUpdate }): string =>
   `https://${ASSET_HOST}/phatnt199/tglow/releases/download/v${opts.update.version}/${opts.update.assetName}`;
+
+/**
+ * Whether a failure was the connection rather than an answer.
+ *
+ * Worth telling apart because the two want opposite things from the user: a
+ * refused download is worth trying again in a minute, while a checksum
+ * mismatch is not worth trying again at all.
+ */
+export const isTransportFailure = (opts: { message: string }): boolean =>
+  /socket|ECONN|ETIMEDOUT|EAI_AGAIN|network|fetch failed|timed? ?out|aborted/i.test(opts.message);
+
+/** Where a person goes to install a release by hand. */
+export const releasePageUrl = (opts: { version: string }): string =>
+  `https://${ASSET_HOST}/phatnt199/tglow/releases/tag/v${opts.version}`;

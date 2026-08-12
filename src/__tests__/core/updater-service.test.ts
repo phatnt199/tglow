@@ -51,7 +51,7 @@ test('a verified download replaces the running binary', async () => {
   const { request } = stubFetch({});
 
   const result = await new UpdaterService().install({
-    update: UPDATE, executablePath, assetUrl: ASSET_URL, platform: 'linux', fetchImplementation: request,
+    update: UPDATE, executablePath, assetUrl: ASSET_URL, platform: 'linux', fetchImplementation: request, delay: async () => {},
   });
 
   expect(result.installed).toBe(true);
@@ -66,7 +66,7 @@ test('the checksum is fetched before the binary', async () => {
   const { request, asked } = stubFetch({});
 
   await new UpdaterService().install({
-    update: UPDATE, executablePath, assetUrl: ASSET_URL, platform: 'linux', fetchImplementation: request,
+    update: UPDATE, executablePath, assetUrl: ASSET_URL, platform: 'linux', fetchImplementation: request, delay: async () => {},
   });
 
   expect(asked[0]).toContain('tglow.sha256');
@@ -83,7 +83,7 @@ test('a download that does not match its checksum is refused and deleted', async
   const { request } = stubFetch({ assetBody: new Uint8Array(1_200_000).fill(9) });
 
   const result = await new UpdaterService().install({
-    update: UPDATE, executablePath, assetUrl: ASSET_URL, platform: 'linux', fetchImplementation: request,
+    update: UPDATE, executablePath, assetUrl: ASSET_URL, platform: 'linux', fetchImplementation: request, delay: async () => {},
   });
 
   expect(result.installed).toBe(false);
@@ -101,7 +101,7 @@ test('an asset hosted anywhere else is refused before anything is fetched', asyn
 
   const result = await new UpdaterService().install({
     update: UPDATE, executablePath, assetUrl: 'https://example.com/tglow-linux-x64',
-    platform: 'linux', fetchImplementation: request,
+    platform: 'linux', fetchImplementation: request, delay: async () => {},
   });
 
   expect(result.installed).toBe(false);
@@ -116,7 +116,7 @@ test('no published checksum means nothing is installed', async () => {
   const { request } = stubFetch({ checksumStatus: 404 });
 
   const result = await new UpdaterService().install({
-    update: UPDATE, executablePath, assetUrl: ASSET_URL, platform: 'linux', fetchImplementation: request,
+    update: UPDATE, executablePath, assetUrl: ASSET_URL, platform: 'linux', fetchImplementation: request, delay: async () => {},
   });
 
   expect(result.installed).toBe(false);
@@ -128,7 +128,7 @@ test('a checksum file that names no such asset installs nothing', async () => {
   const { request } = stubFetch({ checksumBody: `${DIGEST}  tglow-macos-arm64\n` });
 
   const result = await new UpdaterService().install({
-    update: UPDATE, executablePath, assetUrl: ASSET_URL, platform: 'linux', fetchImplementation: request,
+    update: UPDATE, executablePath, assetUrl: ASSET_URL, platform: 'linux', fetchImplementation: request, delay: async () => {},
   });
 
   expect(result.installed).toBe(false);
@@ -140,7 +140,7 @@ test('a failed download installs nothing', async () => {
   const { request } = stubFetch({ assetStatus: 503 });
 
   const result = await new UpdaterService().install({
-    update: UPDATE, executablePath, assetUrl: ASSET_URL, platform: 'linux', fetchImplementation: request,
+    update: UPDATE, executablePath, assetUrl: ASSET_URL, platform: 'linux', fetchImplementation: request, delay: async () => {},
   });
 
   expect(result.installed).toBe(false);
@@ -157,7 +157,7 @@ test('something far too small to be tglow is refused even if it matches', async 
   const { request } = stubFetch({ assetBody: tiny, checksumBody: `${tinyDigest}  tglow-linux-x64\n` });
 
   const result = await new UpdaterService().install({
-    update: UPDATE, executablePath, assetUrl: ASSET_URL, platform: 'linux', fetchImplementation: request,
+    update: UPDATE, executablePath, assetUrl: ASSET_URL, platform: 'linux', fetchImplementation: request, delay: async () => {},
   });
 
   expect(result.installed).toBe(false);
@@ -202,7 +202,7 @@ test('a newer release is reported as available', async () => {
   }), { status: 200 })) as unknown as typeof fetch;
 
   expect(await new UpdaterService().check({
-    platform: 'linux', architecture: 'x64', currentVersion: '0.6.1', fetchImplementation: request,
+    platform: 'linux', architecture: 'x64', currentVersion: '0.6.1', fetchImplementation: request, delay: async () => {},
   })).toEqual({ kind: 'update', update: { version: '9.9.9', assetName: 'tglow-linux-x64', size: BODY.length } });
 });
 
@@ -217,7 +217,7 @@ test('a check that cannot complete reports unreachable, never current', async ()
     (async () => new Response(JSON.stringify({ tag_name: 'nonsense' }), { status: 200 })) as unknown as typeof fetch,
   ]) {
     expect(await new UpdaterService().check({
-      platform: 'linux', architecture: 'x64', currentVersion: '0.6.1', fetchImplementation: request,
+      platform: 'linux', architecture: 'x64', currentVersion: '0.6.1', fetchImplementation: request, delay: async () => {},
     })).toEqual({ kind: 'unreachable' });
   }
 });
@@ -228,6 +228,120 @@ test('a reachable check with nothing newer reports current', async () => {
   }), { status: 200 })) as unknown as typeof fetch;
 
   expect(await new UpdaterService().check({
-    platform: 'linux', architecture: 'x64', currentVersion: '0.6.1', fetchImplementation: request,
+    platform: 'linux', architecture: 'x64', currentVersion: '0.6.1', fetchImplementation: request, delay: async () => {},
   })).toEqual({ kind: 'current' });
+});
+
+// ── surviving a flaky host ────────────────────────────────────────────────
+//
+// The reason this exists, measured rather than imagined: a plain fetch to
+// github.com/.../releases/download/... drops the connection about half the
+// time from a real machine -- "The socket connection was closed unexpectedly",
+// inside a tenth of a second, before any bytes move. An install makes two such
+// requests, so it used to succeed about a quarter of the time. That is what
+// the first person to type `:update` actually saw.
+
+/** Fails the first `failures` attempts on every URL, then answers normally. */
+const flakyFetch = (opts: { failures: number }): { request: typeof fetch; attempts: () => number } => {
+  const seen = new Map<string, number>();
+  let total = 0;
+  const request = (async (url: string | URL | Request): Promise<Response> => {
+    const href = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+    total += 1;
+    const attempt = (seen.get(href) ?? 0) + 1;
+    seen.set(href, attempt);
+    if (attempt <= opts.failures) {
+      throw new Error('The socket connection was closed unexpectedly');
+    }
+    if (href.endsWith('tglow.sha256')) {
+      return new Response(`${DIGEST}  tglow-linux-x64\n`, { status: 200 });
+    }
+    return new Response(BODY, { status: 200 });
+  }) as unknown as typeof fetch;
+  return { request, attempts: () => total };
+};
+
+test('an install survives a connection dropped on the first attempt', async () => {
+  const { executablePath } = workspace();
+  const { request } = flakyFetch({ failures: 1 });
+
+  const result = await new UpdaterService().install({
+    update: UPDATE, executablePath, assetUrl: ASSET_URL, platform: 'linux', fetchImplementation: request, delay: async () => {},
+  });
+
+  expect(result.installed).toBe(true);
+  expect(readFileSync(executablePath).length).toBe(BODY.length);
+});
+
+test('an install survives both requests failing twice each', async () => {
+  const { executablePath } = workspace();
+  const { request, attempts } = flakyFetch({ failures: 2 });
+
+  const result = await new UpdaterService().install({
+    update: UPDATE, executablePath, assetUrl: ASSET_URL, platform: 'linux', fetchImplementation: request, delay: async () => {},
+  });
+
+  expect(result.installed).toBe(true);
+  // Three attempts each for the checksum and the binary.
+  expect(attempts()).toBe(6);
+  expect(result.message).toContain('9.9.9');
+});
+
+// Retrying is not a promise that the network works. A host that is genuinely
+// down must still be reported, not retried forever.
+test('a host that never answers is reported rather than retried forever', async () => {
+  const { executablePath } = workspace();
+  const before = readFileSync(executablePath, 'utf8');
+  const { request, attempts } = flakyFetch({ failures: 99 });
+
+  const result = await new UpdaterService().install({
+    update: UPDATE, executablePath, assetUrl: ASSET_URL, platform: 'linux', fetchImplementation: request, delay: async () => {},
+  });
+
+  expect(result.installed).toBe(false);
+  expect(attempts()).toBe(10);
+  expect(readFileSync(executablePath, 'utf8')).toBe(before);
+  // The raw transport error is developer noise -- "pass `verbose: true` in the
+  // second argument to fetch()" is what the user actually saw. Say what
+  // happened and where to get it by hand instead.
+  expect(result.message).not.toContain('verbose');
+  expect(result.message).toContain('connection kept dropping');
+  expect(result.message).toContain('releases/tag/v9.9.9');
+});
+
+// Only the transport is retried. An HTTP response is an answer, and asking a
+// second time because the answer was 404 asks a settled question again.
+test('an HTTP error is not retried', async () => {
+  const { executablePath } = workspace();
+  let calls = 0;
+  const request = (async (url: string | URL | Request): Promise<Response> => {
+    calls += 1;
+    const href = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+    return new Response('nope', { status: href.endsWith('tglow.sha256') ? 404 : 200 });
+  }) as unknown as typeof fetch;
+
+  const result = await new UpdaterService().install({
+    update: UPDATE, executablePath, assetUrl: ASSET_URL, platform: 'linux', fetchImplementation: request, delay: async () => {},
+  });
+
+  expect(result.installed).toBe(false);
+  expect(calls).toBe(1);
+});
+
+test('a check survives a dropped connection too', async () => {
+  let attempt = 0;
+  const request = (async (): Promise<Response> => {
+    attempt += 1;
+    if (attempt === 1) {
+      throw new Error('The socket connection was closed unexpectedly');
+    }
+    return new Response(JSON.stringify({
+      tag_name: 'v9.9.9',
+      assets: [{ name: 'tglow-linux-x64', browser_download_url: ASSET_URL, size: BODY.length }],
+    }), { status: 200 });
+  }) as unknown as typeof fetch;
+
+  expect(await new UpdaterService().check({
+    platform: 'linux', architecture: 'x64', currentVersion: '0.6.1', fetchImplementation: request, delay: async () => {},
+  })).toEqual({ kind: 'update', update: { version: '9.9.9', assetName: 'tglow-linux-x64', size: BODY.length } });
 });
