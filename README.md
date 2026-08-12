@@ -448,7 +448,7 @@ question about which conversation `Enter` sends to.
 | `zn` | show or hide the line-number gutter |
 | `zt` | show or hide timestamps |
 | `K` | show the URL of a link under the cursor |
-| `r` | reply to the message under the cursor |
+| `r` | reply to the message under the cursor, straight into the composer |
 | `e` | edit your own message under the cursor |
 | `P` | pin or unpin — the message under the cursor, or the chat when the chat list has focus |
 | `R` | react to the message: `R` then the key beside the emoji |
@@ -465,6 +465,7 @@ question about which conversation `Enter` sends to.
 | Key | Action |
 | --- | --- |
 | `i` / `a` | write a message |
+| `<A-Enter>` (insert) | a new line, rather than sending |
 | `jk` or `Esc` | leave insert mode |
 | `Enter` (insert) | send |
 

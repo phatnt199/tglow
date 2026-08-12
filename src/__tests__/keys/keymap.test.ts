@@ -117,7 +117,11 @@ test('zs reveals the spoiler on the message under the cursor', () => {
     .toEqual([{ type: ActionTypes.SPOILER_REVEAL }]);
 });
 
-test('r starts a reply to the message under the cursor', () => {
+// Into the composer, in INSERT, the way `e` already behaved. Replying and
+// editing are the same gesture -- pick a message, write about it -- and one
+// of them leaving you in NORMAL waiting for an `i` was a difference with no
+// reason behind it.
+test('r starts a reply and puts the cursor in the composer, ready to type', () => {
   const { keymapService, engine } = build();
   const result = engine.resolve({
     state: INITIAL_ENGINE_STATE,
@@ -125,7 +129,11 @@ test('r starts a reply to the message under the cursor', () => {
     keymap: keymapService.getBindings(),
   });
   expect(result.status).toBe('resolved');
-  expect(result.actions).toEqual([{ type: ActionTypes.REPLY_START }]);
+  expect(result.actions).toEqual([
+    { type: ActionTypes.REPLY_START },
+    { type: ActionTypes.FOCUS_SET, context: VimContexts.COMPOSER },
+    { type: ActionTypes.MODE_SET, mode: VimModes.INSERT },
+  ]);
 });
 
 test('e starts an edit of the message under the cursor', () => {

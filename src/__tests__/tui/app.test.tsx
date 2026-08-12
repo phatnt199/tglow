@@ -501,7 +501,11 @@ test('starting a reply shrinks the message pane so the status line stays on its 
   // reply state -- if chromeHeight had not grown to match the composer's new
   // third row, this row would instead still hold the composer's own prompt,
   // pushed down by one without app.tsx ever finding out.
-  expect(rows[TERMINAL_HEIGHT - 1]).toContain('NORMAL');
+  //
+  // INSERT rather than NORMAL: `r` now goes straight into the composer, the
+  // way `e` always has. Which mode is showing is incidental here -- what this
+  // pins is that the status line still owns this row.
+  expect(rows[TERMINAL_HEIGHT - 1]).toContain('INSERT');
   expect(rows[TERMINAL_HEIGHT - 1]).toContain(`1/${store.getState().messages.length}`);
 });
 

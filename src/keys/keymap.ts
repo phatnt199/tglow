@@ -86,9 +86,18 @@ export class KeymapService {
       context: '*', mode: VimModes.NORMAL, keys: '<S-k>', description: 'Show link URL',
       action: () => [{ type: ActionTypes.LINK_SHOW }],
     },
+    // Straight into the composer, the way `e` goes straight into an edit. The
+    // two are the same gesture -- pick a message, write about it -- and having
+    // one land in INSERT while the other left you in NORMAL waiting for an `i`
+    // was a difference with no reason behind it. Escape still cancels the
+    // reply, because App intercepts it while replyToMessageId is set.
     {
       context: '*', mode: VimModes.NORMAL, keys: 'r', description: 'Reply to message',
-      action: () => [{ type: ActionTypes.REPLY_START }],
+      action: () => [
+        { type: ActionTypes.REPLY_START },
+        { type: ActionTypes.FOCUS_SET, context: VimContexts.COMPOSER },
+        { type: ActionTypes.MODE_SET, mode: VimModes.INSERT },
+      ],
     },
     // EDIT_START itself decides mode and focus (moving straight to INSERT,
     // unlike REPLY_START), since it also has to decide -- looking at
@@ -302,6 +311,10 @@ export class KeymapService {
       ],
     },
     // jk is how this author leaves insert mode; Esc is kept as the vim default.
+    {
+      context: '*', mode: VimModes.INSERT, keys: '<A-return>', description: 'New line in the message',
+      action: () => [{ type: ActionTypes.COMPOSER_INSERT_TEXT, text: '\n' }],
+    },
     {
       context: '*', mode: VimModes.INSERT, keys: 'jk', description: 'Leave insert mode',
       action: () => [{ type: ActionTypes.MODE_SET, mode: VimModes.NORMAL }],

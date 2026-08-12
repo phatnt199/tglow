@@ -1326,14 +1326,28 @@ export const App = (props: IAppProps) => {
     // category as overlay above, so escape has to be intercepted here too:
     // KeymapService's bindings are static and have no way to see whether a
     // reply is pending, so there is no way to express "bound only sometimes"
-    // as a keymap entry. Checked only in NORMAL mode -- in INSERT, escape
-    // still means "leave insert mode" first, exactly as it does today; a
-    // second escape once back in NORMAL then cancels the reply. Unreachable
-    // while the overlay is open: that block above always returns first.
-    if (current.replyToMessageId !== null && current.engine.mode === VimModes.NORMAL) {
+    // as a keymap entry. Unreachable while the overlay is open: that block
+    // above always returns first.
+    //
+    // In INSERT as well as NORMAL, now that `r` goes straight into the
+    // composer the way `e` does -- exactly the case the edit block below
+    // already handles, and for the same reason. One key started the reply, so
+    // one key abandons it; leaving insert first and requiring a second escape
+    // would make backing out cost twice what committing to it did.
+    //
+    // The draft survives. Cancelling a reply is a decision about *what it is
+    // attached to*, not about the words -- and silently binning a sentence
+    // someone had already typed is the discarded-draft failure this codebase
+    // has fixed twice before.
+    if (current.replyToMessageId !== null) {
       const replyToken = keyNormalizer.toCanonicalString({ key });
       if (replyToken === OVERLAY_ESCAPE_TOKEN) {
-        store.setState({ patch: { replyToMessageId: null } });
+        store.setState({
+          patch: {
+            replyToMessageId: null,
+            engine: { ...current.engine, mode: VimModes.NORMAL },
+          },
+        });
         return;
       }
     }
