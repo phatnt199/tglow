@@ -1588,7 +1588,15 @@ export const App = (props: IAppProps) => {
     minimumPane: MINIMUM_PANE_WIDTH,
   });
 
-  const paneGrid = withActive({ grid: state.paneGrid, active: state.activePane, conversation: state });
+  // Memoised on what actually decides its contents. withActive maps, so it
+  // returns a fresh array every call -- and this is a dependency of the image
+  // effect below, which meant that effect re-ran on *every render*, planning
+  // fetches over every message in every pane each time a key was pressed.
+  const paneGrid = useMemo(
+    () => withActive({ grid: state.paneGrid, active: state.activePane, conversation: state }),
+    [state.paneGrid, state.activePane, state.messages, state.messageCursor, state.activePeerId,
+      state.composerText, state.replyToMessageId, state.editingMessageId, state.composerTextBeforeEdit],
+  );
   // Each internal divider costs a column, exactly like the ones either side of
   // the sidebar, so the columns share what is left rather than what was asked
   // for -- otherwise the rightmost is pushed a column off the screen per split.
@@ -1903,8 +1911,15 @@ export const App = (props: IAppProps) => {
     let live = true;
     void (async (): Promise<void> => {
       for (const request of requests) {
+        // `break` on a dead generation, not `continue`: this effect is
+        // superseded whenever the panes or their widths change, and carrying
+        // on would keep awaiting a download per remaining request for a screen
+        // nobody is looking at any more.
+        if (!live) {
+          break;
+        }
         const bytes = await onThumbnail({ peerId: request.peerId, messageId: request.messageId });
-        if (!live || bytes === null) {
+        if (bytes === null) {
           continue;
         }
 
@@ -1916,7 +1931,10 @@ export const App = (props: IAppProps) => {
         // Checked again after the await: the pane this was for may be gone.
         // Keyed by width, a picture that arrives late is simply stored -- it
         // cannot land in the wrong pane the way an id-keyed one could.
-        if (!live || rendered === null) {
+        if (!live) {
+          break;
+        }
+        if (rendered === null) {
           continue;
         }
         // The picture itself, for a terminal that can hold one. Transmitted

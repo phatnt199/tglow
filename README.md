@@ -407,7 +407,7 @@ by accident.
 | `3j` | down three messages |
 | `gg` / `G` | oldest loaded / newest |
 | `<C-d>` / `<C-u>` | half page down / up |
-| `nf` | focus the chat list |
+| `gf` | focus the chat list |
 | `]f` / `[f` | next / previous chat folder |
 | `Enter` (chat list) | open the chat |
 | `Esc` (chat list) | back to messages, without opening anything |

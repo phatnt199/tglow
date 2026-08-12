@@ -810,7 +810,7 @@ test('3dd then n deletes nothing at all', async () => {
 test('dd does nothing while focused on the chat list', async () => {
   const { renderer, store, deleted } = await mount();
   await act(async () => {
-    renderer.mockInput.pressKey('n');
+    renderer.mockInput.pressKey('g');
     renderer.mockInput.pressKey('f');
   });
   await renderer.flush();
@@ -891,7 +891,7 @@ test('"a then escape does not leave a register pending for a later, unrelated yy
 // must not do anything there either.
 test('" does nothing while focused on the chat list', async () => {
   const { renderer, store } = await mount();
-  await act(async () => { renderer.mockInput.pressKey('n'); renderer.mockInput.pressKey('f'); });
+  await act(async () => { renderer.mockInput.pressKey('g'); renderer.mockInput.pressKey('f'); });
   await renderer.flush();
   expect(store.getState().engine.context).toBe(VimContexts.CHAT_LIST);
 
@@ -1142,7 +1142,7 @@ test('. does nothing while focused on the chat list', async () => {
   await act(async () => { renderer.mockInput.pressKey('y'); });
   await renderer.flush();
 
-  await act(async () => { renderer.mockInput.pressKey('n'); renderer.mockInput.pressKey('f'); });
+  await act(async () => { renderer.mockInput.pressKey('g'); renderer.mockInput.pressKey('f'); });
   await renderer.flush();
   expect(store.getState().engine.context).toBe(VimContexts.CHAT_LIST);
 
@@ -1474,7 +1474,7 @@ test('Backspace in INSERT removes the last character', async () => {
 test('return in the chat list opens the chat and moves focus to messages', async () => {
   const { renderer, store, opened } = await mount();
   await act(async () => {
-    renderer.mockInput.pressKey('n');
+    renderer.mockInput.pressKey('g');
     renderer.mockInput.pressKey('f');
   });
   await renderer.flush();
@@ -1500,7 +1500,7 @@ test('opening a chat marks its newest message read', async () => {
     },
   });
   await act(async () => {
-    renderer.mockInput.pressKey('n');
+    renderer.mockInput.pressKey('g');
     renderer.mockInput.pressKey('f');
   });
   await renderer.flush();
@@ -1518,7 +1518,7 @@ test('opening a chat marks its newest message read', async () => {
 test('moving the cursor within the chat list does not mark anything read', async () => {
   const { renderer, marked } = await mount();
   await act(async () => {
-    renderer.mockInput.pressKey('n');
+    renderer.mockInput.pressKey('g');
     renderer.mockInput.pressKey('f');
   });
   await renderer.flush();
@@ -1550,7 +1550,7 @@ for (const browse of [
   test(`${browse.name} from the chat list does not mark the open chat read`, async () => {
     const { renderer, store, marked } = await mount();
     await act(async () => {
-      renderer.mockInput.pressKey('n');
+      renderer.mockInput.pressKey('g');
       renderer.mockInput.pressKey('f');
     });
     await renderer.flush();
@@ -1568,7 +1568,7 @@ for (const browse of [
 test('<S-g> still marks read once focus is back on the messages pane', async () => {
   const { renderer, marked } = await mount();
   await act(async () => {
-    renderer.mockInput.pressKey('n');
+    renderer.mockInput.pressKey('g');
     renderer.mockInput.pressKey('f');
   });
   await renderer.flush();
@@ -1587,7 +1587,7 @@ test('<S-g> still marks read once focus is back on the messages pane', async () 
 test('opening a chat with no messages yet does not mark anything read', async () => {
   const { renderer, marked } = await mount({ messages: [], onOpenChat: async () => {} });
   await act(async () => {
-    renderer.mockInput.pressKey('n');
+    renderer.mockInput.pressKey('g');
     renderer.mockInput.pressKey('f');
   });
   await renderer.flush();
@@ -1803,7 +1803,7 @@ test('while the overlay is open, j does not move the message cursor', async () =
 test('escape closes the overlay without also refocusing the pane underneath it', async () => {
   const { renderer, store } = await mount();
   await act(async () => {
-    renderer.mockInput.pressKey('n');
+    renderer.mockInput.pressKey('g');
     renderer.mockInput.pressKey('f');
   });
   await renderer.flush();
@@ -2095,7 +2095,7 @@ test('Enter jumps the message cursor to the first match and closes the overlay',
 // would move messageCursor with nothing on screen to show it moved.
 test('Enter focuses the messages pane, so a jump triggered from the chat list is visible', async () => {
   const { renderer, store } = await mount({ messages: searchFixtureMessages });
-  await act(async () => { renderer.mockInput.pressKey('n'); renderer.mockInput.pressKey('f'); });
+  await act(async () => { renderer.mockInput.pressKey('g'); renderer.mockInput.pressKey('f'); });
   await renderer.flush();
   expect(store.getState().engine.context).toBe(VimContexts.CHAT_LIST);
 
@@ -2248,7 +2248,7 @@ test('N (shift-n) cycles backward through the committed matches, wrapping to the
 // Bare `n` is genuinely ambiguous against `nf` (keymap.test.ts), so it needs
 // App's own timeoutlen to settle before it resolves as SEARCH_CYCLE -- the
 // same wait Task 2's own ambiguous-key tests already rely on.
-test('n alone, once the ambiguity against nf times out, cycles forward through the committed matches', async () => {
+test('n cycles forward through the committed matches, with no wait', async () => {
   const { renderer, store } = await mount({ messages: searchFixtureMessages });
   await act(async () => { renderer.mockInput.pressKey('/'); });
   await renderer.flush();
@@ -2258,11 +2258,10 @@ test('n alone, once the ambiguity against nf times out, cycles forward through t
   await renderer.flush();
   expect(store.getState().messageCursor).toBe(0);
 
+  // No settle step: `n` used to be ambiguous against `nf` and stalled for
+  // timeoutlen before doing anything. `nf` is `gf` now, so this is immediate --
+  // which is the whole reason it moved.
   await act(async () => { renderer.mockInput.pressKey('n'); });
-  await renderer.flush();
-  expect(store.getState().messageCursor).toBe(0); // still ambiguous, waiting on the timer
-
-  await act(async () => { await new Promise(resolve => { setTimeout(resolve, AMBIGUOUS_KEY_SETTLE_MILLISECONDS); }); });
   await renderer.flush();
   expect(store.getState().messageCursor).toBe(2);
 });
@@ -2272,10 +2271,10 @@ test('n alone, once the ambiguity against nf times out, cycles forward through t
 // exactly as it always did -- both keys land inside one synchronous burst
 // here, well under timeoutMilliseconds, so the ambiguity never gets the
 // chance to settle on its own before the second key completes `nf`.
-test('nf still focuses the chat list when typed quickly, even though n now has its own binding', async () => {
+test('gf focuses the chat list, and n keeps its own binding', async () => {
   const { renderer, store } = await mount({ messages: searchFixtureMessages });
   await act(async () => {
-    renderer.mockInput.pressKey('n');
+    renderer.mockInput.pressKey('g');
     renderer.mockInput.pressKey('f');
   });
   await renderer.flush();
@@ -2380,7 +2379,7 @@ test('clicking a chat preview row opens the same chat as its name row', async ()
 
 test('clicking a message focuses the messages pane and moves the cursor there', async () => {
   const { renderer, store } = await mount();
-  await act(async () => { renderer.mockInput.pressKey('n'); renderer.mockInput.pressKey('f'); });
+  await act(async () => { renderer.mockInput.pressKey('g'); renderer.mockInput.pressKey('f'); });
   await renderer.flush();
   expect(store.getState().engine.context).toBe(VimContexts.CHAT_LIST);
 

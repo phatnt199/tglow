@@ -4,8 +4,8 @@ import { Container, BindingScopes } from '@venizia/ignis-inversion';
 
 import { BindingKeys } from '../../common/index.ts';
 import { ActionTypes, INITIAL_ENGINE_STATE, Operators, VimContexts, VimModes } from '../../keys/common/index.ts';
-import type { IEngineState, IKey, TVimContext, TVimMode } from '../../keys/common/index.ts';
-import { KeyNormalizerService } from '../../keys/key-normalizer.ts';
+import type { IEngineState, IKey, IKeyBinding, TVimContext, TVimMode } from '../../keys/common/index.ts';
+import { KeyNormalizerService, parseKeySequence } from '../../keys/key-normalizer.ts';
 import { KeymapService } from '../../keys/keymap.ts';
 import { VimEngineService } from '../../keys/vim-engine.ts';
 
@@ -96,11 +96,12 @@ test('3j moves three messages', () => {
     .toEqual([{ type: ActionTypes.CURSOR_MOVE, unit: 'message', delta: 3 }]);
 });
 
-// Echoes the author's nvim mapping: nf focuses the file tree.
-test('nf focuses the chat list', () => {
+// Echoes the author's nvim mapping, moved from `nf` to the `g` prefix so it
+// stops making `n` ambiguous -- see the test below, which is the reason.
+test('gf focuses the chat list', () => {
   const { keymapService, engine } = build();
   const keymap = keymapService.getBindings();
-  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('n'), keymap });
+  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('g'), keymap });
   expect(engine.resolve({ state: pending.state, key: buildKey('f'), keymap }).actions)
     .toEqual([{ type: ActionTypes.FOCUS_SET, context: VimContexts.CHAT_LIST }]);
 });
@@ -500,33 +501,60 @@ test('/ toggles the search overlay', () => {
 // which makes it genuinely ambiguous against the real `nf` binding below --
 // the same shape `d` vs `dd` already established (Task 3). This is the
 // collision the brief asked to be checked for; see app.test.tsx for the
-// end-to-end proof that `nf`, typed quickly, still resolves exactly as it did
-// before this task, via App's own timeoutlen (Tasks 1-2).
-test('n is ambiguous against nf', () => {
+// The reason `nf` moved to `gf`. A single-key binding that is also the first
+// key of a two-key one is ambiguous: the engine cannot know which was meant
+// until the second key arrives or timeoutlen expires. So `n` -- search-next,
+// vim's most-repeated key, the one you hold walking through matches -- stalled
+// 400ms before doing anything at all. It must now resolve on the spot.
+test('n resolves immediately, with nothing pending behind it', () => {
   const { keymapService, engine } = build();
-  const keymap = keymapService.getBindings();
-  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('n'), keymap });
-  expect(pending.status).toBe('ambiguous');
-  expect(engine.resolve({ state: pending.state, key: buildKey('f'), keymap }).actions).toEqual([
-    { type: ActionTypes.FOCUS_SET, context: VimContexts.CHAT_LIST },
-  ]);
+  const result = engine.resolve({
+    state: INITIAL_ENGINE_STATE, key: buildKey('n'), keymap: keymapService.getBindings(),
+  });
+
+  expect(result.status).toBe('resolved');
+  expect(result.actions).toEqual([{ type: ActionTypes.SEARCH_CYCLE, direction: 'next' }]);
+  expect(result.state.pending).toEqual([]);
 });
 
 // The other half: nothing completes `nf` within the same key press, so `n`
 // alone is still there for App's timeoutlen to settle via flushPending --
 // which resolves n's own binding (cycle forward), not nf.
-test('n alone, once flushPending settles it, cycles forward through search matches', () => {
-  const { keymapService, engine } = build();
-  const keymap = keymapService.getBindings();
-  const pending = engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('n'), keymap });
-  const flushed = engine.flushPending({ state: pending.state, keymap });
-  expect(flushed.status).toBe('resolved');
-  expect(flushed.actions).toEqual([{ type: ActionTypes.SEARCH_CYCLE, direction: 'next' }]);
+// The general rule the `nf` mistake broke, kept as a property rather than as
+// one case: no single-key binding may be the first key of a longer one, or
+// every press of it stalls for timeoutlen.
+test('no single-key binding is the prefix of a longer one', () => {
+  const bindings = build().keymapService.getBindings();
+  // Two bindings only collide if a single press could match both, which means
+  // sharing a mode *and* a context. `j` (NORMAL) and `jk` (INSERT) look like a
+  // collision and are not one -- the engine never considers them together.
+  const modesOf = (binding: IKeyBinding): TVimMode[] =>
+    Array.isArray(binding.mode) ? binding.mode : [binding.mode];
+  const couldCollide = (opts: { binding: IKeyBinding; other: IKeyBinding }): boolean => {
+    const sharesMode = modesOf(opts.binding).some(mode => modesOf(opts.other).includes(mode));
+    const sharesContext = opts.binding.context === '*' || opts.other.context === '*'
+      || opts.binding.context === opts.other.context;
+    return sharesMode && sharesContext;
+  };
+  const offenders: string[] = [];
+  for (const binding of bindings) {
+    const tokens = parseKeySequence(binding.keys);
+    if (tokens.length !== 1) {
+      continue;
+    }
+    for (const other of bindings) {
+      const otherTokens = parseKeySequence(other.keys);
+      if (otherTokens.length > 1 && otherTokens[0] === tokens[0] && couldCollide({ binding, other })) {
+        offenders.push(`${binding.keys} is a prefix of ${other.keys}`);
+      }
+    }
+  }
+
+  expect(offenders).toEqual([]);
 });
 
-// <S-n> shares no prefix with `nf` (a real Shift-N press canonicalizes to
-// "<S-n>", never bare "N" -- ignis-style.md), so it resolves immediately,
-// with no ambiguity to settle, unlike bare n above.
+// <S-n> shares no prefix with anything (a real Shift-N press canonicalizes to
+// "<S-n>", never bare "N" -- ignis-style.md), so it resolves immediately.
 test('<S-n> cycles backward through search matches, with no ambiguity', () => {
   const { keymapService, engine } = build();
   const result = engine.resolve({
@@ -566,7 +594,7 @@ test('every binding the project promises the user is actually bound', () => {
     { context: '*', mode: VimModes.NORMAL, keys: '<C-u>' },
     // Pane movement -- <C-w>h/l is exactly the class of bug this guards:
     // specified in the spec's keymap table and never implemented.
-    { context: '*', mode: VimModes.NORMAL, keys: 'nf' },
+    { context: '*', mode: VimModes.NORMAL, keys: 'gf' },
     { context: '*', mode: VimModes.NORMAL, keys: '<C-w>h' },
     { context: '*', mode: VimModes.NORMAL, keys: '<C-w>l' },
     { context: VimContexts.CHAT_LIST, mode: VimModes.NORMAL, keys: '<return>' },

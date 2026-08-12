@@ -130,9 +130,18 @@ export class KeymapService {
       ],
     },
 
-    // Panes — nf echoes the author's NvimTreeFocus mapping.
+    // Panes. `gf` rather than the `nf` this used to be, which echoed the
+    // author's own NvimTreeFocus mapping and cost more than it looked.
+    //
+    // `n` is search-next, and a single-key binding that is also the first key
+    // of a two-key one is ambiguous: the engine cannot know which was meant
+    // until either the second key arrives or timeoutlen expires. So every `n`
+    // -- vim's most-repeated key, the one you hold down walking through search
+    // results -- waited 400ms before doing anything. Moving the alias onto the
+    // `g` prefix, which already exists for `gg` and resolves the same way,
+    // gives `n` back its immediacy and costs the alias nothing.
     {
-      context: '*', mode: VimModes.NORMAL, keys: 'nf', description: 'Focus chat list',
+      context: '*', mode: VimModes.NORMAL, keys: 'gf', description: 'Focus chat list',
       action: () => [{ type: ActionTypes.FOCUS_SET, context: VimContexts.CHAT_LIST }],
     },
     // Pin. Shifted rather than a bare `p`, which vim spends on paste and this

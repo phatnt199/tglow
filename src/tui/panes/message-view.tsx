@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useMemo, type ReactNode } from 'react';
 
 import { TextAttributes } from '@opentui/core';
 
@@ -680,6 +680,25 @@ export const MessageView = (props: IMessageViewProps) => {
     imagesDrawnByTerminal = false,
   } = props;
 
+  const contentWidth = Math.max(MINIMUM_CONTENT_WIDTH, width - resolveRailWidth({ showGutter, showTime }));
+  // Wrapping every loaded message costs real time -- measured at roughly 17ms
+  // for two hundred of them -- and without this it was paid on every render,
+  // per pane. Typing a character re-renders App, and re-wrapping the whole
+  // history to draw one keystroke into the composer is most of what made the
+  // interface feel heavy. Memoised on exactly what changes the rows: an
+  // incoming message, the cursor (the gutter counts distance from it), the
+  // pane's width, and a revealed spoiler or a newly drawn picture.
+  //
+  // Before any early return, because a hook cannot sit behind one.
+  const rows = useMemo(
+    () => (messages.length === 0
+      ? []
+      : buildRows({
+        messages, cursor, contentWidth, resolveSenderName, revealedSpoilers, readOutboxMaxId, imagesByMessageId,
+      })),
+    [messages, cursor, contentWidth, resolveSenderName, revealedSpoilers, readOutboxMaxId, imagesByMessageId],
+  );
+
   if (messages.length === 0) {
     return (
       <box flexDirection="column" width={width} height={height}>
@@ -687,11 +706,6 @@ export const MessageView = (props: IMessageViewProps) => {
       </box>
     );
   }
-
-  const contentWidth = Math.max(MINIMUM_CONTENT_WIDTH, width - resolveRailWidth({ showGutter, showTime }));
-  const rows = buildRows({
-    messages, cursor, contentWidth, resolveSenderName, revealedSpoilers, readOutboxMaxId, imagesByMessageId,
-  });
 
   // A cursor pointing past the end of the history would otherwise anchor the
   // window at -1 and scroll the pane off its own top.

@@ -14,6 +14,7 @@ import { Api } from 'teleproto';
 
 import { readLine, runInteractiveLogin } from './cli/index.ts';
 import { APPLICATION_VERSION, BindingKeys } from './common/index.ts';
+import { watchConnection } from './core/connection-watch.ts';
 import { UpdaterService } from './core/updater-service.ts';
 import {
   LAST_CHECK_KEY,
@@ -142,7 +143,15 @@ const main = async (): Promise<void> => {
   const updateService = container.get<UpdateService>({ key: BindingKeys.UPDATE_SERVICE });
   const differenceService = container.get<DifferenceService>({ key: BindingKeys.DIFFERENCE_SERVICE });
 
-  store.setState({ patch: { connection: 'connected' } });
+  // Watched from here on, rather than asserted once and never revisited.
+  // teleproto reconnects on its own and tells nobody, so before this a dropped
+  // network looked exactly like a quiet afternoon -- the status line unchanged
+  // and messages simply not arriving, which the user reads as nobody having
+  // written to them.
+  const stopWatchingConnection = watchConnection({
+    read: () => client.connected,
+    onChange: connection => { store.setState({ patch: { connection } }); },
+  });
   await dialogService.sync();
 
   // After the dialogs, because folder membership is resolved against them and
@@ -214,6 +223,7 @@ const main = async (): Promise<void> => {
 
   const quit = (): void => {
     stopReceivingUpdates();
+    stopWatchingConnection();
     renderer.destroy();
     database.close();
     void client.destroy();
@@ -252,6 +262,7 @@ const main = async (): Promise<void> => {
     }
 
     stopReceivingUpdates();
+    stopWatchingConnection();
     database.close();
 
     for (const path of [configuration.sessionPath, configuration.cachePath]) {
