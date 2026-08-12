@@ -6,6 +6,7 @@ import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 
 import { BindingKeys } from '../common/index.ts';
+import { FloodWaitRegistry, describeTelegramError, formatWait } from './telegram-errors.ts';
 import type { ApplicationStoreService, IApplicationState } from './application-store.ts';
 import type { DatabaseService, IMessageRow } from './cache/index.ts';
 import type { ITelegramEntity } from './common/index.ts';
@@ -195,6 +196,17 @@ export class MessageService {
   // user has moved to a different chat is dropped instead of prepending one
   // conversation's history to another's.
   private _loadingOlderFor: string | null = null;
+  /**
+   * Chats Telegram has asked tglow to leave alone for a while.
+   *
+   * A FLOOD_WAIT used to surface as "Send failed: FLOOD_WAIT_30" and nothing
+   * else, which invites pressing Enter again -- and retrying inside the window
+   * is what extends it. Third-party clients earn account restrictions by
+   * behaving like that, so the next attempt is now refused here, before it
+   * reaches the network.
+   */
+  private readonly _floodWaits = new FloodWaitRegistry();
+
   // When markRead last ran for a given peer, keyed so reading one chat can
   // never suppress a mark-read for a different one landing in the same
   // window. Set before the adapter call, not after it resolves: two overlapping
@@ -553,14 +565,36 @@ export class MessageService {
       return;
     }
 
+    // Held back locally rather than sent and refused: the request that would
+    // be refused is itself what lengthens the wait.
+    const waiting = this._floodWaits.remaining({ peerId, now: Date.now() });
+    if (waiting !== null) {
+      this._store.setState({
+        patch: {
+          statusMessage: `Rate limited by Telegram — wait ${formatWait({ seconds: waiting })} before trying again`,
+        },
+      });
+      return;
+    }
+
+    // Said before the round trip, not after. A send with nothing on screen
+    // between the keystroke and its result reads as a key that did nothing,
+    // and the obvious response to that is to press it again.
+    this._store.setState({ patch: { statusMessage: 'Sending…' } });
+
     let sent: IRawMessage;
     try {
       sent = await this._adapter.send({ peerId, text, replyToMessageId });
     } catch (error) {
+      const message = toError(error).message;
       this._logger.for(this.send.name).error('Send failed | Reason: %s', error);
-      this._store.setState({ patch: { statusMessage: `Send failed: ${toError(error).message}` } });
+      this._floodWaits.record({ peerId, message, now: Date.now() });
+      this._store.setState({
+        patch: { statusMessage: describeTelegramError({ action: 'Send', message }) },
+      });
       return;
     }
+    this._floodWaits.clear({ peerId });
 
     // Snapshotted right after the network round-trip, the only await in this
     // method: only clear the composer if the user has not since typed

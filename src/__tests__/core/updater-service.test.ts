@@ -203,19 +203,31 @@ test('a newer release is reported as available', async () => {
 
   expect(await new UpdaterService().check({
     platform: 'linux', architecture: 'x64', currentVersion: '0.6.1', fetchImplementation: request,
-  })).toEqual({ version: '9.9.9', assetName: 'tglow-linux-x64', size: BODY.length });
+  })).toEqual({ kind: 'update', update: { version: '9.9.9', assetName: 'tglow-linux-x64', size: BODY.length } });
 });
 
-// A check that cannot complete is not an error the user needs to see: it is one
-// request a day whose only job is to mention a release.
-test('a check that fails reports nothing rather than raising', async () => {
+// Every kind of failure reports 'unreachable', never 'current'. Collapsing
+// these made `:update` claim you were on the latest release when it had simply
+// failed to ask -- a lie in the one place a user goes to find out.
+test('a check that cannot complete reports unreachable, never current', async () => {
   for (const request of [
     (async () => { throw new Error('offline'); }) as unknown as typeof fetch,
     (async () => new Response('nope', { status: 500 })) as unknown as typeof fetch,
     (async () => new Response('not json', { status: 200 })) as unknown as typeof fetch,
+    (async () => new Response(JSON.stringify({ tag_name: 'nonsense' }), { status: 200 })) as unknown as typeof fetch,
   ]) {
     expect(await new UpdaterService().check({
       platform: 'linux', architecture: 'x64', currentVersion: '0.6.1', fetchImplementation: request,
-    })).toBeNull();
+    })).toEqual({ kind: 'unreachable' });
   }
+});
+
+test('a reachable check with nothing newer reports current', async () => {
+  const request = (async () => new Response(JSON.stringify({
+    tag_name: 'v0.1.0', assets: [],
+  }), { status: 200 })) as unknown as typeof fetch;
+
+  expect(await new UpdaterService().check({
+    platform: 'linux', architecture: 'x64', currentVersion: '0.6.1', fetchImplementation: request,
+  })).toEqual({ kind: 'current' });
 });

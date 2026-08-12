@@ -12,6 +12,7 @@ import {
   parseRelease,
   resolveAvailableUpdate,
   type IAvailableUpdate,
+  type TCheckOutcome,
 } from './updater.ts';
 
 /**
@@ -45,18 +46,21 @@ export class UpdaterService {
   /**
    * Ask GitHub what the latest release is.
    *
-   * Returns null for "nothing to offer", which covers being up to date, having
-   * no build for this machine, an asset hosted somewhere untrusted, and every
-   * kind of network failure. A check that cannot complete is not an error the
-   * user needs to see: it is one request a day whose only job is to mention a
-   * release, and failing it silently is the right cost.
+   * Three outcomes, not two. "Could not ask" is kept apart from "nothing to
+   * offer" because collapsing them made `:update` report that you were on the
+   * latest release when it had simply failed to reach GitHub -- a lie in the
+   * one place a user goes specifically to find out, and one that stops them
+   * looking again.
+   *
+   * The daily background check still treats unreachable as nothing worth
+   * saying; it is `:update`, where the user asked, that must be honest.
    */
   check = async (opts: {
     platform?: string;
     architecture?: string;
     currentVersion?: string;
     fetchImplementation?: typeof fetch;
-  } = {}): Promise<IAvailableUpdate | null> => {
+  } = {}): Promise<TCheckOutcome> => {
     const request = opts.fetchImplementation ?? fetch;
     try {
       const response = await request(RELEASE_ENDPOINT, {
@@ -70,24 +74,27 @@ export class UpdaterService {
       });
       if (!response.ok) {
         this._logger.for('check').info('The release endpoint answered %s', response.status);
-        return null;
+        return { kind: 'unreachable' };
       }
 
       const release = parseRelease({ payload: await response.json() });
       if (release === null) {
-        return null;
+        // Reached, and answered with something unusable. Not "current" -- the
+        // honest thing is that the question was not answered.
+        return { kind: 'unreachable' };
       }
-      return resolveAvailableUpdate({
+      const update = resolveAvailableUpdate({
         release,
         currentVersion: opts.currentVersion ?? APPLICATION_VERSION,
         platform: opts.platform ?? process.platform,
         architecture: opts.architecture ?? process.arch,
       });
+      return update === null ? { kind: 'current' } : { kind: 'update', update };
     } catch (error) {
       // Includes the timeout, an offline machine, and DNS. None of it is worth
       // a message: tglow's job is Telegram, and this was a courtesy.
       this._logger.for('check').info('Could not check for a release | Reason: %s', toError(error).message);
-      return null;
+      return { kind: 'unreachable' };
     }
   };
 

@@ -258,17 +258,27 @@ test('an empty file yields nothing rather than throwing', () => {
 // ── what the user reads ───────────────────────────────────────────────────
 
 test('the message names the version and how to install it', () => {
-  expect(describeUpdate({
-    update: { version: '0.7.0', assetName: 'tglow-linux-x64', size: 1 }, currentVersion: '0.6.1',
-  })).toContain('0.7.0');
-  expect(describeUpdate({
-    update: { version: '0.7.0', assetName: 'tglow-linux-x64', size: 1 }, currentVersion: '0.6.1',
-  })).toContain(':update');
+  const outcome = {
+    kind: 'update' as const,
+    update: { version: '0.7.0', assetName: 'tglow-linux-x64', size: 1 },
+  };
+  expect(describeUpdate({ outcome, currentVersion: '0.6.1' })).toContain('0.7.0');
+  expect(describeUpdate({ outcome, currentVersion: '0.6.1' })).toContain(':update');
 });
 
 test('being up to date says so, with the version you are on', () => {
-  expect(describeUpdate({ update: null, currentVersion: '0.6.1' })).toContain('0.6.1');
-  expect(describeUpdate({ update: null, currentVersion: '0.6.1' })).toContain('latest');
+  expect(describeUpdate({ outcome: { kind: 'current' }, currentVersion: '0.6.1' })).toContain('0.6.1');
+  expect(describeUpdate({ outcome: { kind: 'current' }, currentVersion: '0.6.1' })).toContain('latest');
+});
+
+// The lie this replaced: a check that could not reach GitHub reported that you
+// were on the latest release. That is wrong in the one place a user goes
+// specifically to find out, and it stops them looking again.
+test('a check that could not reach GitHub says so, and never claims you are current', () => {
+  const message = describeUpdate({ outcome: { kind: 'unreachable' }, currentVersion: '0.6.1' });
+
+  expect(message).toContain('Could not reach');
+  expect(message).not.toContain('latest');
 });
 
 // ── the URL actually fetched ──────────────────────────────────────────────

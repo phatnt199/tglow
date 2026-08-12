@@ -150,12 +150,75 @@ test('empty and whitespace-only messages are not sent', async () => {
 // Losing what someone typed is the worst possible failure.
 test('a failed send keeps the composed text', async () => {
   const { service, store, database } = buildService(
-    buildAdapter({ send: async () => { throw new Error('FLOOD_WAIT_30'); } }),
+    buildAdapter({ send: async () => { throw new Error('CHAT_WRITE_FORBIDDEN'); } }),
   );
   store.setState({ patch: { composerText: 'important' } });
   await service.send({ peerId: 'u1', text: 'important' });
   expect(store.getState().composerText).toBe('important');
-  expect(store.getState().statusMessage).toContain('FLOOD_WAIT_30');
+  expect(store.getState().statusMessage).toContain('cannot write');
+  database.close();
+});
+
+// A rate limit is not a failure to retry -- retrying inside the window is what
+// extends it, and that is how a third-party client earns a restriction. So it
+// says wait, and the raw code never reaches the user.
+test('a flood wait tells the user to wait, and never shows the raw code', async () => {
+  const { service, store, database } = buildService(
+    buildAdapter({ send: async () => { throw new Error('FLOOD_WAIT_30'); } }),
+  );
+
+  await service.send({ peerId: 'u1', text: 'hello' });
+
+  expect(store.getState().statusMessage).toContain('Rate limited');
+  expect(store.getState().statusMessage).toContain('30s');
+  expect(store.getState().statusMessage).not.toContain('FLOOD_WAIT');
+  database.close();
+});
+
+// And the next attempt is refused here rather than sent and refused there --
+// the request that would be refused is itself what lengthens the wait.
+test('a second send inside the flood wait never reaches the network', async () => {
+  let attempts = 0;
+  const { service, store, database } = buildService(
+    buildAdapter({
+      send: async () => {
+        attempts += 1;
+        throw new Error('FLOOD_WAIT_30');
+      },
+    }),
+  );
+
+  await service.send({ peerId: 'u1', text: 'one' });
+  await service.send({ peerId: 'u1', text: 'two' });
+
+  expect(attempts).toBe(1);
+  expect(store.getState().statusMessage).toContain('Rate limited');
+  database.close();
+});
+
+// The limit is recorded against the chat that earned it, because that is all
+// Telegram actually said.
+test('a chat that was not rate limited still sends', async () => {
+  let attempts = 0;
+  const { service, database } = buildService(
+    buildAdapter({
+      send: async (opts: { peerId: string }) => {
+        attempts += 1;
+        if (opts.peerId === 'u1') {
+          throw new Error('FLOOD_WAIT_30');
+        }
+        return {
+          id: 99, peerId: opts.peerId, fromId: 'me', date: 1, text: 'two', out: 1,
+          entities: [], replyToMessageId: null,
+        };
+      },
+    }),
+  );
+
+  await service.send({ peerId: 'u1', text: 'one' });
+  await service.send({ peerId: 'u2', text: 'two' });
+
+  expect(attempts).toBe(2);
   database.close();
 });
 

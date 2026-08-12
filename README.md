@@ -487,9 +487,14 @@ neither is echoed or left in your scrollback, and none of the phone number, the
 code, the password or the session string is ever written to the log.
 
 Third-party MTProto clients can attract account restrictions if they behave
-abnormally. tglow does not poll, and reports a truthful device model. It does
-not yet handle `FLOOD_WAIT`: a rate limit surfaces as a failed send with the
-error in the status line, and retrying before it expires will extend it.
+abnormally. tglow does not poll, and reports a truthful device model.
+
+A `FLOOD_WAIT` — Telegram rate-limiting your account — is handled rather than
+passed through. It used to reach the status line as `Send failed: FLOOD_WAIT_30`,
+which invites pressing Enter again, and retrying inside the window is exactly
+what extends it. tglow now says *"Rate limited by Telegram — wait 30s before
+trying again"*, and refuses the next send to that chat locally until the window
+has passed, so the retry that would make it worse never leaves the machine.
 
 ### The one request that is not to Telegram
 

@@ -193,9 +193,12 @@ const main = async (): Promise<void> => {
     // Stamped before the request rather than after it, so a machine that is
     // offline every launch does not ask on every launch.
     database.setSyncState({ key: LAST_CHECK_KEY, value: Date.now() });
-    void updater.check().then(found => {
-      if (found !== null) {
-        store.setState({ patch: { availableUpdate: found } });
+    // The background check stays quiet about a failure: it is a courtesy the
+    // user did not ask for, and an error from it would be noise. `:update`,
+    // where they did ask, says so -- see onUpdate below.
+    void updater.check().then(outcome => {
+      if (outcome.kind === 'update') {
+        store.setState({ patch: { availableUpdate: outcome.update } });
       }
     });
   }
@@ -391,11 +394,16 @@ const main = async (): Promise<void> => {
         onUpdate: async (opts: { install: boolean }): Promise<void> => {
           const { availableUpdate } = store.getState();
           if (!opts.install || availableUpdate === null) {
-            const found = await updater.check();
+            const outcome = await updater.check();
             store.setState({
               patch: {
-                availableUpdate: found,
-                  statusMessage: describeUpdate({ update: found, currentVersion: APPLICATION_VERSION }),
+                // Only a definite answer replaces what is known. A check that
+                // could not reach GitHub must not erase an update the user was
+                // already told about, and must not claim they are current.
+                availableUpdate: outcome.kind === 'update' ? outcome.update
+                  : outcome.kind === 'current' ? null
+                    : availableUpdate,
+                statusMessage: describeUpdate({ outcome, currentVersion: APPLICATION_VERSION }),
               },
             });
             return;

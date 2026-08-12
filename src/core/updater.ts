@@ -249,11 +249,33 @@ export const parseChecksums = (opts: { text: string }): Map<string, string> => {
   return digests;
 };
 
+/**
+ * What a check produced.
+ *
+ * `'unreachable'` exists because collapsing it into "no update" made tglow
+ * claim you were on the latest release when it had simply failed to ask. That
+ * is a lie in the one place a user goes specifically to find out, and it is
+ * worse than saying nothing: it actively stops them looking again.
+ */
+export type TCheckOutcome =
+  | { kind: 'update'; update: IAvailableUpdate }
+  | { kind: 'current' }
+  | { kind: 'unreachable' };
+
 /** What the user is told, once a check has happened. */
-export const describeUpdate = (opts: { update: IAvailableUpdate | null; currentVersion: string }): string =>
-  opts.update === null
-    ? `tglow ${opts.currentVersion} is the latest release`
-    : `tglow ${opts.update.version} is available — :update to install it`;
+export const describeUpdate = (opts: { outcome: TCheckOutcome; currentVersion: string }): string => {
+  switch (opts.outcome.kind) {
+    case 'update': {
+      return `tglow ${opts.outcome.update.version} is available — :update to install it`;
+    }
+    case 'current': {
+      return `tglow ${opts.currentVersion} is the latest release`;
+    }
+    default: {
+      return 'Could not reach GitHub to check for a newer tglow';
+    }
+  }
+};
 
 /**
  * The download URL for an update's asset.
