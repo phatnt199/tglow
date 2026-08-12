@@ -198,7 +198,7 @@ footer{margin-top:4.5rem;padding-bottom:2rem;color:var(--dim);font-size:.82rem}
       <p class="links" style="margin-top:1.9rem">
         <a href="https://github.com/phatnt199/tglow">Source on GitHub</a>
         <span class="sep" aria-hidden="true">·</span>
-        <a href="https://github.com/phatnt199/tglow/releases/latest">Download v0.7.0</a>
+        <a href="https://github.com/phatnt199/tglow/releases/latest">Download v0.8.0</a>
         <span class="sep" aria-hidden="true">·</span>
         <span class="muted platforms">Linux · macOS · Windows</span>
       </p>
@@ -208,7 +208,7 @@ footer{margin-top:4.5rem;padding-bottom:2rem;color:var(--dim);font-size:.82rem}
                           <span class="them">a look</span>
 <span class="n">    2</span> <span class="t">09:15</span> <span class="who">me        </span> <span class="tick">✓</span>  <span class="me">reading it now</span>
 <span class="n">    1</span> <span class="t">09:16</span> <span class="who">Tấn Phát  </span>    <span class="them">run it with <span class="cd">`bun run build`</span> before you push</span>
-<span class="cur"><span class="n">    4</span> <span class="t">09:22</span> <span class="who">me        </span> <span class="tick">✓</span>  <span class="me"><span class="bd">shipped</span> — v0.7.0 is out</span></span>
+<span class="cur"><span class="n">    4</span> <span class="t">09:22</span> <span class="who">me        </span> <span class="tick">✓</span>  <span class="me"><span class="bd">shipped</span> — v0.8.0 is out</span></span>
       </div>
       <p class="caption">Real output. The gutter counts distance from the cursor, so <kbd>3j</kbd> is obvious before you type it.</p>
     </div>
@@ -313,6 +313,11 @@ footer{margin-top:4.5rem;padding-bottom:2rem;color:var(--dim);font-size:.82rem}
         <div class="item">
           <h3>It tells you when there is a newer one</h3>
           <p>One request a day, and <kbd>:update</kbd> installs it — the published checksum is fetched first and has to match, or nothing is written. <code>update_check = false</code> if you would rather it never asked; it is the only request tglow makes to anything other than Telegram.</p>
+        </div>
+
+        <div class="item">
+          <h3>It does not misrepresent itself</h3>
+          <p>A dropped connection shows, rather than looking like a quiet afternoon. A rate limit says <em>wait 30s</em> and holds the next send back, instead of handing you <code>FLOOD_WAIT_30</code> and letting the retry extend it. And a launch draws your chats from the local cache in well under a second, rather than a blank terminal for two and a half.</p>
         </div>
 
         <div class="item">
