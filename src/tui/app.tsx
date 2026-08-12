@@ -126,6 +126,12 @@ export interface IAppProps {
    * move with no debounce of its own; MessageService.markRead owns that.
    */
   onMarkRead: (opts: { peerId: string; maxId: number }) => Promise<void>;
+  /**
+   * `:update`. `install: false` looks for a release and reports; `install: true`
+   * downloads the one already known about, verifies it against the published
+   * checksum, and puts it in place. Only ever called from the command.
+   */
+  onUpdate: (opts: { install: boolean }) => Promise<void>;
 }
 
 const SIDEBAR_WIDTH = 22;
@@ -454,7 +460,7 @@ const resolveClipboardText = (opts: {
 export const App = (props: IAppProps) => {
   const {
     store, engine, keymapService, keyNormalizer, messageSearchService, timeoutMilliseconds, tokens, resolveSenderName,
-    onSend, onEdit, onDelete, onPin, onPinChat, onReact, onForward, onSendFile, onThumbnail, onOpenMedia, onLoadOlder, onLogout, onQuit, onOpenChat, onMarkRead,
+    onSend, onEdit, onDelete, onPin, onPinChat, onReact, onForward, onSendFile, onThumbnail, onOpenMedia, onLoadOlder, onLogout, onQuit, onOpenChat, onMarkRead, onUpdate,
   } = props;
 
   // useSyncExternalStore re-subscribes whenever the `subscribe` argument's
@@ -962,6 +968,16 @@ export const App = (props: IAppProps) => {
           current: state,
           result: { state: state.engine, actions: [{ type: ActionTypes.MEDIA_OPEN }], status: 'resolved' },
         });
+        return;
+      }
+      // Two things behind one word, which is what makes it worth typing: if a
+      // newer release is already known about, install it; if not, go and look.
+      // Nothing downloads until this is typed -- the daily check only ever
+      // reports.
+      case CommandNames.UPDATE: {
+        store.setState({ patch: { statusMessage: state.availableUpdate === null ? 'Checking…' : 'Updating…' } });
+        void onUpdate({ install: state.availableUpdate !== null })
+          .catch(error => { logRejection({ method: 'onUpdate', error }); });
         return;
       }
       case CommandNames.LOGOUT: {
@@ -2516,6 +2532,7 @@ export const App = (props: IAppProps) => {
         width={width}
         confirming={isConfirming}
         warning={isWarning}
+        availableVersion={state.availableUpdate?.version ?? null}
         engine={state.engine}
         connection={state.connection}
         folder={statusFolder}

@@ -110,3 +110,24 @@ test('mouse = false hands the mouse back to the terminal', () => {
 test('a value that is neither true nor false leaves the mouse on', () => {
   expect(service.load({ filePath: writeConfiguration('api_id = 1\napi_hash = "x"\nmouse = yes\n') }).mouse).toBe(true);
 });
+
+// The only request tglow makes to anything other than Telegram, so turning it
+// off has to actually work -- and a misspelling has to leave the default alone
+// rather than silently disabling it.
+test('update_check defaults on, and only an explicit false turns it off', () => {
+  const write = (line: string): string => {
+    const path = join(mkdtempSync(join(tmpdir(), 'tglow-config-')), 'config.toml');
+    writeFileSync(path, `api_id = 1\napi_hash = "h"\n${line}\n`);
+    return path;
+  };
+  const load = (line: string): boolean =>
+    new ConfigurationService().load({ filePath: write(line) }).updateCheck;
+
+  expect(load('')).toBe(true);
+  expect(load('update_check = false')).toBe(false);
+  expect(load('update_check = 0')).toBe(false);
+  expect(load('update_check = true')).toBe(true);
+  // Not a value it understands: the default stands.
+  expect(load('update_check = "maybe"')).toBe(true);
+  expect(load('updatecheck = false')).toBe(true);
+});

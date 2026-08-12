@@ -33,4 +33,13 @@ export interface IApplicationConfiguration {
    * terminal's own behaviour, not something tglow implements.
    */
   mouse: boolean;
+  /**
+   * Whether tglow may ask GitHub, once a day, whether a newer release exists.
+   *
+   * `update_check = false` stops it entirely -- and that matters enough to be
+   * a documented key rather than a hidden default, because it is the only
+   * request tglow makes to anything other than Telegram. Nothing is ever
+   * downloaded by the check itself; installing happens only on `:update`.
+   */
+  updateCheck: boolean;
 }

@@ -19,12 +19,14 @@ import { writeFileSync } from 'node:fs';
 
 import { BindingKeys } from '../src/common/index.ts';
 import { ApplicationStoreService } from '../src/core/application-store.ts';
+import { DatabaseService } from '../src/core/cache/database.ts';
 import { createPane } from '../src/core/conversation-panes.ts';
 import type { IDialogRow, IMessageRow } from '../src/core/cache/database.ts';
 import { KeyNormalizerService } from '../src/keys/key-normalizer.ts';
 import { KeymapService } from '../src/keys/keymap.ts';
 import { VimEngineService } from '../src/keys/vim-engine.ts';
 import { MessageSearchService } from '../src/core/message-search.ts';
+import { PresenceKinds } from '../src/core/presence.ts';
 import { buildTokens } from '../src/tui/theme/index.ts';
 import { App } from '../src/tui/app.tsx';
 import { renderWithKeys } from '../src/__tests__/helpers/render.tsx';
@@ -83,6 +85,10 @@ const main = async (): Promise<void> => {
   container.bind({ key: BindingKeys.KEYMAP }).toClass(KeymapService).setScope(BindingScopes.SINGLETON);
 
   const tokens = buildTokens({ paletteName: 'sage' });
+  // Search is never used in the picture, but App requires the service. An
+  // in-memory database keeps it real without touching the user's own cache.
+  const searchDatabase = new DatabaseService();
+  searchDatabase.open({ filePath: ':memory:' });
   const store = new ApplicationStoreService();
   store.setState({
     patch: {
@@ -107,7 +113,7 @@ const main = async (): Promise<void> => {
         ['releases', { type: 'channel', isBot: false }],
         ['dana', { type: 'user', isBot: false }],
       ]),
-      presenceByPeer: new Map([['alice', { kind: 'online', at: null }]]),
+      presenceByPeer: new Map([['alice', { kind: PresenceKinds.ONLINE, seenAt: null }]]),
       conversationWidth: COLUMNS,
       conversationHeight: ROWS,
     },
@@ -123,11 +129,11 @@ const main = async (): Promise<void> => {
       tokens={tokens}
       resolveSenderName={(opts: { fromId: string | null }) =>
         ({ alice: 'Alice', me: 'me', dana: 'dana', lee: 'lee' }[opts.fromId ?? ''] ?? 'someone')}
-      messageSearchService={new MessageSearchService()}
+      messageSearchService={new MessageSearchService(searchDatabase)}
       onSend={noop} onEdit={noop} onDelete={noop} onPin={noop} onLoadOlder={noop}
       onLogout={noop} onPinChat={noop} onReact={noop} onForward={noop} onSendFile={noop}
       onThumbnail={async () => null} onOpenMedia={noop} onQuit={() => {}}
-      onOpenChat={noop} onMarkRead={noop}
+      onOpenChat={noop} onMarkRead={noop} onUpdate={noop}
     />,
     { width: COLUMNS, height: ROWS },
   );

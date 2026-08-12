@@ -36,6 +36,8 @@ export interface IStatusLineProps {
    * the status line stays exactly one row (app.tsx's STATUS_LINE_HEIGHT).
    */
   warning: boolean;
+  /** A newer release, when one is known about. Null or absent when there is none. */
+  availableVersion?: string | null;
   /**
    * Everything below is context the line shows when there is room for it, in
    * priority order, and gives up quietly when there is not -- see
@@ -195,6 +197,17 @@ const buildContext = (props: IStatusLineProps): IStatusSegment[] => {
     { text: unreadCount > 0 ? `${unreadCount} unread` : '', tone: StatusTones.ACCENT, priority: 55 },
     { text: typing ?? '', tone: StatusTones.ACCENT, priority: 70 },
     { text: unreadChats !== undefined && unreadChats > 0 ? `${unreadChats} chats waiting` : '', tone: StatusTones.DIM, priority: 15 },
+    // Above everything except a typing indicator. A release is not urgent, but
+    // it is the one thing here the user can act on and will otherwise never
+    // learn -- and it names the command, because a notice you cannot act on
+    // from where you are reading it is just noise.
+    {
+      text: props.availableVersion !== undefined && props.availableVersion !== null
+        ? `v${props.availableVersion} available · :update`
+        : '',
+      tone: StatusTones.ACCENT,
+      priority: 65,
+    },
   ];
 };
 

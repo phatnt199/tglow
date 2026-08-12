@@ -13,7 +13,14 @@ import { isApplicationError } from '@venizia/ignis-inversion';
 import { Api } from 'teleproto';
 
 import { readLine, runInteractiveLogin } from './cli/index.ts';
-import { BindingKeys } from './common/index.ts';
+import { APPLICATION_VERSION, BindingKeys } from './common/index.ts';
+import { UpdaterService } from './core/updater-service.ts';
+import {
+  LAST_CHECK_KEY,
+  buildAssetUrl,
+  describeUpdate,
+  shouldCheck,
+} from './core/updater.ts';
 import { buildContainer } from './container.ts';
 import {
   ApplicationStoreService,
@@ -118,6 +125,11 @@ const main = async (): Promise<void> => {
 
   clientService.persistSession({ client, configuration });
 
+  const updater = new UpdaterService();
+  // Anything a previous Windows install moved aside. Harmless everywhere else,
+  // and the only moment the old image is reliably unlocked.
+  updater.cleanUpAfterUpdate({ executablePath: process.execPath });
+
   const database = new DatabaseService();
   database.open({ filePath: configuration.cachePath });
 
@@ -157,6 +169,26 @@ const main = async (): Promise<void> => {
   const firstDialog = store.getState().dialogs[0];
   if (firstDialog) {
     await messageService.loadHistory({ peerId: firstDialog.peerId, limit: HISTORY_LIMIT });
+  }
+
+  // Whether a newer tglow exists, at most once a day, and never when
+  // `update_check = false`. Deliberately not awaited: it is a courtesy to the
+  // user and must not stand between them and their messages -- so it runs
+  // alongside the first frame and writes into the status line if and when it
+  // has something to say. check() does not reject.
+  if (shouldCheck({
+    enabled: configuration.updateCheck,
+    lastCheckedAt: database.getSyncState({ key: LAST_CHECK_KEY }),
+    now: Date.now(),
+  })) {
+    // Stamped before the request rather than after it, so a machine that is
+    // offline every launch does not ask on every launch.
+    database.setSyncState({ key: LAST_CHECK_KEY, value: Date.now() });
+    void updater.check().then(found => {
+      if (found !== null) {
+        store.setState({ patch: { availableUpdate: found } });
+      }
+    });
   }
 
   // Started only after the initial sync and history load have landed, so the
@@ -339,6 +371,38 @@ const main = async (): Promise<void> => {
         // way onSend/onEdit/onDelete do above.
         onMarkRead: async (opts: { peerId: string; maxId: number }): Promise<void> => {
           await messageService.markRead(opts);
+        },
+        /**
+         * `:update`. Looking and installing are one command because they are
+         * one intention -- but installing only ever happens for a release the
+         * user has already been told about, never as a side effect of looking.
+         */
+        onUpdate: async (opts: { install: boolean }): Promise<void> => {
+          const { availableUpdate } = store.getState();
+          if (!opts.install || availableUpdate === null) {
+            const found = await updater.check();
+            store.setState({
+              patch: {
+                availableUpdate: found,
+                  statusMessage: describeUpdate({ update: found, currentVersion: APPLICATION_VERSION }),
+              },
+            });
+            return;
+          }
+
+          const result = await updater.install({
+            update: availableUpdate,
+            executablePath: process.execPath,
+            assetUrl: buildAssetUrl({ update: availableUpdate }),
+          });
+          store.setState({
+            patch: {
+              statusMessage: result.message,
+              // Kept on a failure, so the notice does not vanish and leave the
+              // user unsure whether anything is still available.
+              availableUpdate: result.installed ? null : availableUpdate,
+            },
+          });
         },
       }),
     ),

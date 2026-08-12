@@ -6,6 +6,7 @@ import type { IPresence } from './presence.ts';
 import type { IImageCell } from '../tui/image-renderer.ts';
 import type { IActiveTyping } from './typing-status.ts';
 import { createGrid, type IPanePosition, type TPaneGrid } from './conversation-panes.ts';
+import type { IAvailableUpdate } from './updater.ts';
 
 export type TConnectionState = 'offline' | 'connecting' | 'connected';
 
@@ -167,6 +168,14 @@ export interface IApplicationState {
    * clears this but the user, with <C-l>.
    */
   integrityWarning: string | null;
+  /**
+   * The newer release tglow knows about, or null.
+   *
+   * Set by the once-a-day check, and by `:update` when it looks. Only ever a
+   * statement that something exists -- installing it is `:update`'s own doing,
+   * never this field's arrival.
+   */
+  availableUpdate: IAvailableUpdate | null;
   /** Which full-pane overlay is showing, if any. Orthogonal to engine.context: opening one leaves mode and pane focus exactly as they were. */
   overlay: TOverlay | null;
   /**
@@ -300,6 +309,7 @@ const INITIAL_STATE: IApplicationState = {
   connection: 'offline',
   statusMessage: null,
   integrityWarning: null,
+  availableUpdate: null,
   overlay: null,
   chatPickerQuery: '',
   chatPickerCursor: 0,

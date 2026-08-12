@@ -36,6 +36,9 @@ window.
 - **Everything a chat client owes you.** Replies, edits, deletes, pins,
   forwards, reactions, emoji, file sending, search, folders, online and
   last-seen, typing indicators, unread counts that follow your other devices.
+- **Tells you when there is a newer one.** One request a day, `:update` to
+  install it — checksum-verified, and `update_check = false` if you would
+  rather it never asked.
 - **Twelve themes**, and yours if none of them fit.
 - **Yours alone.** Your credentials, your session, your cache — all on your
   disk, at `0600`, never leaving it. See [Security](#security).
@@ -364,6 +367,7 @@ half-typed word could still become.
 | `:e` `:reload` | reload the open chat from Telegram |
 | `:view` `:open` | open the picture under the cursor at full size, in an image viewer |
 | `:send <path>` `:upload` | send a file — the composer becomes its caption, and `~` works |
+| `:update` | check for a newer tglow, and install it when one is known |
 | `:logout` | sign out on Telegram, erase the local session and cache, and quit — asks `y`/`n` first |
 
 Everything here is also a key, or is something no key should be: `:q` is
@@ -485,6 +489,39 @@ Third-party MTProto clients can attract account restrictions if they behave
 abnormally. tglow does not poll, and reports a truthful device model. It does
 not yet handle `FLOOD_WAIT`: a rate limit surfaces as a failed send with the
 error in the status line, and retrying before it expires will extend it.
+
+### The one request that is not to Telegram
+
+Once a day, at startup, tglow asks the GitHub releases API whether a newer
+version exists, and says so in the status line if there is. That is the only
+request it makes to anything other than Telegram, it sends nothing but a user
+agent naming the version, and it can be turned off:
+
+```toml
+update_check = false
+```
+
+The check never downloads anything. Installing happens only when you type
+`:update`, and then:
+
+- the published `tglow.sha256` is fetched **first**, so there is something to
+  check against before there is anything to check;
+- the binary is downloaded beside the running one, so the final rename is on
+  one filesystem and therefore atomic;
+- its SHA-256 must match the line naming it, or the download is deleted and
+  nothing is installed — a self-updater writes what will later be run as you,
+  so the one thing it must never do is install bytes it cannot account for;
+- the download URL is composed from a hard-coded `github.com` and checked
+  against it, rather than followed from the API response.
+
+On Linux and macOS the running binary is replaced in place — the process keeps
+the inode it already opened, so the tglow you are using is unaffected until you
+restart it. Windows will not touch a locked image, so the old one is moved to
+`tglow.exe.old` and removed on the next launch.
+
+If you would rather never have tglow write to its own binary, set
+`update_check = false` and install releases the way you installed the first
+one. Nothing else in tglow depends on this.
 
 ## Development
 

@@ -22,6 +22,8 @@ export class CommandNames {
   static readonly LOGOUT = 'logout';
   static readonly SEND_FILE = 'send-file';
   static readonly OPEN_MEDIA = 'open-media';
+  /** Check for a newer release, and install it when one is already known. */
+  static readonly UPDATE = 'update';
 }
 
 export type TCommandName = (typeof CommandNames)[Exclude<keyof typeof CommandNames, 'prototype'>];
@@ -46,6 +48,11 @@ export const COMMANDS: readonly ICommandSpec[] = [
   { name: CommandNames.PIN, spellings: ['pin'], description: 'Pin the message under the cursor' },
   { name: CommandNames.UNPIN, spellings: ['unpin'], description: 'Unpin the message under the cursor' },
   { name: CommandNames.RELOAD, spellings: ['reload', 'e'], description: 'Reload the open chat from Telegram' },
+  {
+    name: CommandNames.UPDATE,
+    spellings: ['update'],
+    description: 'Check for a newer tglow, and install it',
+  },
   {
     name: CommandNames.SEND_FILE,
     spellings: ['send', 'upload'],

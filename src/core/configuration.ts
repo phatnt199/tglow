@@ -124,6 +124,10 @@ export class ConfigurationService {
       // misspelled, a number -- leaves it on, which is what the renderer
       // already did before this key existed.
       mouse: raw.mouse !== 'false' && raw.mouse !== 0,
+      // Only an explicit `update_check = false` turns it off, matching how
+      // `mouse` above reads: a misspelling leaves the default in place rather
+      // than silently disabling something.
+      updateCheck: raw.update_check !== 'false' && raw.update_check !== 0,
     };
   };
 }

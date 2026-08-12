@@ -18,7 +18,7 @@ const buildConfiguration = (): IApplicationConfiguration => {
     thumbnailDirectory: '/tmp/tglow-thumbs', cachePath: join(directory, 'cache.sqlite'),
     logPath: join(directory, 'tglow.log'),
     themeDirectory: join(directory, 'themes'),
-    mouse: true,
+    mouse: true, updateCheck: true,
   };
 };
 

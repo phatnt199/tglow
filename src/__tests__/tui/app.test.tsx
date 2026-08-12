@@ -280,6 +280,10 @@ const mount = async (opts: {
   // there, when a chat has been opened or the cursor has reached the newest
   // message; markRead is purely a courtesy call outward, so nothing here
   // needs to be read back.
+  const updates: Array<{ install: boolean }> = [];
+  const onUpdate = async (request: { install: boolean }): Promise<void> => {
+    updates.push(request);
+  };
   const marked: Array<{ peerId: string; maxId: number }> = [];
   const onMarkRead = async (read: { peerId: string; maxId: number }): Promise<void> => {
     marked.push(read);
@@ -310,11 +314,12 @@ const mount = async (opts: {
       onQuit={() => { quit.push(true); }}
       onOpenChat={onOpenChat}
       onMarkRead={onMarkRead}
+      onUpdate={onUpdate}
     />,
     { width: opts.width ?? TERMINAL_WIDTH, height: opts.height ?? TERMINAL_HEIGHT },
   );
   await renderer.flush();
-  return { renderer, store, sent, composerAtSend, edited, deleted, pinned, pinnedChats, reacted, forwarded, filesSent, openedMedia, olderRequests, loggedOut, opened, marked, quit, database };
+  return { renderer, store, sent, composerAtSend, edited, deleted, pinned, pinnedChats, reacted, forwarded, filesSent, openedMedia, olderRequests, loggedOut, opened, marked, updates, quit, database };
 };
 
 test('starts in NORMAL mode with both panes on screen', async () => {
@@ -3844,4 +3849,61 @@ test('a picture is drawn no wider than the pane holding it', async () => {
     expect(request.maximumColumns).toBeLessThanOrEqual(request.paneWidth);
   }
   renderer.renderer.destroy();
+});
+
+// ── :update ───────────────────────────────────────────────────────────────
+//
+// One word behind two intentions, which is what makes it worth typing: look if
+// nothing is known, install what is. Nothing downloads until it is typed.
+
+/** Types a command and runs it, reusing typeCommand above. */
+const runCommand = async (renderer: TestRendererSetup, command: string): Promise<void> => {
+  await typeCommand(renderer, command);
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+};
+
+test(':update with nothing known asks rather than installing', async () => {
+  const { renderer, updates } = await mount();
+
+  await runCommand(renderer, 'update');
+
+  expect(updates).toEqual([{ install: false }]);
+});
+
+test(':update with a release already known installs it', async () => {
+  const { renderer, store, updates } = await mount();
+  act(() => {
+    store.setState({
+      patch: { availableUpdate: { version: '9.9.9', assetName: 'tglow-linux-x64', size: 1 } },
+    });
+  });
+  await renderer.flush();
+
+  await runCommand(renderer, 'update');
+
+  expect(updates).toEqual([{ install: true }]);
+});
+
+// The notification itself. A release is the one thing on the status line the
+// user can act on and would otherwise never learn about, so it names the
+// command -- a notice you cannot act on from where you read it is just noise.
+test('a known release is announced on the status line, with the command', async () => {
+  const { renderer, store } = await mount();
+  act(() => {
+    store.setState({
+      patch: { availableUpdate: { version: '9.9.9', assetName: 'tglow-linux-x64', size: 1 } },
+    });
+  });
+  await renderer.flush();
+
+  const frame = renderer.captureCharFrame();
+  expect(frame).toContain('v9.9.9 available');
+  expect(frame).toContain(':update');
+});
+
+test('with no release known the status line says nothing about updates', async () => {
+  const { renderer } = await mount();
+
+  expect(renderer.captureCharFrame()).not.toContain('available');
 });
