@@ -996,3 +996,86 @@ test('a sent file clears the composer and lands in the view', async () => {
   expect(store.getState().composerText).toBe('');
   database.close();
 });
+
+// ── the startup fetch yielding to the user ────────────────────────────────
+//
+// Startup loads the first chat while the frame is already on screen, so the
+// user can open a different one before it lands. The success patch sets
+// activePeerId unconditionally, so without a guard the startup fetch replaces
+// whatever they opened -- seconds after they opened it.
+
+test('a startup load abandons rather than replacing the chat the user opened', async () => {
+  let release: ((rows: never[]) => void) | null = null;
+  const { service, store, database } = buildService(
+    buildAdapter({
+      fetchHistory: () => new Promise(resolve => { release = resolve as never; }),
+    }),
+  );
+
+  const inFlight = service.loadHistory({ peerId: 'u1', limit: 50, abandonIfSwitched: true });
+  // The user opens something else while it is in flight.
+  store.setState({ patch: { activePeerId: 'u2', messages: [] } });
+  release!([]);
+  await inFlight;
+
+  expect(store.getState().activePeerId).toBe('u2');
+});
+
+// The other direction, and just as important: onOpenChat must never abandon.
+// There the user asked for exactly this chat, and dropping it would be the key
+// doing nothing at all.
+test('an ordinary open publishes even if something else was active first', async () => {
+  const { service, store, database } = buildService(buildAdapter());
+  store.setState({ patch: { activePeerId: 'u2' } });
+
+  await service.loadHistory({ peerId: 'u1', limit: 50 });
+
+  expect(store.getState().activePeerId).toBe('u1');
+  database.close();
+});
+
+// The quieter half: the prologue resets paging state before any await, so a
+// startup fetch that enters late would wreck the opened chat's paging without
+// ever publishing a message.
+test('a startup load that is already too late does not touch paging state', async () => {
+  const { service, store, database } = buildService(buildAdapter());
+  store.setState({ patch: { activePeerId: 'u2', reachedOldest: true, loadingOlder: true } });
+
+  await service.loadHistory({ peerId: 'u1', limit: 50, abandonIfSwitched: true });
+
+  expect(store.getState().reachedOldest).toBe(true);
+  expect(store.getState().loadingOlder).toBe(true);
+  database.close();
+});
+
+// What lets the first frame carry a real conversation rather than an empty box.
+test('openCached publishes the cache with no network at all', () => {
+  let asked = 0;
+  const { service, store, database } = buildService(
+    buildAdapter({ fetchHistory: async () => { asked += 1; return []; } }),
+  );
+  database.insertMessages({
+    messages: [{
+      peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'from the cache', out: 0,
+      entities: [], replyToMessageId: null,
+    }],
+  });
+
+  service.openCached({ peerId: 'u1', limit: 50 });
+
+  expect(asked).toBe(0);
+  expect(store.getState().activePeerId).toBe('u1');
+  expect(store.getState().messages.map(message => message.text)).toEqual(['from the cache']);
+  database.close();
+});
+
+// Nothing has been asked of the server, so whether there is more history is
+// genuinely unknown -- and claiming either way is a guess the pager acts on.
+test('openCached leaves reachedOldest alone', () => {
+  const { service, store, database } = buildService(buildAdapter());
+
+  service.openCached({ peerId: 'u1', limit: 50 });
+
+  expect(store.getState().reachedOldest).toBe(false);
+  database.close();
+});

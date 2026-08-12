@@ -21,6 +21,9 @@ import type { TConnectionState } from './application-store.ts';
  * costs nothing measurable and is the only signal available.
  */
 
+/** What `watchConnection` hands back: call it to stop looking. */
+export type TStopWatching = () => void;
+
 /** How often to look. Fast enough to catch a drop while it still matters, slow enough to be free. */
 export const CONNECTION_POLL_MILLISECONDS = 2_000;
 
@@ -50,7 +53,7 @@ export const watchConnection = (opts: {
   intervalMilliseconds?: number;
   /** Injected so tests do not need a real timer. */
   schedule?: (callback: () => void, milliseconds: number) => { cancel: () => void };
-}): (() => void) => {
+}): TStopWatching => {
   let last: TConnectionState | null = null;
 
   const tick = (): void => {

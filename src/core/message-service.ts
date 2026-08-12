@@ -284,8 +284,68 @@ export class MessageService {
     reactions: message.reactions,
   }));
 
-  loadHistory = async (opts: { peerId: string; limit: number }): Promise<void> => {
+  /**
+   * Publish what the cache already holds for a chat, without asking Telegram.
+   *
+   * Synchronous, because bun:sqlite is: this is what lets the first frame carry
+   * a real conversation instead of an empty box. Startup used to await five
+   * network round trips before the renderer existed at all, so the terminal sat
+   * blank for two and a half seconds and then produced everything at once.
+   *
+   * Deliberately does not touch `reachedOldest`: nothing has been asked of the
+   * server yet, so whether there is more history is genuinely unknown, and
+   * claiming either way would be a guess the pager then acts on.
+   */
+  /**
+   * Whether this load should give up because the user has moved on.
+   *
+   * False for every ordinary open: only the startup fetch asks to be
+   * abandonable, because it is the only one nobody requested.
+   */
+  private abandoned = (opts: { peerId: string; abandonIfSwitched?: boolean }): boolean => {
+    if (opts.abandonIfSwitched !== true) {
+      return false;
+    }
+    const live = this._store.getState().activePeerId;
+    return live !== null && live !== opts.peerId;
+  };
+
+  openCached = (opts: { peerId: string; limit: number }): void => {
+    const messages = this.forDisplay({ rows: this._database.listMessages(opts) });
+    this._loadedCount = messages.length;
+    this._store.setState({
+      patch: {
+        messages,
+        messageCursor: this.cursorAtNewest({ messages }),
+        activePeerId: opts.peerId,
+      },
+    });
+  };
+
+  loadHistory = async (opts: {
+    peerId: string;
+    limit: number;
+    /**
+     * Give up rather than publish, if the user has opened a different chat
+     * while this was in flight.
+     *
+     * Only the startup fetch passes it. `onOpenChat` must never abandon: there
+     * the user asked for exactly this chat, and dropping it would be the key
+     * doing nothing. Startup is the opposite -- nobody asked, so it must yield
+     * to anybody who did.
+     */
+    abandonIfSwitched?: boolean;
+  }): Promise<void> => {
     const { peerId, limit } = opts;
+    // Before the prologue below, in the same synchronous tick. That prologue
+    // resets _loadedCount, _loadingOlderFor and the paging flags -- so a
+    // startup fetch entering after the user has already opened something else
+    // would destroy that chat's paging state without ever publishing a
+    // message, which is the quieter half of the same bug.
+    if (this.abandoned({ peerId, abandonIfSwitched: opts.abandonIfSwitched })) {
+      return;
+    }
+
     // A fresh chat starts with one page and nothing known about what is behind
     // it. Reset before the await, not after: opening a chat while another's
     // older page is still in flight must not leave that flag set on the new
@@ -297,6 +357,13 @@ export class MessageService {
     try {
       const fetched = await this._adapter.fetchHistory({ peerId, limit });
       this._database.insertMessages({ messages: this.toCacheRows({ messages: fetched }) });
+      // After the await, before anything is published. The success patch sets
+      // activePeerId unconditionally, so without this a startup fetch landing
+      // at t+2s replaces whatever chat the user opened at t+300ms.
+      if (this.abandoned({ peerId, abandonIfSwitched: opts.abandonIfSwitched })) {
+        return;
+      }
+
       const messages = this.forDisplay({ rows: this._database.listMessages({ peerId, limit }) });
       this._loadedCount = messages.length;
       this._store.setState({

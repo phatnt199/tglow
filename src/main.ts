@@ -152,32 +152,31 @@ const main = async (): Promise<void> => {
     read: () => client.connected,
     onChange: connection => { store.setState({ patch: { connection } }); },
   });
-  await dialogService.sync();
+  const folderService = container.get<FolderService>({ key: BindingKeys.FOLDER_SERVICE });
 
-  // After the dialogs, because folder membership is resolved against them and
-  // a rail published first would show every folder holding nothing.
-  await container.get<FolderService>({ key: BindingKeys.FOLDER_SERVICE }).sync();
-
-  // After dialogService.sync(), because a recovered message can only be
-  // cached once its chat has a peers row, and sync() is what writes those.
-  // Before firstDialog is read and before the first loadHistory() call below
-  // -- catch-up hands every message it recovers to the same
-  // UpdateService.apply a live event goes through, and that also touches
-  // this chat's dialog row (touchDialog), so a chat catch-up just heard from
-  // can still be the one firstDialog picks below, and opens already
-  // containing what was missed rather than needing a second fetch.
+  // Everything the cache already knows, published before a single network call
+  // -- which is what lets the first frame be a real screen rather than a blank
+  // terminal. These reads are synchronous (bun:sqlite) and cost microseconds.
   //
-  // Awaited, and unguarded: catchUp() does not reject. Running here rather
-  // than last used to cost the user its integrity warnings -- loadHistory()'s
-  // success patch below clears statusMessage unconditionally, so "some missed
-  // messages could not be saved" was erased before the first frame. Those
-  // warnings now go to IApplicationState.integrityWarning, which nothing but
-  // the user's own <C-l> clears, so this ordering costs nothing.
-  await differenceService.catchUp();
-
-  const firstDialog = store.getState().dialogs[0];
-  if (firstDialog) {
-    await messageService.loadHistory({ peerId: firstDialog.peerId, limit: HISTORY_LIMIT });
+  // The five awaited round trips that used to run here now run after the
+  // renderer exists, in boot() below. Before that they held the terminal blank
+  // for about two and a half seconds and then produced the entire interface at
+  // once, with no indication in between that anything was happening at all.
+  const seededDialogs = database.listDialogs();
+  const seededPeerId = seededDialogs[0]?.peerId ?? null;
+  store.setState({
+    patch: {
+      dialogs: seededDialogs,
+      presenceByPeer: database.listPresence(),
+      folders: folderService.listWithAllChats(),
+      peerKinds: database.listPeerKinds(),
+      // So a first-ever run, whose cache is empty, reads as "working on it"
+      // rather than as "you have no chats". dialogService.sync() clears it.
+      statusMessage: 'Syncing…',
+    },
+  });
+  if (seededPeerId !== null) {
+    messageService.openCached({ peerId: seededPeerId, limit: HISTORY_LIMIT });
   }
 
   // Whether a newer tglow exists, at most once a day, and never when
@@ -206,7 +205,10 @@ const main = async (): Promise<void> => {
   // Started only after the initial sync and history load have landed, so the
   // first live message to arrive republishes against a cache and a store
   // that already reflect a full loadHistory rather than racing it from zero.
-  const stopReceivingUpdates = updateService.start();
+  // Assigned by boot() below, after the frame exists. Nullable and optional-
+  // called at both teardown sites, because Ctrl-C during loading would
+  // otherwise read it before assignment and crash on the way out.
+  let stopReceivingUpdates: (() => void) | null = null;
 
   // Silently drawing sage when the user asked for something else is the
   // confusing failure: they edit the theme file, see no change, and cannot
@@ -225,7 +227,7 @@ const main = async (): Promise<void> => {
   const root = createRoot(renderer);
 
   const quit = (): void => {
-    stopReceivingUpdates();
+    stopReceivingUpdates?.();
     stopWatchingConnection();
     renderer.destroy();
     database.close();
@@ -264,7 +266,7 @@ const main = async (): Promise<void> => {
       logger.error('Could not sign out on Telegram | Reason: %s', toError(error).message);
     }
 
-    stopReceivingUpdates();
+    stopReceivingUpdates?.();
     stopWatchingConnection();
     database.close();
 
@@ -426,6 +428,45 @@ const main = async (): Promise<void> => {
       }),
     ),
   );
+
+  /**
+   * Everything that needs the network, now that there is a frame to put it in.
+   *
+   * The order inside is the one this has always had, and each step still needs
+   * the one before it: folder membership is resolved against the dialogs, and
+   * catch-up can only cache a recovered message once its chat has a peers row,
+   * which is what dialogService.sync() writes.
+   *
+   * What changed is only that it happens *after* the renderer, so the user is
+   * looking at their chats -- read from the cache a moment ago -- while it runs.
+   */
+  const boot = async (): Promise<void> => {
+    await dialogService.sync();
+    await folderService.sync();
+    await differenceService.catchUp();
+
+    // Whatever the user opened themselves wins. They have had a usable screen
+    // for the whole of the above and may well have moved; the seeded chat is
+    // only refreshed if it is still the one on screen.
+    const current = store.getState();
+    const target = current.activePeerId ?? current.dialogs[0]?.peerId ?? null;
+    if (target !== null && current.activePeerId === seededPeerId) {
+      await messageService.loadHistory({ peerId: target, limit: HISTORY_LIMIT, abandonIfSwitched: true });
+    }
+
+    stopReceivingUpdates = updateService.start();
+  };
+
+  // The catch is load-bearing, not decorative. This runs unawaited under the
+  // alternate screen now, so an escaping rejection would have Node print a
+  // stack trace directly into the interface -- which is exactly the class of
+  // corruption installFileLogger exists to prevent.
+  void boot().catch(error => {
+    ApplicationLogger.get('boot').error('Startup sync failed | Reason: %s', toError(error).message);
+    store.setState({
+      patch: { statusMessage: `Could not finish syncing: ${toError(error).message}` },
+    });
+  });
 };
 
 await main();
