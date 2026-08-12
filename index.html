@@ -198,7 +198,7 @@ footer{margin-top:4.5rem;padding-bottom:2rem;color:var(--dim);font-size:.82rem}
       <p class="links" style="margin-top:1.9rem">
         <a href="https://github.com/phatnt199/tglow">Source on GitHub</a>
         <span class="sep" aria-hidden="true">·</span>
-        <a href="https://github.com/phatnt199/tglow/releases/latest">Download v0.6.1</a>
+        <a href="https://github.com/phatnt199/tglow/releases/latest">Download v0.7.0</a>
         <span class="sep" aria-hidden="true">·</span>
         <span class="muted platforms">Linux · macOS · Windows</span>
       </p>
@@ -208,7 +208,7 @@ footer{margin-top:4.5rem;padding-bottom:2rem;color:var(--dim);font-size:.82rem}
                           <span class="them">a look</span>
 <span class="n">    2</span> <span class="t">09:15</span> <span class="who">me        </span> <span class="tick">✓</span>  <span class="me">reading it now</span>
 <span class="n">    1</span> <span class="t">09:16</span> <span class="who">Tấn Phát  </span>    <span class="them">run it with <span class="cd">`bun run build`</span> before you push</span>
-<span class="cur"><span class="n">    4</span> <span class="t">09:22</span> <span class="who">me        </span> <span class="tick">✓</span>  <span class="me"><span class="bd">shipped</span> — v0.6.1 is out</span></span>
+<span class="cur"><span class="n">    4</span> <span class="t">09:22</span> <span class="who">me        </span> <span class="tick">✓</span>  <span class="me"><span class="bd">shipped</span> — v0.7.0 is out</span></span>
       </div>
       <p class="caption">Real output. The gutter counts distance from the cursor, so <kbd>3j</kbd> is obvious before you type it.</p>
     </div>
@@ -308,6 +308,11 @@ footer{margin-top:4.5rem;padding-bottom:2rem;color:var(--dim);font-size:.82rem}
         <div class="item">
           <h3>More than one conversation</h3>
           <p><kbd>&lt;C-w&gt;\</kbd> puts a chat in a new column, <kbd>&lt;C-w&gt;-</kbd> stacks one underneath, and <kbd>&lt;C-w&gt;hjkl</kbd> moves between them. The panes you are not in stay live and keep their own scroll position — but only the focused one has a composer, so <kbd>Enter</kbd> is never ambiguous.</p>
+        </div>
+
+        <div class="item">
+          <h3>It tells you when there is a newer one</h3>
+          <p>One request a day, and <kbd>:update</kbd> installs it — the published checksum is fetched first and has to match, or nothing is written. <code>update_check = false</code> if you would rather it never asked; it is the only request tglow makes to anything other than Telegram.</p>
         </div>
 
         <div class="item">
