@@ -3,7 +3,7 @@ import { test, expect } from 'bun:test';
 // Concrete module, not the core/ barrel -- see src/tui/action-reducer.ts for why.
 import { ApplicationStoreService, type IApplicationState } from '../../core/application-store.ts';
 import { ActionTypes, INITIAL_ENGINE_STATE, Operators, VimContexts, VimModes } from '../../keys/common/index.ts';
-import { applyAction } from '../../tui/action-reducer.ts';
+import { applyAction, resolveVisibleDialogs } from '../../tui/action-reducer.ts';
 
 const buildState = (patch: Partial<IApplicationState> = {}): IApplicationState => {
   const store = new ApplicationStoreService();
@@ -804,4 +804,70 @@ test('the last pane refuses to close, and says why', () => {
 
   expect(patch.paneGrid).toBeUndefined();
   expect(patch.statusMessage).toBe('The last conversation pane stays open');
+});
+
+// ── the chat cursor and the folder filter ─────────────────────────────────
+//
+// The sidebar draws the *filtered* list (app.tsx passes visibleDialogs) with
+// state.chatCursor as its index -- while the cursor was clamped against the
+// unfiltered dialogs and Enter opened from the unfiltered dialogs. With a
+// folder active those are different lists, so the highlighted chat and the
+// opened chat were different chats.
+
+const withFolder = (): IApplicationState => buildState({
+  dialogs: [
+    { peerId: 'a', title: 'A', pinned: 0, unreadCount: 0, lastMessageAt: 3, topMessageId: 1, readOutboxMaxId: 0, readInboxMaxId: 0, preview: null },
+    { peerId: 'b', title: 'B', pinned: 0, unreadCount: 0, lastMessageAt: 2, topMessageId: 1, readOutboxMaxId: 0, readInboxMaxId: 0, preview: null },
+    { peerId: 'c', title: 'C', pinned: 0, unreadCount: 0, lastMessageAt: 1, topMessageId: 1, readOutboxMaxId: 0, readInboxMaxId: 0, preview: null },
+  ],
+  // A folder holding only the last two, so filtered and unfiltered disagree.
+  folders: [{
+    id: 7, title: 'Work', emoticon: null, ord: 0,
+    pinnedPeers: [], includePeers: ['b', 'c'], excludePeers: [],
+    contacts: false, nonContacts: false, groups: false, broadcasts: false, bots: false,
+    excludeMuted: false, excludeRead: false, excludeArchived: false,
+  }],
+  activeFolderId: 7,
+  chatCursor: 0,
+});
+
+test('the cursor cannot leave the filtered list it is drawn in', () => {
+  const patch = applyAction({
+    state: withFolder(),
+    action: { type: ActionTypes.CURSOR_MOVE, unit: 'chat', delta: 2 },
+  });
+
+  // Two chats are visible, so the last index is 1 -- not 2, which is where
+  // clamping against the unfiltered three would have left it, pointing at a
+  // row the sidebar does not draw.
+  expect(patch.chatCursor).toBe(1);
+});
+
+test('the last chat means the last visible chat', () => {
+  const patch = applyAction({
+    state: withFolder(),
+    action: { type: ActionTypes.CURSOR_EDGE, unit: 'chat', edge: 'last' },
+  });
+
+  expect(patch.chatCursor).toBe(1);
+});
+
+// The other half of the same bug, at the point it actually bit: Enter read the
+// unfiltered dialogs, so with a folder active it opened a chat other than the
+// highlighted one. App uses the same resolver now, which is why it is exported
+// rather than duplicated.
+test('the cursor and the opened chat come from the same list', () => {
+  const state = withFolder();
+  const visible = resolveVisibleDialogs({ state });
+
+  expect(visible.map(dialog => dialog.peerId)).toEqual(['b', 'c']);
+  // Index 0 of what is drawn is 'b' -- while the unfiltered list's index 0 is
+  // 'a', which is the chat that used to open.
+  expect(visible[0]!.peerId).not.toBe(state.dialogs[0]!.peerId);
+});
+
+test('with no folder filtering, the visible list is every chat', () => {
+  const state = buildState({ folders: [], activeFolderId: 0 });
+
+  expect(resolveVisibleDialogs({ state })).toEqual(state.dialogs);
 });

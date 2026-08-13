@@ -52,7 +52,7 @@ import {
   type IEngineState, type IResolveResult, type TAction,
 } from '../keys/common/index.ts';
 import type { KeyNormalizerService, KeymapService, VimEngineService } from '../keys/index.ts';
-import { applyAction, resolveSearchMatchIndices } from './action-reducer.ts';
+import { applyAction, resolveVisibleDialogs, resolveSearchMatchIndices } from './action-reducer.ts';
 import { ChatPicker, CommandLine, ContextMenu, ReactionPicker, resolveChatPickerHeight, resolveWhichKeyHeight, SEARCH_OVERLAY_HEIGHT, SearchOverlay, WhichKey } from './overlays/index.ts';
 import { buildChatMenu, buildMessageMenu, MenuActions, resolveMenuPosition, resolveMenuWidth } from './context-menu.ts';
 import {
@@ -659,7 +659,10 @@ export const App = (props: IAppProps) => {
         }
 
         case ActionTypes.CHAT_OPEN: {
-          const target = accumulated.dialogs[accumulated.chatCursor];
+          // From the *visible* list, which is the one the cursor is drawn
+          // into. Reading the unfiltered dialogs here opened a different chat
+          // from the highlighted one whenever a folder was filtering.
+          const target = resolveVisibleDialogs({ state: accumulated })[accumulated.chatCursor];
           if (target) {
             const { peerId } = target;
             // onMarkRead is chained onto onOpenChat's own resolution, not

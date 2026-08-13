@@ -8,7 +8,8 @@ import { getError } from '@venizia/ignis-inversion';
 import type { IApplicationState } from '../core/application-store.ts';
 // Same reasoning as the type-only import above -- IMessageRow is defined in
 // cache/database.ts, and this stays off the core/ barrel's crash path too.
-import type { IMessageRow } from '../core/cache/database.ts';
+import type { IDialogRow, IMessageRow } from '../core/cache/database.ts';
+import { resolveFolderMembership } from '../core/folder-service.ts';
 import { ActionTypes, Operators, UNNAMED_REGISTER, VimContexts, VimModes, type TAction } from '../keys/common/index.ts';
 import {
   closePane,
@@ -22,6 +23,30 @@ import {
   type IPanePosition,
 } from '../core/conversation-panes.ts';
 import { extractLinkUrls } from './entities.ts';
+
+/**
+ * The chats the sidebar is actually drawing.
+ *
+ * `chatCursor` indexes this list, because this is the list the cursor is drawn
+ * into (app.tsx hands ChatList `visibleDialogs`). It used to be clamped
+ * against the unfiltered `dialogs` and Enter used to open from them too -- so
+ * with a folder active, the highlighted chat and the chat that opened were
+ * different chats, and moving down far enough parked the cursor on a row the
+ * sidebar does not draw at all.
+ *
+ * Exported because App resolves the same list when opening one, and two
+ * copies of this rule would be two chances for them to disagree again.
+ */
+export const resolveVisibleDialogs = (opts: { state: IApplicationState }): IDialogRow[] => {
+  const folder = opts.state.folders.find(candidate => candidate.id === opts.state.activeFolderId)
+    ?? opts.state.folders[0]
+    ?? null;
+  return folder === null
+    ? opts.state.dialogs
+    : resolveFolderMembership({
+      folder, dialogs: opts.state.dialogs, peerKinds: opts.state.peerKinds,
+    });
+};
 
 const clamp = (opts: { value: number; maximum: number }): number => {
   if (opts.maximum < 0) {
@@ -112,12 +137,17 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
         };
       }
       return {
-        chatCursor: clamp({ value: state.chatCursor + action.delta, maximum: state.dialogs.length - 1 }),
+        chatCursor: clamp({
+          value: state.chatCursor + action.delta,
+          maximum: resolveVisibleDialogs({ state }).length - 1,
+        }),
       };
     }
 
     case ActionTypes.CURSOR_EDGE: {
-      const last = (action.unit === 'message' ? state.messages.length : state.dialogs.length) - 1;
+      const last = (action.unit === 'message'
+        ? state.messages.length
+        : resolveVisibleDialogs({ state }).length) - 1;
       const target = action.edge === 'first' ? 0 : clamp({ value: last, maximum: last });
       return action.unit === 'message' ? { messageCursor: target } : { chatCursor: target };
     }
