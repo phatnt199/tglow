@@ -47,7 +47,7 @@ export class KeymapService {
       action: count => [{ type: ActionTypes.CURSOR_MOVE, unit: 'message', delta: -count }],
     },
     {
-      context: '*', mode: VimModes.NORMAL, keys: 'gg', description: 'Oldest loaded message',
+      context: '*', mode: VimModes.NORMAL, keys: 'gg', description: 'Oldest loaded',
       action: () => [{ type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'first' }],
     },
     // OpenTUI lowercases shifted letters into `name` and sets `shift` separately
@@ -156,20 +156,20 @@ export class KeymapService {
     // Pin. Shifted rather than a bare `p`, which vim spends on paste and this
     // project will want for the same when registers gain one.
     {
-      context: '*', mode: VimModes.NORMAL, keys: '<S-p>', description: 'Pin or unpin the message',
+      context: '*', mode: VimModes.NORMAL, keys: '<S-p>', description: 'Pin or unpin',
       action: () => [{ type: ActionTypes.PIN_TOGGLE }],
     },
     // Open the picture properly. A terminal that cannot display an image
     // cannot be made to, so this hands the real file to whatever the desktop
     // uses to open pictures -- which is where the actual pixels are.
     {
-      context: '*', mode: VimModes.NORMAL, keys: '<S-o>', description: 'Open the picture in a viewer',
+      context: '*', mode: VimModes.NORMAL, keys: '<S-o>', description: 'Open the picture',
       action: () => [{ type: ActionTypes.MEDIA_OPEN }],
     },
     // Forward. Opens the same chat picker <C-p> does, aimed at a different
     // outcome -- choosing a chat forwards into it rather than opening it.
     {
-      context: '*', mode: VimModes.NORMAL, keys: '<S-f>', description: 'Forward the message to another chat',
+      context: '*', mode: VimModes.NORMAL, keys: '<S-f>', description: 'Forward to a chat',
       action: () => [{ type: ActionTypes.FORWARD_START }],
     },
     // React. `r` is reply, so `R` is the shifted neighbour of it -- the two
@@ -350,7 +350,7 @@ export class KeymapService {
     },
     // jk is how this author leaves insert mode; Esc is kept as the vim default.
     {
-      context: '*', mode: VimModes.INSERT, keys: '<A-return>', description: 'New line in the message',
+      context: '*', mode: VimModes.INSERT, keys: '<A-return>', description: 'New line',
       action: () => [{ type: ActionTypes.COMPOSER_INSERT_TEXT, text: '\n' }],
     },
     {
@@ -427,7 +427,7 @@ export class KeymapService {
       action: () => [{ type: ActionTypes.SEARCH_CYCLE, direction: 'next' }],
     },
     {
-      context: '*', mode: VimModes.NORMAL, keys: '<S-n>', description: 'Previous search match',
+      context: '*', mode: VimModes.NORMAL, keys: '<S-n>', description: 'Previous match',
       action: () => [{ type: ActionTypes.SEARCH_CYCLE, direction: 'previous' }],
     },
 

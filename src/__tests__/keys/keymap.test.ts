@@ -816,3 +816,17 @@ test('the same keys still move the message cursor in the conversation', () => {
   expect(engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('g', { shift: true }), keymap }).actions)
     .toEqual([{ type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'last' }]);
 });
+
+// The which-key popup gives a description 20 columns and ellipsises the rest
+// (which-key.tsx). Six entries were being cut mid-word, which is the one thing
+// a help popup must not do -- so the table says what fits, and this refuses to
+// let a new binding quietly reintroduce the guillotine.
+test('every description fits the column the popup gives it', () => {
+  const WIDTH = 20;
+  const tooLong = build().keymapService
+    .describe({ mode: VimModes.NORMAL, context: VimContexts.MESSAGES })
+    .filter(entry => entry.description.length > WIDTH)
+    .map(entry => `${entry.keys}: ${entry.description}`);
+
+  expect(tooLong).toEqual([]);
+});

@@ -409,6 +409,7 @@ by accident.
 | `<C-d>` / `<C-u>` | half page down / up |
 | `gf` | focus the chat list |
 | `]f` / `[f` | next / previous chat folder |
+| `]u` / `[u` | next / previous chat with unread messages, and open it |
 | `Enter` (chat list) | open the chat |
 | `Esc` (chat list) | back to messages, without opening anything |
 
