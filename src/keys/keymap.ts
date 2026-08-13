@@ -280,6 +280,31 @@ export class KeymapService {
       context: VimContexts.CHAT_LIST, mode: VimModes.NORMAL, keys: 'k', description: 'Previous chat',
       action: count => [{ type: ActionTypes.CURSOR_MOVE, unit: 'chat', delta: -count }],
     },
+    // The same motions the conversation has, scoped to the chat list so they
+    // move the thing the user is actually looking at. Without these, `gg` and
+    // `<S-g>` from the sidebar resolve to the `context: '*'` bindings above
+    // and silently move the *message* cursor in a pane nobody is watching --
+    // which App then has to defend against when deciding whether a chat has
+    // been read (see CURSOR_MOVE in action-reducer.ts).
+    //
+    // A CHAT_LIST binding wins over a '*' one for the same key, so these
+    // shadow rather than collide.
+    {
+      context: VimContexts.CHAT_LIST, mode: VimModes.NORMAL, keys: 'gg', description: 'First chat',
+      action: () => [{ type: ActionTypes.CURSOR_EDGE, unit: 'chat', edge: 'first' }],
+    },
+    {
+      context: VimContexts.CHAT_LIST, mode: VimModes.NORMAL, keys: '<S-g>', description: 'Last chat',
+      action: () => [{ type: ActionTypes.CURSOR_EDGE, unit: 'chat', edge: 'last' }],
+    },
+    {
+      context: VimContexts.CHAT_LIST, mode: VimModes.NORMAL, keys: '<C-d>', description: 'Half page down',
+      action: count => [{ type: ActionTypes.CURSOR_MOVE, unit: 'chat', delta: HALF_PAGE_MESSAGES * count }],
+    },
+    {
+      context: VimContexts.CHAT_LIST, mode: VimModes.NORMAL, keys: '<C-u>', description: 'Half page up',
+      action: count => [{ type: ActionTypes.CURSOR_MOVE, unit: 'chat', delta: -HALF_PAGE_MESSAGES * count }],
+    },
     {
       context: VimContexts.CHAT_LIST, mode: VimModes.NORMAL, keys: '<return>', description: 'Open chat',
       action: () => [

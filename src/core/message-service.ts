@@ -962,10 +962,12 @@ export class MessageService {
   markRead = async (opts: { peerId: string; maxId: number }): Promise<void> => {
     const { peerId, maxId } = opts;
     const now = Date.now();
-    const last = this._lastMarkReadAt.get(peerId);
-    if (last !== undefined && now - last < MARK_READ_DEBOUNCE_MILLISECONDS) {
+    const previous = this._lastMarkReadAt.get(peerId);
+    if (previous !== undefined && now - previous < MARK_READ_DEBOUNCE_MILLISECONDS) {
       return;
     }
+    // Stamped before the call, not after: two reads racing must not both
+    // reach Telegram. Rolled back on failure -- see the catch.
     this._lastMarkReadAt.set(peerId, now);
 
     try {
@@ -976,6 +978,16 @@ export class MessageService {
       // take that down. The badge stays as it was -- nothing was actually
       // read as far as the server is concerned.
       this._logger.for(this.markRead.name).error('Could not mark read | Reason: %s', error);
+      // And the debounce is rolled back. It exists to stop a cursor resting on
+      // the newest message from calling this on every keystroke -- not to make
+      // a failure wait two seconds before it may be retried. Left stamped, a
+      // dropped request also consumed the window that would have corrected it,
+      // so the badge stayed wrong until the user did something else entirely.
+      if (previous === undefined) {
+        this._lastMarkReadAt.delete(peerId);
+      } else {
+        this._lastMarkReadAt.set(peerId, previous);
+      }
       return;
     }
 

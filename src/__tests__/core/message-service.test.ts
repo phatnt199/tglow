@@ -1079,3 +1079,40 @@ test('openCached leaves reachedOldest alone', () => {
   expect(store.getState().reachedOldest).toBe(false);
   database.close();
 });
+
+// The debounce exists to stop a cursor resting on the newest message from
+// calling markRead on every keystroke. It is not there to make a *failure*
+// wait two seconds before it may be retried -- and left stamped, a dropped
+// request also consumed the window that would have corrected the badge.
+test('a failed markRead may be retried at once', async () => {
+  let attempts = 0;
+  const { service, database } = buildService(
+    buildAdapter({
+      markRead: async () => {
+        attempts += 1;
+        throw new Error('network');
+      },
+    }),
+  );
+
+  await service.markRead({ peerId: 'u1', maxId: 5 });
+  await service.markRead({ peerId: 'u1', maxId: 5 });
+
+  expect(attempts).toBe(2);
+  database.close();
+});
+
+// And a success still holds the window, or a cursor sitting on the newest
+// message earns a self-inflicted FLOOD_WAIT.
+test('a successful markRead still debounces the next one', async () => {
+  let attempts = 0;
+  const { service, database } = buildService(
+    buildAdapter({ markRead: async () => { attempts += 1; } }),
+  );
+
+  await service.markRead({ peerId: 'u1', maxId: 5 });
+  await service.markRead({ peerId: 'u1', maxId: 6 });
+
+  expect(attempts).toBe(1);
+  database.close();
+});

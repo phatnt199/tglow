@@ -368,11 +368,20 @@ const main = async (): Promise<void> => {
         // outlives tglow should not keep it alive.
         onOpenMedia: async (opts: { peerId: string; messageId: number }): Promise<void> => {
           store.setState({ patch: { statusMessage: 'Opening…' } });
-          const path = await thumbnailService.materialise(opts);
-          if (path === null) {
-            store.setState({ patch: { statusMessage: 'Nothing to open on this message' } });
+          const result = await thumbnailService.materialise(opts);
+          if (result.kind !== 'written') {
+            // A download that failed is not a message with nothing in it, and
+            // saying so told the user something untrue about their own chat.
+            store.setState({
+              patch: {
+                statusMessage: result.kind === 'nothing'
+                  ? 'Nothing to open on this message'
+                  : `Could not open it: ${result.reason}`,
+              },
+            });
             return;
           }
+          const { path } = result;
           const viewer = spawn('xdg-open', [path], { detached: true, stdio: 'ignore' });
           viewer.on('error', () => {
             store.setState({ patch: { statusMessage: `Saved to ${path} -- no viewer to open it` } });

@@ -1585,17 +1585,27 @@ export const App = (props: IAppProps) => {
   // back to the unfiltered list when no folder resolves at all, so a folder id
   // left over from a folder the user has since deleted shows their chats rather
   // than an empty sidebar.
-  const visibleDialogs = activeFolder === null
-    ? state.dialogs
-    : resolveFolderMembership({ folder: activeFolder, dialogs: state.dialogs, peerKinds: state.peerKinds });
+  const visibleDialogs = useMemo(
+    () => (activeFolder === null
+      ? state.dialogs
+      : resolveFolderMembership({ folder: activeFolder, dialogs: state.dialogs, peerKinds: state.peerKinds })),
+    [activeFolder, state.dialogs, state.peerKinds],
+  );
   // Each folder's own unread total, for the badge beside its name. Computed
   // over every dialog rather than the visible ones -- the point of the badge is
   // to tell you about the folders you are NOT looking at.
-  const unreadByFolder = new Map(state.folders.map(folder => [
-    folder.id,
-    resolveFolderMembership({ folder, dialogs: state.dialogs, peerKinds: state.peerKinds })
-      .reduce((total, dialog) => total + dialog.unreadCount, 0),
-  ]));
+  // Memoised because it is quadratic-ish and ran on every render: one pass
+  // over every dialog per folder, each rebuilding its own membership sets --
+  // paid again for every keystroke, every typing indicator and every presence
+  // change, to recompute numbers that only move when the dialogs do.
+  const unreadByFolder = useMemo(
+    () => new Map(state.folders.map(folder => [
+      folder.id,
+      resolveFolderMembership({ folder, dialogs: state.dialogs, peerKinds: state.peerKinds })
+        .reduce((total, dialog) => total + dialog.unreadCount, 0),
+    ])),
+    [state.folders, state.dialogs, state.peerKinds],
+  );
   const paneWidths = resolvePaneWidths({
     width,
     sidebarWidth: state.sidebarWidth ?? SIDEBAR_WIDTH,

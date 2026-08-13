@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { inject } from '@venizia/ignis-inversion';
-import { ApplicationLogger, type ILogger } from '@venizia/ignis-helpers';
+import { ApplicationLogger, toError, type ILogger } from '@venizia/ignis-helpers';
 
 import { BindingKeys } from '../common/index.ts';
 import type { IApplicationConfiguration } from './common/index.ts';
@@ -26,6 +26,18 @@ const IMAGE_SIGNATURES: readonly { name: string; extension: string; bytes: reado
   { name: 'WebP', extension: 'webp', bytes: [0x57, 0x45, 0x42, 0x50], offset: 8 },
   { name: 'GIF', extension: 'gif', bytes: [0x47, 0x49, 0x46], offset: 0 },
 ];
+
+/**
+ * What `materialise` did.
+ *
+ * `nothing` is a fact about the message; `failed` is a fact about this
+ * attempt. Collapsing them into null made tglow claim the first when it meant
+ * the second.
+ */
+export type TMaterialiseResult =
+  | { kind: 'written'; path: string }
+  | { kind: 'nothing' }
+  | { kind: 'failed'; reason: string };
 
 const isDrawableImage = (opts: { bytes: Uint8Array }): boolean =>
   IMAGE_SIGNATURES.some(({ bytes, offset }) =>
@@ -133,19 +145,24 @@ export class ThumbnailService {
    * window, and this is the way to the real thing: hand the file to whatever
    * the desktop uses to open pictures.
    *
-   * Returns the path, or null when there was nothing to write.
+   * Three outcomes, not two. "There is nothing here" and "I could not fetch
+   * it" were both null, and App rendered that as "Nothing to open on this
+   * message" -- telling the user their message had no picture when the truth
+   * was that the download failed. A client that misreports the contents of
+   * someone's messages is worse than one that admits an error.
    */
-  materialise = async (opts: { peerId: string; messageId: number }): Promise<string | null> => {
+  materialise = async (opts: { peerId: string; messageId: number }): Promise<TMaterialiseResult> => {
     const { peerId, messageId } = opts;
     let bytes: Uint8Array | null;
     try {
       bytes = await this._adapter.downloadMedia({ peerId, messageId });
     } catch (error) {
-      this._logger.for('materialise').error('Could not download %s:%s | Reason: %s', peerId, messageId, error);
-      return null;
+      const reason = toError(error).message;
+      this._logger.for('materialise').error('Could not download %s:%s | Reason: %s', peerId, messageId, reason);
+      return { kind: 'failed', reason };
     }
     if (bytes === null || bytes.length === 0) {
-      return null;
+      return { kind: 'nothing' };
     }
 
     // Named by what it is, so the viewer picks the right application: a file
@@ -157,10 +174,11 @@ export class ThumbnailService {
       mkdirSync(this._configuration.thumbnailDirectory, { recursive: true, mode: THUMBNAIL_DIRECTORY_MODE });
       writeFileSync(path, bytes, { mode: THUMBNAIL_FILE_MODE });
     } catch (error) {
-      this._logger.for('materialise').error('Could not write %s | Reason: %s', path, error);
-      return null;
+      const reason = toError(error).message;
+      this._logger.for('materialise').error('Could not write %s | Reason: %s', path, reason);
+      return { kind: 'failed', reason };
     }
-    return path;
+    return { kind: 'written', path };
   };
 
   private download = async (opts: { peerId: string; messageId: number; key: string }): Promise<Uint8Array | null> => {

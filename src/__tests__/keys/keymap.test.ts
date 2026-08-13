@@ -786,3 +786,33 @@ test('3. after dk against the real keymap repeats upward', () => {
     { type: ActionTypes.OPERATOR_APPLY, operator: Operators.DELETE, unit: 'message', from: -3, to: 0, register: null },
   ]);
 });
+
+// The chat list has its own motions now, and they must *shadow* the
+// context: '*' bindings of the same name rather than tie with them. Without
+// this, gg and <S-g> from the sidebar moved the message cursor in a pane
+// nobody was looking at -- which App then had to defend against when deciding
+// whether a chat had been read.
+test('a chat-list motion wins over the same key bound for every context', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+  const inChatList: IEngineState = { ...INITIAL_ENGINE_STATE, context: VimContexts.CHAT_LIST };
+
+  const pending = engine.resolve({ state: inChatList, key: buildKey('g'), keymap });
+  expect(engine.resolve({ state: pending.state, key: buildKey('g'), keymap }).actions)
+    .toEqual([{ type: ActionTypes.CURSOR_EDGE, unit: 'chat', edge: 'first' }]);
+
+  expect(engine.resolve({ state: inChatList, key: buildKey('g', { shift: true }), keymap }).actions)
+    .toEqual([{ type: ActionTypes.CURSOR_EDGE, unit: 'chat', edge: 'last' }]);
+
+  expect(engine.resolve({ state: inChatList, key: buildKey('d', { ctrl: true }), keymap }).actions)
+    .toEqual([{ type: ActionTypes.CURSOR_MOVE, unit: 'chat', delta: 10 }]);
+});
+
+// And the conversation keeps them unchanged.
+test('the same keys still move the message cursor in the conversation', () => {
+  const { keymapService, engine } = build();
+  const keymap = keymapService.getBindings();
+
+  expect(engine.resolve({ state: INITIAL_ENGINE_STATE, key: buildKey('g', { shift: true }), keymap }).actions)
+    .toEqual([{ type: ActionTypes.CURSOR_EDGE, unit: 'message', edge: 'last' }]);
+});
