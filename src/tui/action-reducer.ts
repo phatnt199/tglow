@@ -579,6 +579,9 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
         composerTextBeforeEdit: state.editingMessageId === null
           ? state.composerText
           : state.composerTextBeforeEdit,
+        composerCursorBeforeEdit: state.editingMessageId === null
+          ? state.composerCursor
+          : state.composerCursorBeforeEdit,
         composerText: message.text,
         // At the end of what is now in the composer, which is where someone
         // who pressed `e` to amend a message wants to be.
@@ -591,8 +594,15 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
       return {
         editingMessageId: null,
         composerText: state.composerTextBeforeEdit ?? '',
-        composerCursor: toGraphemes({ text: state.composerTextBeforeEdit ?? '' }).length,
+        // Where the caret actually was, not the end of the restored draft:
+        // someone who pressed <C-a> before the accidental `e` gets their front
+        // of the sentence back. Falls back to the end when there is no
+        // snapshot, which is where a caret belongs in a draft that never had
+        // one.
+        composerCursor: state.composerCursorBeforeEdit
+          ?? toGraphemes({ text: state.composerTextBeforeEdit ?? '' }).length,
         composerTextBeforeEdit: null,
+        composerCursorBeforeEdit: null,
       };
     }
 

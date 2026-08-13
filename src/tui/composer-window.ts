@@ -48,6 +48,8 @@ export interface IComposerWindow {
 
 const EMPTY: IComposerWindow = { before: '', at: '', after: '', caretColumn: 0 };
 
+const NEWLINE = '\n';
+
 export const resolveComposerWindow = (opts: {
   text: string;
   /** The caret, in graphemes, as composer-text.ts counts them. */
@@ -59,10 +61,36 @@ export const resolveComposerWindow = (opts: {
     return EMPTY;
   }
 
+  const all = toGraphemes({ text: opts.text });
+  const whole = Math.max(0, Math.min(all.length, opts.cursor));
+
+  // The prompt is one row, and `<A-Enter>` puts real newlines in a draft --
+  // as does `e` on a message that had them. A newline measures zero columns,
+  // so left in the slice it was packed in like any other cell and the text
+  // node simply stopped there: everything after it went undrawn, and once the
+  // caret was past it the caret went undrawn too. So the row shows the line
+  // the caret is on, and the caret is placed within that line.
+  let lineStart = whole;
+  while (lineStart > 0 && all[lineStart - 1]!.grapheme !== NEWLINE) {
+    lineStart -= 1;
+  }
+  let lineEnd = whole;
+  while (lineEnd < all.length && all[lineEnd]!.grapheme !== NEWLINE) {
+    lineEnd += 1;
+  }
+
   // One cell past the last grapheme, so a caret at the end has something to
   // sit on -- the same extra column the old fixed block took.
-  const cells = [...toGraphemes({ text: opts.text }), { grapheme: ' ', width: 1 }];
-  const caret = Math.max(0, Math.min(cells.length - 1, opts.cursor));
+  const cells = [...all.slice(lineStart, lineEnd), { grapheme: ' ', width: 1 }];
+  const caret = Math.max(0, Math.min(cells.length - 1, whole - lineStart));
+
+  // A single grapheme too wide for the field -- a CJK character in a pane
+  // three columns across -- cannot be drawn at all. Returning it anyway put
+  // two columns of glyph in a one-column box, which the renderer discards, so
+  // the whole field went blank rather than merely tight.
+  if (cells[caret]!.width > opts.room) {
+    return EMPTY;
+  }
 
   // Grown outward from the caret, which is what guarantees the caret is in
   // the window however narrow the field gets.

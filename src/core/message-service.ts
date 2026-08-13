@@ -633,10 +633,20 @@ export class MessageService {
       }
       this._store.setState({ patch });
     } catch (error) {
+      // The file and its caption already reached Telegram; only the local copy
+      // is missing. So the composer is cleared here exactly as send() and
+      // edit() clear theirs on this branch -- leaving the caption sitting in
+      // the prompt makes it look unsent, and the Enter that follows posts it a
+      // second time as a message of its own.
       this._logger.for(this.sendFile.name).error('Sent but could not cache | Reason: %s', error);
-      this._store.setState({
-        patch: { statusMessage: `Sent, but could not update the local cache: ${toError(error).message}` },
-      });
+      const patch: Partial<IApplicationState> = {
+        statusMessage: `Sent, but could not update the local cache: ${toError(error).message}`,
+      };
+      if (stillUnchanged) {
+        clearComposer({ patch });
+        patch.replyToMessageId = null;
+      }
+      this._store.setState({ patch });
     }
   };
 

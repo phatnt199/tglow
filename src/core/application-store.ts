@@ -167,6 +167,16 @@ export interface IApplicationState {
   editingMessageId: number | null;
   /** What composerText held the instant before EDIT_START overwrote it with the message's own text. Restored by the escape that cancels an edit, so an accidental `e` never costs the user a draft; null whenever editingMessageId is null. */
   composerTextBeforeEdit: string | null;
+  /**
+   * The caret that went with composerTextBeforeEdit.
+   *
+   * Snapshotting the draft and not its caret restores only half of what was
+   * taken: a caret deliberately parked at the front of a sentence came back at
+   * the end of it, and the next character typed went to the wrong place. The
+   * text and the caret are one fact in two fields everywhere else in this
+   * store, and this is the pair that keeps that true across a cancelled edit.
+   */
+  composerCursorBeforeEdit: number | null;
   connection: TConnectionState;
   statusMessage: string | null;
   /**
@@ -318,6 +328,7 @@ const INITIAL_STATE: IApplicationState = {
   replyToMessageId: null,
   editingMessageId: null,
   composerTextBeforeEdit: null,
+  composerCursorBeforeEdit: null,
   connection: 'offline',
   statusMessage: null,
   integrityWarning: null,

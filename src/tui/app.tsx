@@ -1441,8 +1441,12 @@ export const App = (props: IAppProps) => {
           patch: {
             editingMessageId: null,
             composerText: current.composerTextBeforeEdit ?? '',
-            composerCursor: toGraphemes({ text: current.composerTextBeforeEdit ?? '' }).length,
+            // Kept in lockstep with the reducer's own EDIT_CANCEL: the caret
+            // that was snapshotted, not the end of the restored draft.
+            composerCursor: current.composerCursorBeforeEdit
+              ?? toGraphemes({ text: current.composerTextBeforeEdit ?? '' }).length,
             composerTextBeforeEdit: null,
+            composerCursorBeforeEdit: null,
             engine: { ...current.engine, mode: VimModes.NORMAL },
           },
         });
@@ -1744,8 +1748,14 @@ export const App = (props: IAppProps) => {
   // Each internal divider costs a column, exactly like the ones either side of
   // the sidebar, so the columns share what is left rather than what was asked
   // for -- otherwise the rightmost is pushed a column off the screen per split.
+  //
+  // FRAME_DIVIDER_COLUMNS, which is what the layout below actually draws: one
+  // FrameColumn between adjacent columns. This charged FRAME_VERTICAL_COST,
+  // which is the frame's *row* count, so every split took two columns and gave
+  // one back -- a dead strip down the right-hand edge, three columns wide with
+  // four conversations open.
   const conversationWidths = shareEvenly({
-    total: Math.max(0, paneWidths.messages - (paneGrid.length - 1) * FRAME_VERTICAL_COST),
+    total: Math.max(0, paneWidths.messages - (paneGrid.length - 1) * FRAME_DIVIDER_COLUMNS),
     count: paneGrid.length,
   });
   // The folder section takes what its folders need, capped so the chat list
@@ -2124,7 +2134,14 @@ export const App = (props: IAppProps) => {
   // mode would compete with the cursorline, which is what shows position
   // there.
   useEffect(() => {
-    const typing = state.engine.mode === VimModes.INSERT;
+    // The same condition the render uses for showComposer, because a cursor
+    // parked where nothing is drawn is worse than no cursor. An overlay takes
+    // the composer off the screen while the mode stays INSERT -- which is not
+    // a corner case: `j` is a prefix of `jk`, so pausing after it opens
+    // which-key mid-word. The cursor was then left visible over the message
+    // list, several rows above where the prompt had been, drawing any IME
+    // preedit on top of the conversation.
+    const typing = state.engine.mode === VimModes.INSERT && !isOverlayOpen;
     if (!typing) {
       renderer.setCursorPosition(0, 0, false);
       return;
@@ -2167,7 +2184,7 @@ export const App = (props: IAppProps) => {
   }, [
     state.engine.mode, state.composerText, state.composerCursor, height, paneWidths.sidebar,
     paneWidths.messages, state.activePane, paneGrid, paneHeight, conversationWidths, dividerColumn,
-    renderer,
+    isOverlayOpen, renderer,
   ]);
 
 

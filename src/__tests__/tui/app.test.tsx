@@ -16,7 +16,7 @@ import { createPane, type TPaneGrid } from '../../core/conversation-panes.ts';
 import type { IImageCell } from '../../tui/image-renderer.ts';
 import { imageCacheKey, planImageFetches, resolveImageWidth } from '../../tui/image-layout.ts';
 import { shareEvenly } from '../../core/conversation-panes.ts';
-import { FRAME_VERTICAL_COST } from '../../tui/pane-frame.ts';
+import { FRAME_MIDDLE } from '../../tui/pane-frame.ts';
 // Concrete module, not the core/ barrel -- same reasoning as
 // ApplicationStoreService above (src/tui/action-reducer.ts explains why):
 // a value import (mount() below constructs one), off the root barrel's
@@ -28,6 +28,7 @@ import { MessageSearchService } from '../../core/message-search.ts';
 import { ActionTypes, VimContexts, VimModes, type IKeyBinding } from '../../keys/common/index.ts';
 import { KeyNormalizerService, KeymapService, VimEngineService } from '../../keys/index.ts';
 import { toGraphemes } from '../../tui/text-width.ts';
+import { toGraphemes as composerGraphemes } from '../../tui/composer-text.ts';
 import { renderWithKeys } from '../helpers/render.tsx';
 import { buildTokens } from '../../tui/theme/index.ts';
 import { App, isPrintableCharacter } from '../../tui/app.tsx';
@@ -3535,6 +3536,34 @@ test('sending from a caret in the middle sends the whole draft', async () => {
   expect(store.getState().composerCursor).toBe(0);
 });
 
+// A terminal delivers a decomposed Vietnamese letter one code point per key
+// event, so typing `ế` into the middle of a draft is three insertions, two of
+// them a bare combining mark that joins the letter to its left. The caret used
+// to advance once per key regardless, so the second mark landed on the letter
+// *after* the one being built: `abcd` with the caret at 2 became `abêćd`, a
+// mangled word one Enter away from being sent.
+test('a decomposed Vietnamese letter typed mid-draft builds one letter', async () => {
+  const { renderer, store } = await mount();
+
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await act(async () => { await renderer.mockInput.typeText('abcd'); });
+  await renderer.flush();
+  await act(async () => {
+    await renderer.mockInput.pressArrow('left');
+    await renderer.mockInput.pressArrow('left');
+  });
+  await renderer.flush();
+  for (const mark of ['e', '\u0302', '\u0301']) {
+    await act(async () => { renderer.mockInput.pressKey(mark); });
+    await renderer.flush();
+  }
+
+  expect(store.getState().composerText.normalize('NFC')).toBe('ab\u1EBFcd');
+  // Five letters, and the caret sits just after the one just built.
+  expect(composerGraphemes({ text: store.getState().composerText })).toHaveLength(5);
+  expect(store.getState().composerCursor).toBe(3);
+});
+
 // ── resizing the folder / chat split ──────────────────────────────────────
 
 /** Distinctive enough that no other pane's text can be mistaken for a folder row. */
@@ -3885,6 +3914,82 @@ test('the cursor rises to the upper pane when conversations are stacked', async 
   expect(top.x).toBe(bottom.x);
 });
 
+// An overlay takes the composer off the screen while the mode stays INSERT,
+// and `j` is a prefix of `jk` -- this author's own way out of insert mode --
+// so pausing after it opens which-key mid-word. The terminal cursor was left
+// visible several rows above where the prompt had been, drawing any IME
+// preedit on top of the conversation: the exact failure the caret work exists
+// to remove.
+test('the terminal cursor is hidden while an overlay covers the composer', async () => {
+  const { renderer, store } = await mount({ width: 100, height: 24 });
+  const placed: Array<{ x: number; y: number; visible: boolean }> = [];
+  renderer.renderer.setCursorPosition = (x: number, y: number, visible: boolean): void => {
+    placed.push({ x, y, visible });
+  };
+
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await act(async () => { await renderer.mockInput.typeText('chao ban'); });
+  await renderer.flush();
+  expect(placed[placed.length - 1]!.visible).toBe(true);
+
+  await act(async () => { renderer.mockInput.pressKey('j'); });
+  await act(async () => {
+    await new Promise(resolve => { setTimeout(resolve, AMBIGUOUS_KEY_SETTLE_MILLISECONDS); });
+  });
+  await renderer.flush();
+
+  // Still insert mode -- the popup opened over it rather than leaving it.
+  expect(store.getState().overlay).toBe('whichkey');
+  expect(store.getState().engine.mode).toBe('insert');
+  // And no composer is drawn, so no cursor may be parked anywhere.
+  expect(renderer.captureCharFrame()).not.toContain('❯');
+  expect(placed[placed.length - 1]!.visible).toBe(false);
+});
+
+// The draft and the caret are one fact in two fields, and a cancelled edit
+// used to restore only the first half: a caret deliberately parked at the
+// front of a sentence came back at the end of it.
+test('cancelling an edit gives back the caret as well as the draft', async () => {
+  const { renderer, store } = await mount({ messages: [ownMessage] });
+
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await act(async () => { await renderer.mockInput.typeText('chao ban nhe'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('a', { ctrl: true }); });
+  await renderer.flush();
+  await pressEscape(renderer);
+  expect(store.getState().composerCursor).toBe(0);
+
+  await act(async () => { renderer.mockInput.pressKey('e'); });
+  await renderer.flush();
+  expect(store.getState().composerText).toBe('typo here');
+
+  await pressEscape(renderer);
+  expect(store.getState().composerText).toBe('chao ban nhe');
+  expect(store.getState().composerCursor).toBe(0);
+});
+
+// Each split charged the frame's *row* count for a divider that draws one
+// column, so the conversation columns shared two columns less than they had
+// and gave one back -- a dead strip down the right edge, three columns wide
+// with four conversations open.
+test('the conversation columns fill the window, whatever the split', async () => {
+  for (const columns of [1, 2, 3, 4]) {
+    const { renderer, store } = await mount({ width: 100, height: 24 });
+    const grid: TPaneGrid = Array.from({ length: columns }, () => [createPane({ peerId: 'u1' })]);
+
+    act(() => { store.setState({ patch: { paneGrid: grid, activePane: { column: 0, row: 0 } } }); });
+    await renderer.flush();
+
+    const rows = renderer.captureCharFrame().split('\n').filter(row => row.includes('│') || row.includes('┐'));
+    // The frame's own right-hand edge must land on the last column, not short
+    // of it: a row that stops early is the strip.
+    for (const row of rows) {
+      expect({ columns, end: row.trimEnd().length }).toEqual({ columns, end: 100 });
+    }
+  }
+});
+
 // ── sending a file ────────────────────────────────────────────────────────
 
 test(':send hands the path over, and the composer becomes the caption', async () => {
@@ -4015,13 +4120,13 @@ const splitWithPictures = async (): Promise<{ renderer: TestRendererSetup; store
 // no pictures at all -- it was handed an empty map on purpose.
 test('a pane that does not have the focus still draws its pictures', async () => {
   const { renderer, store } = await splitWithPictures();
-  // Derived, not guessed, and *per column*: shareEvenly gives the remainder to
-  // the leftmost, so the two panes differ by a column and their pictures are
-  // genuinely two different widths. Seeding both at one width is how this test
-  // first failed -- which is the cache refusing cells drawn for a pane that is
-  // not this one, exactly as it should.
+  // Derived from the same constant the layout charges, not guessed: a picture
+  // is cached under the width it was drawn for, so a test that seeds the wrong
+  // width watches the cache correctly refuse cells meant for another pane and
+  // reads it as this feature being broken. FRAME_MIDDLE is what one divider
+  // between two columns costs.
   const [leftColumn, rightColumn] = shareEvenly({
-    total: store.getState().conversationWidth - FRAME_VERTICAL_COST,
+    total: store.getState().conversationWidth - FRAME_MIDDLE,
     count: 2,
   });
 

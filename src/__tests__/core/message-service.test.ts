@@ -987,6 +987,30 @@ test('a failed file send keeps the caption', async () => {
   database.close();
 });
 
+// The upload succeeded, so the caption already reached Telegram; only the
+// local cache row is missing. Leaving the caption in the prompt makes it look
+// unsent, and the Enter that follows posts it a second time as a message of
+// its own -- which is why send() and edit() clear on this branch too.
+test('a file sent but not cached still clears the composer', async () => {
+  const { service, store, database } = buildService(buildAdapter({
+    sendFile: async opts => buildRawMessage({ id: 98, peerId: opts.peerId, text: opts.caption, out: 1 }),
+  }));
+  database.insertMessages = () => { throw new Error('disk I/O error'); };
+  store.setState({
+    patch: {
+      activePeerId: 'u1', composerText: 'ăn trưa nha', composerCursor: 11, replyToMessageId: 7,
+    },
+  });
+
+  await service.sendFile({ peerId: 'u1', path: import.meta.path });
+
+  expect(store.getState().composerText).toBe('');
+  expect(store.getState().composerCursor).toBe(0);
+  expect(store.getState().replyToMessageId).toBeNull();
+  expect(store.getState().statusMessage).toContain('could not update the local cache');
+  database.close();
+});
+
 test('a sent file clears the composer and lands in the view', async () => {
   const { service, store, database } = buildService(buildAdapter({
     sendFile: async opts => buildRawMessage({

@@ -36,14 +36,28 @@ export interface IComposerEdit {
   cursor: number;
 }
 
-/** Type at the caret, and leave the caret after what was typed. */
+/**
+ * Type at the caret, and leave the caret after what was typed.
+ *
+ * The caret is recounted from the joined text rather than added up as
+ * `at + inserted.length`, because what is typed can *merge* with the grapheme
+ * already to its left instead of becoming a grapheme of its own -- and that is
+ * not an exotic case, it is Vietnamese. A terminal delivers a decomposed `ế`
+ * as three key presses, so typing it mid-draft calls this three times, twice
+ * with a bare combining mark that joins the letter before it. Counting the
+ * insert in isolation then advanced the caret past a letter the text never
+ * grew by: `hoc` + a dot below at 2 gives `học`, three graphemes, and the
+ * caret landed at 3 rather than 2 -- so the *next* mark of the same letter
+ * attached to the `c`. Typing `ế` into `abcd` produced `abêćd`, a mangled
+ * word one Enter away from being sent.
+ */
 export const insertAt = (opts: { text: string; cursor: number; insert: string }): IComposerEdit => {
   const graphemes = toGraphemes({ text: opts.text });
   const at = clampCursor({ text: opts.text, cursor: opts.cursor });
-  const inserted = toGraphemes({ text: opts.insert });
+  const before = `${graphemes.slice(0, at).join('')}${opts.insert}`;
   return {
-    text: [...graphemes.slice(0, at), ...inserted, ...graphemes.slice(at)].join(''),
-    cursor: at + inserted.length,
+    text: `${before}${graphemes.slice(at).join('')}`,
+    cursor: toGraphemes({ text: before }).length,
   };
 };
 

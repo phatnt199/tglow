@@ -37,6 +37,7 @@ const conversation = (opts: Partial<IConversationState> = {}): IConversationStat
   replyToMessageId: null,
   editingMessageId: null,
   composerTextBeforeEdit: null,
+  composerCursorBeforeEdit: null,
   ...opts,
 });
 

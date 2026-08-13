@@ -50,6 +50,7 @@ export interface IConversationPane {
   replyToMessageId: number | null;
   editingMessageId: number | null;
   composerTextBeforeEdit: string | null;
+  composerCursorBeforeEdit: number | null;
 }
 
 /** The layout: columns left to right, each a stack of panes top to bottom. */
@@ -71,6 +72,7 @@ export interface IConversationState {
   replyToMessageId: number | null;
   editingMessageId: number | null;
   composerTextBeforeEdit: string | null;
+  composerCursorBeforeEdit: number | null;
 }
 
 export type TPaneDirection = 'left' | 'right' | 'up' | 'down';
@@ -112,6 +114,7 @@ export const createPane = (opts: { peerId?: string | null } = {}): IConversation
   replyToMessageId: null,
   editingMessageId: null,
   composerTextBeforeEdit: null,
+  composerCursorBeforeEdit: null,
 });
 
 /** The focused pane's slot, brought up to date from the flat state. */
@@ -124,6 +127,7 @@ export const capture = (opts: { conversation: IConversationState }): IConversati
   replyToMessageId: opts.conversation.replyToMessageId,
   editingMessageId: opts.conversation.editingMessageId,
   composerTextBeforeEdit: opts.conversation.composerTextBeforeEdit,
+  composerCursorBeforeEdit: opts.conversation.composerCursorBeforeEdit,
 });
 
 /** The flat state a pane becomes when it takes the focus. */
@@ -136,6 +140,7 @@ export const restore = (opts: { pane: IConversationPane }): IConversationState =
   replyToMessageId: opts.pane.replyToMessageId,
   editingMessageId: opts.pane.editingMessageId,
   composerTextBeforeEdit: opts.pane.composerTextBeforeEdit,
+  composerCursorBeforeEdit: opts.pane.composerCursorBeforeEdit,
 });
 
 /** The starting layout: one column, one conversation, which is what tglow always was. */
