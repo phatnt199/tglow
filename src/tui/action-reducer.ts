@@ -23,6 +23,14 @@ import {
   type IPanePosition,
 } from '../core/conversation-panes.ts';
 import { NOTHING_UNREAD_MESSAGE, resolveNextUnread } from '../core/unread-navigation.ts';
+import {
+  deleteAfter,
+  deleteBefore,
+  deleteWordBefore,
+  insertAt,
+  moveCursor,
+  toGraphemes,
+} from './composer-text.ts';
 import { extractLinkUrls } from './entities.ts';
 
 /**
@@ -368,11 +376,43 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
     }
 
     case ActionTypes.COMPOSER_INSERT_TEXT: {
-      return { composerText: state.composerText + action.text };
+      // At the caret, not at the end. Appending was the whole reason a typo in
+      // the middle of a message could only be fixed by retyping the rest.
+      const inserted = insertAt({
+        text: state.composerText, cursor: state.composerCursor, insert: action.text,
+      });
+      return { composerText: inserted.text, composerCursor: inserted.cursor };
     }
 
     case ActionTypes.COMPOSER_BACKSPACE: {
-      return { composerText: state.composerText.slice(0, -1) };
+      const removed = deleteBefore({ text: state.composerText, cursor: state.composerCursor });
+      return { composerText: removed.text, composerCursor: removed.cursor };
+    }
+
+    case ActionTypes.COMPOSER_DELETE: {
+      const removed = deleteAfter({ text: state.composerText, cursor: state.composerCursor });
+      return { composerText: removed.text, composerCursor: removed.cursor };
+    }
+
+    case ActionTypes.COMPOSER_DELETE_WORD: {
+      const removed = deleteWordBefore({ text: state.composerText, cursor: state.composerCursor });
+      return { composerText: removed.text, composerCursor: removed.cursor };
+    }
+
+    case ActionTypes.COMPOSER_CURSOR_MOVE: {
+      return {
+        composerCursor: moveCursor({
+          text: state.composerText, cursor: state.composerCursor, delta: action.delta,
+        }),
+      };
+    }
+
+    case ActionTypes.COMPOSER_CURSOR_EDGE: {
+      return {
+        composerCursor: action.edge === 'first'
+          ? 0
+          : toGraphemes({ text: state.composerText }).length,
+      };
     }
 
     case ActionTypes.OVERLAY_TOGGLE: {
@@ -540,6 +580,9 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
           ? state.composerText
           : state.composerTextBeforeEdit,
         composerText: message.text,
+        // At the end of what is now in the composer, which is where someone
+        // who pressed `e` to amend a message wants to be.
+        composerCursor: toGraphemes({ text: message.text }).length,
         engine: { ...state.engine, context: VimContexts.COMPOSER, mode: VimModes.INSERT },
       };
     }
@@ -548,6 +591,7 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
       return {
         editingMessageId: null,
         composerText: state.composerTextBeforeEdit ?? '',
+        composerCursor: toGraphemes({ text: state.composerTextBeforeEdit ?? '' }).length,
         composerTextBeforeEdit: null,
       };
     }

@@ -64,6 +64,13 @@ export class ActionTypes {
   static readonly COMPOSER_SEND = 'composer.send';
   static readonly COMPOSER_INSERT_TEXT = 'composer.insertText';
   static readonly COMPOSER_BACKSPACE = 'composer.backspace';
+  /** Remove the character *after* the caret, leaving the caret where it is. */
+  static readonly COMPOSER_DELETE = 'composer.delete';
+  /** Remove the word before the caret. */
+  static readonly COMPOSER_DELETE_WORD = 'composer.deleteWord';
+  /** Move the caret within the draft: by a character, or to either end. */
+  static readonly COMPOSER_CURSOR_MOVE = 'composer.cursorMove';
+  static readonly COMPOSER_CURSOR_EDGE = 'composer.cursorEdge';
   static readonly APPLICATION_QUIT = 'application.quit';
   static readonly OVERLAY_TOGGLE = 'overlay.toggle';
   static readonly SPOILER_REVEAL = 'spoiler.reveal';

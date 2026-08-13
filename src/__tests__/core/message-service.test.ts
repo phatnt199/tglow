@@ -128,10 +128,15 @@ test('sending appends the message to the view and clears the composer', async ()
   database.insertMessages({
     messages: [{ peerId: 'u1', id: 1, fromId: 'u1', date: 100, text: 'earlier', out: 0, entities: [], replyToMessageId: null }],
   });
-  store.setState({ patch: { activePeerId: 'u1', composerText: 'on my way' } });
+  store.setState({ patch: { activePeerId: 'u1', composerText: 'on my way', composerCursor: 9 } });
   await service.send({ peerId: 'u1', text: 'on my way' });
   expect(store.getState().messages.map(message => message.text)).toEqual(['earlier', 'on my way']);
   expect(store.getState().composerText).toBe('');
+  // The caret comes back with it. Left at 9 it would point past the end of an
+  // empty draft -- clamped harmlessly for the text, but it is also where the
+  // terminal's own cursor is parked, so an input method would draw the next
+  // half-typed word nine columns adrift of the prompt.
+  expect(store.getState().composerCursor).toBe(0);
   database.close();
 });
 
@@ -152,9 +157,12 @@ test('a failed send keeps the composed text', async () => {
   const { service, store, database } = buildService(
     buildAdapter({ send: async () => { throw new Error('CHAT_WRITE_FORBIDDEN'); } }),
   );
-  store.setState({ patch: { composerText: 'important' } });
+  store.setState({ patch: { composerText: 'important', composerCursor: 4 } });
   await service.send({ peerId: 'u1', text: 'important' });
   expect(store.getState().composerText).toBe('important');
+  // And the caret stays where it was, so a retry resumes mid-word rather than
+  // dumping them at the start of their own sentence.
+  expect(store.getState().composerCursor).toBe(4);
   expect(store.getState().statusMessage).toContain('cannot write');
   database.close();
 });

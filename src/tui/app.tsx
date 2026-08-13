@@ -52,6 +52,8 @@ import {
   type IEngineState, type IResolveResult, type TAction,
 } from '../keys/common/index.ts';
 import type { KeyNormalizerService, KeymapService, VimEngineService } from '../keys/index.ts';
+import { insertAt } from './composer-text.ts';
+import { resolveComposerWindow } from './composer-window.ts';
 import { resolveWhichKeyMenu } from '../keys/which-key-menu.ts';
 import { applyAction, resolveVisibleDialogs, resolveSearchMatchIndices } from './action-reducer.ts';
 import { ChatPicker, CommandLine, ContextMenu, ReactionPicker, resolveChatPickerHeight, resolveWhichKeyHeight, SEARCH_OVERLAY_HEIGHT, SearchOverlay, WhichKey } from './overlays/index.ts';
@@ -65,6 +67,7 @@ import {
   buildBottomEdge,
   buildTopEdge,
   resolvePaneWidths,
+  resolvePromptRow,
 } from './pane-frame.ts';
 import { ChatList, Composer, COMPOSER_PROMPT_WIDTH, FolderRail, MessageView, StatusLine, type IImageRowPlacement } from './panes/index.ts';
 import { shareEvenly, withActive } from '../core/conversation-panes.ts';
@@ -1438,6 +1441,7 @@ export const App = (props: IAppProps) => {
           patch: {
             editingMessageId: null,
             composerText: current.composerTextBeforeEdit ?? '',
+            composerCursor: toGraphemes({ text: current.composerTextBeforeEdit ?? '' }).length,
             composerTextBeforeEdit: null,
             engine: { ...current.engine, mode: VimModes.NORMAL },
           },
@@ -1471,8 +1475,14 @@ export const App = (props: IAppProps) => {
         result = engine.resolve({ state: { ...current.engine, pending: [] }, key, keymap });
       }
     }
+    // At the caret, like anything else typed -- a withheld prefix flushed to
+    // the end while the caret sat in the middle would scatter the letters
+    // someone was in the middle of correcting.
+    const flushedEdit = insertAt({
+      text: current.composerText, cursor: current.composerCursor, insert: flushed,
+    });
     const flushPatch: Partial<IApplicationState> = {
-      ...(flushed === '' ? {} : { composerText: current.composerText + flushed }),
+      ...(flushed === '' ? {} : { composerText: flushedEdit.text, composerCursor: flushedEdit.cursor }),
       // Dismissed as part of whatever this key does, in the same patch, so the
       // popup cannot survive a frame past the press that answered it.
       ...(dismissWhichKey ? { overlay: null } : {}),
@@ -1481,10 +1491,13 @@ export const App = (props: IAppProps) => {
     // In insert mode an unmapped printable key is text, not a missing binding.
     if (result.status === 'unmapped' && isInsert) {
       const typed = flushed + (isPrintable ? event.sequence : '');
+      const typedEdit = insertAt({
+        text: current.composerText, cursor: current.composerCursor, insert: typed,
+      });
       store.setState({
         patch: {
           engine: result.state,
-          ...(typed === '' ? {} : { composerText: current.composerText + typed }),
+          ...(typed === '' ? {} : { composerText: typedEdit.text, composerCursor: typedEdit.cursor }),
           ...(dismissWhichKey ? { overlay: null } : {}),
         },
       });
@@ -2116,24 +2129,45 @@ export const App = (props: IAppProps) => {
       renderer.setCursorPosition(0, 0, false);
       return;
     }
-    // The prompt row: the frame's bottom border and the status line sit under
-    // it, and the composer's own extra rows (a pending reply, an edit) push it
-    // no further because they are drawn above the prompt, not below it.
-    const caretRow = height - STATUS_LINE_HEIGHT - FRAME_BOTTOM_ROWS - 1;
-    const promptStart = dividerColumn + FRAME_DIVIDER_COLUMNS + COMPOSER_PROMPT_WIDTH;
-    // What the composer actually shows: it keeps the tail of a line too long
-    // for the pane, so the caret is at the end of what is visible rather than
-    // at the end of the text.
-    const room = Math.max(0, paneWidths.messages - COMPOSER_PROMPT_WIDTH - 1);
-    const typed = Math.min(measureTextWidth({ text: state.composerText }), room);
+    // The focused pane's prompt, not the bottom of the screen and not the
+    // first column: the composer belongs to whichever pane has the focus, so
+    // with the panes split it can be halfway up the window and well to the
+    // right of the conversation area's own left edge. Measured the same way
+    // the pictures are, and for the same reason -- see resolvePaneOrigin.
+    const activeColumn = paneGrid[state.activePane.column] ?? [];
+    const caretRow = resolvePromptRow({
+      rowHeights: shareEvenly({
+        total: Math.max(0, paneHeight - (activeColumn.length - 1) * SECTION_DIVIDER_HEIGHT),
+        count: Math.max(1, activeColumn.length),
+      }),
+      row: state.activePane.row,
+      paneTop: FRAME_TOP_ROWS,
+      dividerRows: SECTION_DIVIDER_HEIGHT,
+    });
+    const promptStart = resolvePaneOrigin({
+      conversationLeft: dividerColumn + FRAME_DIVIDER_COLUMNS,
+      widths: conversationWidths,
+      column: state.activePane.column,
+      dividerColumns: FRAME_DIVIDER_COLUMNS,
+    }) + COMPOSER_PROMPT_WIDTH;
+    // Where the composer actually draws its caret, asked of the same function
+    // the composer draws with rather than recomputed here: a draft too long
+    // for the pane is scrolled, so the caret's column is a fact about the
+    // visible window and not about the text.
+    const room = Math.max(0, (conversationWidths[state.activePane.column] ?? 0) - COMPOSER_PROMPT_WIDTH);
+    const { caretColumn } = resolveComposerWindow({
+      text: state.composerText, cursor: state.composerCursor, room,
+    });
     // One-based, which is what setCursorPosition takes -- OpenTUI's own
     // editor adds the same +1 to its screen coordinates before calling it
     // (renderCursor, @opentui/core). Passing zero-based put the caret a row
     // above the composer, which is exactly where the IME would then have
     // drawn.
-    renderer.setCursorPosition(promptStart + typed + 1, caretRow + 1, true);
+    renderer.setCursorPosition(promptStart + caretColumn + 1, caretRow + 1, true);
   }, [
-    state.engine.mode, state.composerText, height, paneWidths.sidebar, paneWidths.messages, renderer,
+    state.engine.mode, state.composerText, state.composerCursor, height, paneWidths.sidebar,
+    paneWidths.messages, state.activePane, paneGrid, paneHeight, conversationWidths, dividerColumn,
+    renderer,
   ]);
 
 
@@ -2576,6 +2610,7 @@ export const App = (props: IAppProps) => {
                           </text>
                           <Composer
                             text={state.composerText}
+                            cursor={state.composerCursor}
                             mode={state.engine.mode}
                             focused={state.engine.context === VimContexts.COMPOSER}
                             tokens={tokens}

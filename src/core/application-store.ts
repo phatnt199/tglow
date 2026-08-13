@@ -150,6 +150,17 @@ export interface IApplicationState {
   chatCursor: number;
   messageCursor: number;
   composerText: string;
+  /**
+   * Where the caret is in the composer, counted in *graphemes*.
+   *
+   * Graphemes rather than code units because Vietnamese decomposes: `ế` can be
+   * two code points, and a caret counting units lands inside the letter -- so
+   * a backspace there takes the diacritic off and leaves it attached to
+   * whatever came before. Before this existed the composer could only be
+   * appended to and trimmed from the end, so fixing a typo in the middle of a
+   * message meant retyping everything after it.
+   */
+  composerCursor: number;
   /** The message `r` targeted, or null when no reply is pending. Cleared on a successful send and on escape; preserved on a failed send. */
   replyToMessageId: number | null;
   /** The message `e` is editing, or null when no edit is in progress. EDIT_START refuses to set this at all when the target's `out !== 1` -- you cannot edit someone else's message. Cleared on a successful edit and on the escape that cancels one; preserved on a failed edit. */
@@ -303,6 +314,7 @@ const INITIAL_STATE: IApplicationState = {
   chatCursor: 0,
   messageCursor: 0,
   composerText: '',
+  composerCursor: 0,
   replyToMessageId: null,
   editingMessageId: null,
   composerTextBeforeEdit: null,

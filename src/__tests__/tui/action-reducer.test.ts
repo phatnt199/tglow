@@ -293,15 +293,29 @@ test('moving with no messages stays at zero', () => {
   }).messageCursor).toBe(0);
 });
 
-test('composer text is appended and removed', () => {
+// Typing and deleting happen at the caret, not at the end -- which is what
+// makes fixing a typo in the middle of a message possible at all. The caret
+// has to be seeded with the text, because a draft is a position as well as
+// a string.
+test('composer text is typed and removed at the caret', () => {
   expect(applyAction({
-    state: buildState({ composerText: 'on my ' }),
+    state: buildState({ composerText: 'on my ', composerCursor: 6 }),
     action: { type: ActionTypes.COMPOSER_INSERT_TEXT, text: 'way' },
   }).composerText).toBe('on my way');
   expect(applyAction({
-    state: buildState({ composerText: 'hix' }),
+    state: buildState({ composerText: 'hix', composerCursor: 3 }),
     action: { type: ActionTypes.COMPOSER_BACKSPACE },
   }).composerText).toBe('hi');
+
+  // The point: mid-string, not at the end.
+  expect(applyAction({
+    state: buildState({ composerText: 'helo', composerCursor: 3 }),
+    action: { type: ActionTypes.COMPOSER_INSERT_TEXT, text: 'l' },
+  })).toEqual({ composerText: 'hello', composerCursor: 4 });
+  expect(applyAction({
+    state: buildState({ composerText: 'helllo', composerCursor: 4 }),
+    action: { type: ActionTypes.COMPOSER_BACKSPACE },
+  })).toEqual({ composerText: 'hello', composerCursor: 3 });
 });
 
 test('backspace on empty text is harmless', () => {

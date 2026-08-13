@@ -38,6 +38,37 @@ export const FRAME_HORIZONTAL_COST = frameHorizontalCost({ paneCount: 2 });
 /** Total rows the frame takes: the two edges. */
 export const FRAME_VERTICAL_COST = FRAME_TOP + FRAME_BOTTOM;
 
+/**
+ * The screen row a stacked pane's prompt sits on.
+ *
+ * The composer belongs to the focused pane, so its prompt is the last row of
+ * that pane -- which is the bottom of the screen only when nothing is stacked
+ * above or below it. This is the row half of the same fact
+ * image-layout.ts's resolvePaneOrigin gives for columns, and it exists for the
+ * same reason: measuring from the whole conversation area instead of from the
+ * pane put a right-hand pane's pictures on top of the left-hand pane's.
+ *
+ * What it places here is the *terminal's* own cursor, which is where an input
+ * method draws a half-typed word. Off by a row and a Vietnamese preedit
+ * appears in the wrong conversation.
+ */
+export const resolvePromptRow = (opts: {
+  /** Rows each pane of the focused column gets, top to bottom. */
+  rowHeights: readonly number[];
+  /** Which of them has the focus. */
+  row: number;
+  /** The screen row the panes start at, zero-based -- below the frame's top edge. */
+  paneTop: number;
+  /** Rows spent on the rule between two stacked conversations. */
+  dividerRows: number;
+}): number => {
+  let top = opts.paneTop;
+  for (let index = 0; index < opts.row; index += 1) {
+    top += (opts.rowHeights[index] ?? 0) + opts.dividerRows;
+  }
+  return top + Math.max(1, opts.rowHeights[opts.row] ?? 1) - 1;
+};
+
 const HORIZONTAL = '─';
 const VERTICAL = '│';
 const TOP_LEFT = '┌';

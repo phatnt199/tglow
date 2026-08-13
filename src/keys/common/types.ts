@@ -58,6 +58,10 @@ export type TAction =
   | { type: typeof ActionTypes.COMPOSER_SEND }
   | { type: typeof ActionTypes.COMPOSER_INSERT_TEXT; text: string }
   | { type: typeof ActionTypes.COMPOSER_BACKSPACE }
+  | { type: typeof ActionTypes.COMPOSER_DELETE }
+  | { type: typeof ActionTypes.COMPOSER_DELETE_WORD }
+  | { type: typeof ActionTypes.COMPOSER_CURSOR_MOVE; delta: number }
+  | { type: typeof ActionTypes.COMPOSER_CURSOR_EDGE; edge: TCursorEdge }
   | { type: typeof ActionTypes.APPLICATION_QUIT }
   | { type: typeof ActionTypes.OVERLAY_TOGGLE; overlay: TOverlay }
   | { type: typeof ActionTypes.SPOILER_REVEAL }

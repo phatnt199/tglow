@@ -45,6 +45,8 @@ export interface IConversationPane {
    * to an empty composer would make the split the expensive way to do it.
    */
   composerText: string;
+  /** Where the caret sits in that draft. See IApplicationState.composerCursor. */
+  composerCursor: number;
   replyToMessageId: number | null;
   editingMessageId: number | null;
   composerTextBeforeEdit: string | null;
@@ -65,6 +67,7 @@ export interface IConversationState {
   messages: IMessageRow[];
   messageCursor: number;
   composerText: string;
+  composerCursor: number;
   replyToMessageId: number | null;
   editingMessageId: number | null;
   composerTextBeforeEdit: string | null;
@@ -105,6 +108,7 @@ export const createPane = (opts: { peerId?: string | null } = {}): IConversation
   messages: [],
   messageCursor: 0,
   composerText: '',
+  composerCursor: 0,
   replyToMessageId: null,
   editingMessageId: null,
   composerTextBeforeEdit: null,
@@ -116,6 +120,7 @@ export const capture = (opts: { conversation: IConversationState }): IConversati
   messages: opts.conversation.messages,
   messageCursor: opts.conversation.messageCursor,
   composerText: opts.conversation.composerText,
+  composerCursor: opts.conversation.composerCursor,
   replyToMessageId: opts.conversation.replyToMessageId,
   editingMessageId: opts.conversation.editingMessageId,
   composerTextBeforeEdit: opts.conversation.composerTextBeforeEdit,
@@ -127,6 +132,7 @@ export const restore = (opts: { pane: IConversationPane }): IConversationState =
   messages: opts.pane.messages,
   messageCursor: opts.pane.messageCursor,
   composerText: opts.pane.composerText,
+  composerCursor: opts.pane.composerCursor,
   replyToMessageId: opts.pane.replyToMessageId,
   editingMessageId: opts.pane.editingMessageId,
   composerTextBeforeEdit: opts.pane.composerTextBeforeEdit,

@@ -7,13 +7,18 @@ import { VimModes } from '../../../keys/common/index.ts';
 import { renderWithKeys } from '../../helpers/render.tsx';
 import { buildTokens } from '../../../tui/theme/index.ts';
 import { Composer, type IComposerProps } from '../../../tui/panes/composer.tsx';
+import { toGraphemes } from '../../../tui/composer-text.ts';
 
 const tokens = buildTokens({ paletteName: 'sage' });
 const COMPOSER_WIDTH = 50;
 
+// The caret defaults to the end of whatever text a case supplies, because
+// that is where typing leaves it -- a default of 0 would quietly make every
+// case an "editing from the start" case.
 const render = async (overrides: Partial<IComposerProps> = {}): Promise<TestRendererSetup> => {
   const props: IComposerProps = {
-    text: '', mode: VimModes.NORMAL, focused: false, tokens, width: COMPOSER_WIDTH, replyingTo: null, editing: false, ...overrides,
+    text: '', mode: VimModes.NORMAL, focused: false, tokens, width: COMPOSER_WIDTH, replyingTo: null, editing: false,
+    cursor: toGraphemes({ text: overrides.text ?? '' }).length, ...overrides,
   };
   const renderer = await renderWithKeys(<Composer {...props} />, { width: props.width, height: 2 });
   await renderer.flush();
@@ -34,8 +39,47 @@ test('shows the typed text in insert mode', async () => {
     .toContain('on my way');
 });
 
-test('shows a cursor block while in insert mode', async () => {
-  expect((await render({ text: 'hi', mode: VimModes.INSERT, focused: true })).captureCharFrame()).toContain('█');
+// The caret used to be a `█` glyph appended after the text, which was fine
+// while the end was the only place it could be. It is now a reversed cell, so
+// it can sit *on* a letter without hiding it.
+test('the caret is drawn as a reversed cell at the end of the draft', async () => {
+  const renderer = await render({ text: 'hi', mode: VimModes.INSERT, focused: true });
+  const spans = renderer.captureSpans().lines[0]!.spans;
+  const caret = spans.find(span => rgbToHex(span.bg).toLowerCase() === tokens.modeInsert.toLowerCase());
+
+  expect(caret).toBeDefined();
+  expect(caret!.text).toBe(' ');
+});
+
+test('the caret sits on the letter it points at, which stays readable', async () => {
+  const renderer = await render({ text: 'helo', cursor: 3, mode: VimModes.INSERT, focused: true });
+  const spans = renderer.captureSpans().lines[0]!.spans;
+  const caret = spans.find(span => rgbToHex(span.bg).toLowerCase() === tokens.modeInsert.toLowerCase());
+
+  expect(caret!.text).toBe('o');
+  expect(renderer.captureCharFrame()).toContain('helo');
+});
+
+// A caret drawn in normal mode would compete with the conversation's own
+// cursorline, which is what shows position there.
+test('no caret is drawn outside insert mode', async () => {
+  const renderer = await render({ text: 'hi', mode: VimModes.NORMAL, focused: true });
+  const highlighted = renderer.captureSpans().lines[0]!.spans
+    .filter(span => rgbToHex(span.bg).toLowerCase() === tokens.modeInsert.toLowerCase());
+
+  expect(highlighted).toEqual([]);
+});
+
+// The bug this whole caret exists to fix: with the caret at the start of a
+// draft too long for the pane, the composer must show the start.
+test('the visible window follows the caret rather than always showing the tail', async () => {
+  const text = 'this message is a great deal longer than fifty columns of terminal will ever hold at once';
+  const renderer = await render({ text, cursor: 0, mode: VimModes.INSERT, focused: true });
+  const rows = readRows(renderer);
+
+  expect(rows[0]!).toContain('this message is');
+  expect(rows[0]!).not.toContain('at once');
+  expect(rows[0]!.length).toBe(COMPOSER_WIDTH);
 });
 
 test('hides the hint once text has been typed', async () => {
@@ -98,7 +142,7 @@ test('no reply row when not replying', async () => {
 test('shows a dimmed reply preview above the prompt when replying', async () => {
   const renderer = await renderWithKeys(
     <Composer
-      text="" mode={VimModes.NORMAL} focused={false} tokens={tokens} width={COMPOSER_WIDTH}
+      text="" cursor={0} mode={VimModes.NORMAL} focused={false} tokens={tokens} width={COMPOSER_WIDTH}
       replyingTo={{ senderName: 'Alice', text: 'sure, lets do it' }} editing={false}
     />,
     { width: COMPOSER_WIDTH, height: 3 },
@@ -117,7 +161,7 @@ test('shows a dimmed reply preview above the prompt when replying', async () => 
 test('the reply preview shows only the first line, truncated to the composer width', async () => {
   const renderer = await renderWithKeys(
     <Composer
-      text="" mode={VimModes.NORMAL} focused={false} tokens={tokens} width={COMPOSER_WIDTH}
+      text="" cursor={0} mode={VimModes.NORMAL} focused={false} tokens={tokens} width={COMPOSER_WIDTH}
       replyingTo={{ senderName: 'Alice', text: 'first line is already long enough to need truncating on its own\nsecond line' }}
       editing={false}
     />,
@@ -146,7 +190,7 @@ test('no editing row when not editing', async () => {
 test('shows a dimmed editing indicator above the prompt when editing', async () => {
   const renderer = await renderWithKeys(
     <Composer
-      text="fix the typo" mode={VimModes.INSERT} focused={true} tokens={tokens} width={COMPOSER_WIDTH}
+      text="fix the typo" cursor={12} mode={VimModes.INSERT} focused={true} tokens={tokens} width={COMPOSER_WIDTH}
       replyingTo={null} editing={true}
     />,
     { width: COMPOSER_WIDTH, height: 3 },
@@ -168,7 +212,7 @@ test('shows a dimmed editing indicator above the prompt when editing', async () 
 test('editing and a pending reply can show together, editing row on top', async () => {
   const renderer = await renderWithKeys(
     <Composer
-      text="" mode={VimModes.NORMAL} focused={false} tokens={tokens} width={COMPOSER_WIDTH}
+      text="" cursor={0} mode={VimModes.NORMAL} focused={false} tokens={tokens} width={COMPOSER_WIDTH}
       replyingTo={{ senderName: 'Alice', text: 'sure, lets do it' }} editing={true}
     />,
     { width: COMPOSER_WIDTH, height: 5 },

@@ -368,6 +368,35 @@ export class KeymapService {
       context: '*', mode: VimModes.INSERT, keys: '<return>', description: 'Send message',
       action: () => [{ type: ActionTypes.COMPOSER_SEND }],
     },
+    // Moving inside what you have typed. Arrows because they need no
+    // learning, and the readline pair because a terminal user's hands already
+    // know them -- `<C-a>`/`<C-e>` for the ends, `<C-w>` for the word behind.
+    // `<C-w>` collides with nothing: the pane prefix of the same name is a
+    // NORMAL binding, and these are INSERT.
+    {
+      context: '*', mode: VimModes.INSERT, keys: '<left>', description: 'Left one character',
+      action: count => [{ type: ActionTypes.COMPOSER_CURSOR_MOVE, delta: -count }],
+    },
+    {
+      context: '*', mode: VimModes.INSERT, keys: '<right>', description: 'Right one character',
+      action: count => [{ type: ActionTypes.COMPOSER_CURSOR_MOVE, delta: count }],
+    },
+    {
+      context: '*', mode: VimModes.INSERT, keys: '<C-a>', description: 'Start of the message',
+      action: () => [{ type: ActionTypes.COMPOSER_CURSOR_EDGE, edge: 'first' }],
+    },
+    {
+      context: '*', mode: VimModes.INSERT, keys: '<C-e>', description: 'End of the message',
+      action: () => [{ type: ActionTypes.COMPOSER_CURSOR_EDGE, edge: 'last' }],
+    },
+    {
+      context: '*', mode: VimModes.INSERT, keys: '<C-w>', description: 'Delete the word behind',
+      action: () => [{ type: ActionTypes.COMPOSER_DELETE_WORD }],
+    },
+    {
+      context: '*', mode: VimModes.INSERT, keys: '<delete>', description: 'Delete forwards',
+      action: () => [{ type: ActionTypes.COMPOSER_DELETE }],
+    },
     {
       context: '*', mode: VimModes.INSERT, keys: '<backspace>', description: 'Delete character',
       action: () => [{ type: ActionTypes.COMPOSER_BACKSPACE }],

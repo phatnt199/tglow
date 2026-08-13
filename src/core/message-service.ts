@@ -182,6 +182,21 @@ export interface IMessageAdapter {
   subscribeToPresence(opts: { onPresence: (change: { peerId: string; presence: IPresence }) => void }): () => void;
 }
 
+/**
+ * Empty the composer -- the draft and the caret that points into it.
+ *
+ * The two are one fact in two fields, and every send and edit below clears
+ * them at a different point in its own error handling. Clearing the text and
+ * leaving the caret behind left it pointing past the end of an empty string:
+ * harmless to the text, which clamps, but it is also where the *terminal's*
+ * cursor goes, so an input method would have drawn the next half-typed word
+ * several columns adrift.
+ */
+const clearComposer = (opts: { patch: Partial<IApplicationState> }): void => {
+  opts.patch.composerText = '';
+  opts.patch.composerCursor = 0;
+};
+
 export class MessageService {
   private readonly _logger: ILogger = ApplicationLogger.get(MessageService.name);
   // How many of the open chat's messages are on screen, so a republish after
@@ -613,7 +628,7 @@ export class MessageService {
         statusMessage: null,
       };
       if (stillUnchanged) {
-        patch.composerText = '';
+        clearComposer({ patch });
         patch.replyToMessageId = null;
       }
       this._store.setState({ patch });
@@ -689,7 +704,7 @@ export class MessageService {
         statusMessage: null,
       };
       if (stillUnchanged) {
-        patch.composerText = '';
+        clearComposer({ patch });
         patch.replyToMessageId = null;
       }
       this._store.setState({ patch });
@@ -704,7 +719,7 @@ export class MessageService {
         statusMessage: `Sent, but could not save it locally: ${toError(error).message}`,
       };
       if (stillUnchanged) {
-        patch.composerText = '';
+        clearComposer({ patch });
         patch.replyToMessageId = null;
       }
       this._store.setState({ patch });
@@ -755,7 +770,7 @@ export class MessageService {
         statusMessage: null,
       };
       if (stillUnchanged) {
-        patch.composerText = '';
+        clearComposer({ patch });
         patch.editingMessageId = null;
         patch.composerTextBeforeEdit = null;
       }
@@ -771,7 +786,7 @@ export class MessageService {
         statusMessage: `Edited, but could not save it locally: ${toError(error).message}`,
       };
       if (stillUnchanged) {
-        patch.composerText = '';
+        clearComposer({ patch });
         patch.editingMessageId = null;
         patch.composerTextBeforeEdit = null;
       }

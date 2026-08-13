@@ -12,7 +12,7 @@ import { BindingKeys } from '../../common/index.ts';
 import { ApplicationStoreService } from '../../core/application-store.ts';
 import { DatabaseService, type IDialogRow, type IFolderRow, type IMessageRow } from '../../core/cache/index.ts';
 import { MediaKinds } from '../../core/media.ts';
-import { createPane } from '../../core/conversation-panes.ts';
+import { createPane, type TPaneGrid } from '../../core/conversation-panes.ts';
 import type { IImageCell } from '../../tui/image-renderer.ts';
 import { imageCacheKey, planImageFetches, resolveImageWidth } from '../../tui/image-layout.ts';
 import { shareEvenly } from '../../core/conversation-panes.ts';
@@ -205,7 +205,10 @@ const mount = async (opts: {
     await Promise.resolve();
     composerAtSend.push(store.getState().composerText);
     if (store.getState().composerText === text) {
-      store.setState({ patch: { composerText: '' } });
+      // The caret comes back to the start with the text, exactly as the real
+      // one does -- a stand-in that clears only half of what it stands for
+      // would hide the other half going wrong.
+      store.setState({ patch: { composerText: '', composerCursor: 0 } });
     }
   });
 
@@ -217,7 +220,7 @@ const mount = async (opts: {
     edited.push(edit);
     await Promise.resolve();
     if (store.getState().composerText === edit.text) {
-      store.setState({ patch: { composerText: '', editingMessageId: null } });
+      store.setState({ patch: { composerText: '', composerCursor: 0, editingMessageId: null } });
     }
   });
 
@@ -3373,6 +3376,165 @@ test('an emoji in the composer is drawn at the width it measures', async () => {
   expect(renderer.captureCharFrame()).toContain('👍🏽');
 });
 
+// ── moving the caret in the composer ──────────────────────────────────────
+
+// Reported: "khi ở insert/normal mode không thể di chuyển cursor để xóa/sửa
+// chữ" -- you could not move the caret to fix a letter. The composer had no
+// caret at all: typing appended and backspace took from the end, so correcting
+// a typo meant deleting everything after it and typing it again. These run
+// through the real key path, because a reducer that can move a caret is worth
+// nothing if no key reaches it.
+
+test('left then a letter fixes a typo without retyping the rest', async () => {
+  const { renderer, store } = await mount();
+
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await act(async () => { await renderer.mockInput.typeText('helo'); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.pressArrow('left'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('l'); });
+  await renderer.flush();
+
+  expect(store.getState().composerText).toBe('hello');
+  expect(store.getState().composerCursor).toBe(4);
+});
+
+test('backspace takes the letter before the caret, not the last one typed', async () => {
+  const { renderer, store } = await mount();
+
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await act(async () => { await renderer.mockInput.typeText('helllo'); });
+  await renderer.flush();
+  await act(async () => {
+    await renderer.mockInput.pressArrow('left');
+    await renderer.mockInput.pressArrow('left');
+  });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressBackspace(); });
+  await renderer.flush();
+
+  expect(store.getState().composerText).toBe('hello');
+});
+
+// A Vietnamese letter can arrive as two code points. A caret counting code
+// units lands inside one, and the backspace there leaves the diacritic
+// attached to whatever came before -- the exact shape of bug this project has
+// already fixed once, in the printable-character check.
+test('the caret steps over a decomposed Vietnamese letter whole', async () => {
+  const { renderer, store } = await mount();
+
+  await typeInComposer(renderer, ['n', 'h', 'ế', 'u']);
+  await act(async () => { await renderer.mockInput.pressArrow('left'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressBackspace(); });
+  await renderer.flush();
+
+  expect(store.getState().composerText).toBe('nhu');
+});
+
+test('the caret stops at both ends rather than running off them', async () => {
+  const { renderer, store } = await mount();
+
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await act(async () => { await renderer.mockInput.typeText('hi'); });
+  await renderer.flush();
+  await act(async () => {
+    await renderer.mockInput.pressArrow('left');
+    await renderer.mockInput.pressArrow('left');
+    await renderer.mockInput.pressArrow('left');
+    await renderer.mockInput.pressArrow('left');
+  });
+  await renderer.flush();
+  expect(store.getState().composerCursor).toBe(0);
+
+  // Backspace at the start must do nothing at all -- not wrap, not delete.
+  await act(async () => { renderer.mockInput.pressBackspace(); });
+  await renderer.flush();
+  expect(store.getState().composerText).toBe('hi');
+
+  await act(async () => {
+    await renderer.mockInput.pressArrow('right');
+    await renderer.mockInput.pressArrow('right');
+    await renderer.mockInput.pressArrow('right');
+  });
+  await renderer.flush();
+  expect(store.getState().composerCursor).toBe(2);
+});
+
+// <C-w> is a pending prefix in NORMAL (the pane commands) and a whole binding
+// in INSERT. Nothing but the mode separates them, so this pins that a draft
+// really does lose a word rather than the engine sitting on a prefix waiting
+// for an h/j/k/l that will never come.
+test('<C-w> while typing deletes the word behind, not a pane prefix', async () => {
+  const { renderer, store } = await mount();
+
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await act(async () => { await renderer.mockInput.typeText('one two three'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('w', { ctrl: true }); });
+  await renderer.flush();
+
+  expect(store.getState().composerText).toBe('one two ');
+  expect(store.getState().engine.pending).toEqual([]);
+  expect(store.getState().engine.mode).toBe('insert');
+});
+
+// <C-a>/<C-e> because a terminal user's hands already know them.
+test('the readline pair jumps to the ends of the draft', async () => {
+  const { renderer, store } = await mount();
+
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await act(async () => { await renderer.mockInput.typeText('hello'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('a', { ctrl: true }); });
+  await renderer.flush();
+  expect(store.getState().composerCursor).toBe(0);
+
+  await act(async () => { renderer.mockInput.pressKey('e', { ctrl: true }); });
+  await renderer.flush();
+  expect(store.getState().composerCursor).toBe(5);
+});
+
+test('delete takes the letter under the caret, leaving the caret alone', async () => {
+  const { renderer, store } = await mount();
+
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await act(async () => { await renderer.mockInput.typeText('hxello'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('a', { ctrl: true }); });
+  await renderer.flush();
+  await act(async () => { await renderer.mockInput.pressArrow('right'); });
+  await renderer.flush();
+  // DELETE, not the string 'delete' -- pressKey takes either, and the literal
+  // string types six letters.
+  await act(async () => { renderer.mockInput.pressKey('DELETE'); });
+  await renderer.flush();
+
+  expect(store.getState().composerText).toBe('hello');
+  expect(store.getState().composerCursor).toBe(1);
+});
+
+// Sending has to take the whole draft however the caret got there, and leave
+// the next one starting from zero.
+test('sending from a caret in the middle sends the whole draft', async () => {
+  const { renderer, store, sent } = await mount();
+
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await act(async () => { await renderer.mockInput.typeText('on my way'); });
+  await renderer.flush();
+  await act(async () => {
+    await renderer.mockInput.pressArrow('left');
+    await renderer.mockInput.pressArrow('left');
+  });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+
+  expect(sent).toEqual(['on my way']);
+  expect(store.getState().composerCursor).toBe(0);
+});
+
 // ── resizing the folder / chat split ──────────────────────────────────────
 
 /** Distinctive enough that no other pane's text can be mistaken for a folder row. */
@@ -3675,10 +3837,52 @@ test('the caret accounts for the width of what is typed, not its length', async 
   await renderer.flush();
   const start = placed[placed.length - 1]!.x;
 
-  await act(async () => { store.setState({ patch: { composerText: '😀' } }); });
+  // The caret comes along with the text: it is where the terminal's cursor
+  // goes now, so setting one without the other is not a state typing can
+  // reach. One grapheme, two columns -- which is the whole point here.
+  await act(async () => { store.setState({ patch: { composerText: '😀', composerCursor: 1 } }); });
   await renderer.flush();
 
   expect(placed[placed.length - 1]!.x).toBe(start + 2);
+});
+
+// The terminal's cursor has to follow the focused pane, not sit where a
+// single-pane layout would put it. It is where an input method draws a
+// half-typed word, so with the panes split a Vietnamese preedit was appearing
+// over the wrong conversation entirely.
+const placeCursorIn = async (opts: {
+  grid: TPaneGrid; active: { column: number; row: number };
+}): Promise<{ x: number; y: number }> => {
+  const { renderer, store } = await mount({ width: 140, height: 26 });
+  const placed: Array<{ x: number; y: number }> = [];
+  renderer.renderer.setCursorPosition = (x: number, y: number): void => { placed.push({ x, y }); };
+
+  act(() => { store.setState({ patch: { paneGrid: opts.grid, activePane: opts.active } }); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await renderer.flush();
+
+  return placed[placed.length - 1]!;
+};
+
+test('the cursor moves into the right-hand pane when that is the focused one', async () => {
+  const grid: TPaneGrid = [[createPane({ peerId: 'u1' })], [createPane({ peerId: 'u2' })]];
+  const left = await placeCursorIn({ grid, active: { column: 0, row: 0 } });
+  const right = await placeCursorIn({ grid, active: { column: 1, row: 0 } });
+
+  // Far enough right to be in the other column, not merely a column or two
+  // over: the conversation area is split in half.
+  expect(right.x).toBeGreaterThan(left.x + 20);
+  expect(right.y).toBe(left.y);
+});
+
+test('the cursor rises to the upper pane when conversations are stacked', async () => {
+  const grid: TPaneGrid = [[createPane({ peerId: 'u1' }), createPane({ peerId: 'u2' })]];
+  const top = await placeCursorIn({ grid, active: { column: 0, row: 0 } });
+  const bottom = await placeCursorIn({ grid, active: { column: 0, row: 1 } });
+
+  expect(top.y).toBeLessThan(bottom.y);
+  expect(top.x).toBe(bottom.x);
 });
 
 // ── sending a file ────────────────────────────────────────────────────────

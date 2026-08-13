@@ -6,6 +6,7 @@ import {
   buildBottomEdge,
   buildTopEdge,
   resolvePaneWidths,
+  resolvePromptRow,
 } from '../../tui/pane-frame.ts';
 import { measureTextWidth } from '../../tui/text-width.ts';
 
@@ -170,4 +171,37 @@ test('a window too narrow for three panes drops the rail rather than the convers
 
 test('a rail survives once the window is wide enough for all three', () => {
   expect(withRail(80).rail).toBe(12);
+});
+
+// ── where the focused pane's prompt sits ──────────────────────────────────
+
+// This row places the terminal's own cursor, which is where an input method
+// draws a half-typed word -- so it has to follow the focused pane rather than
+// assume the bottom of the screen.
+test('one pane puts the prompt on the last row of the pane area', () => {
+  expect(resolvePromptRow({ rowHeights: [20], row: 0, paneTop: 1, dividerRows: 1 })).toBe(20);
+});
+
+// The case the old arithmetic got wrong: focus the upper of two stacked
+// conversations and the prompt is halfway up the window, not at the bottom.
+test('a stacked pane puts the prompt at the bottom of its own row, not the window', () => {
+  const rowHeights = [10, 9];
+
+  expect(resolvePromptRow({ rowHeights, row: 0, paneTop: 1, dividerRows: 1 })).toBe(10);
+  // The lower pane starts after the upper one and the rule between them.
+  expect(resolvePromptRow({ rowHeights, row: 1, paneTop: 1, dividerRows: 1 })).toBe(20);
+});
+
+test('three stacked panes each answer for their own row', () => {
+  const rowHeights = [7, 7, 6];
+
+  expect([0, 1, 2].map(row => resolvePromptRow({ rowHeights, row, paneTop: 1, dividerRows: 1 })))
+    .toEqual([7, 15, 22]);
+});
+
+// A row asked for outside the column must still land on a real row rather
+// than returning a negative one and parking the cursor off screen.
+test('a row the column does not have still yields a row on screen', () => {
+  expect(resolvePromptRow({ rowHeights: [20], row: 3, paneTop: 1, dividerRows: 1 }))
+    .toBeGreaterThan(0);
 });

@@ -1,6 +1,7 @@
 import { VimModes, type TVimMode } from '../../keys/common/index.ts';
 import type { ITokens } from '../theme/index.ts';
-import { extractTailToWidth, measureTextWidth, padToWidth, truncateToWidth } from '../text-width.ts';
+import { resolveComposerWindow } from '../composer-window.ts';
+import { measureTextWidth, padToWidth, truncateToWidth } from '../text-width.ts';
 
 /** The message being replied to, already resolved to a sender name by the caller -- this file only formats and fits it to `width`. */
 export interface IReplyPreview {
@@ -10,6 +11,12 @@ export interface IReplyPreview {
 
 export interface IComposerProps {
   text: string;
+  /**
+   * The caret, in graphemes. Required rather than defaulted to the end of the
+   * text: a call site that forgot it would silently go back to a composer you
+   * can only append to, which is the bug this prop exists to close.
+   */
+  cursor: number;
   mode: TVimMode;
   focused: boolean;
   tokens: ITokens;
@@ -44,7 +51,6 @@ const PROMPT = '❯ ';
  * jumped into the composer once it was committed.
  */
 export const COMPOSER_PROMPT_WIDTH = measureTextWidth({ text: PROMPT });
-const CURSOR = '█';
 const HINT = 'press i to write…';
 const RULE = '─';
 const EDITING_LABEL = 'Editing message';
@@ -67,17 +73,25 @@ const firstLineOf = (opts: { text: string }): string => opts.text.split(/\r\n|\r
  * here must stay in lockstep with app.tsx's own chromeHeight calculation.
  */
 export const Composer = (props: IComposerProps) => {
-  const { text, mode, focused, tokens, width, replyingTo, editing } = props;
+  const { text, cursor, mode, focused, tokens, width, replyingTo, editing } = props;
 
   const showHint = text === '' && mode !== VimModes.INSERT;
-  const cursor = mode === VimModes.INSERT && focused ? CURSOR : '';
-  const room = Math.max(
+  const room = Math.max(0, width - measureTextWidth({ text: PROMPT }));
+  // Which slice of the draft is on screen, and where in it the caret stands.
+  // Not the tail any more: the caret moves, so the visible part has to follow
+  // it rather than always showing the end.
+  const view = resolveComposerWindow({ text, cursor, room });
+  // Drawn only while typing, like the block it replaces. In normal mode the
+  // conversation's cursorline is what shows position, and a second caret
+  // blinking in the composer would compete with it.
+  const showCaret = mode === VimModes.INSERT && focused;
+  // The caret is a reversed cell rather than a block glyph laid over the text,
+  // so the letter underneath stays readable -- and past the end of the draft
+  // it reverses a space, which draws the same solid block as before.
+  const trailing = Math.max(
     0,
-    width - measureTextWidth({ text: PROMPT }) - measureTextWidth({ text: cursor }),
+    room - view.caretColumn - measureTextWidth({ text: `${view.at}${view.after}` }),
   );
-  // The tail rather than the head: the caret is at the end, so that is the part
-  // being typed and the part worth showing.
-  const body = padToWidth({ text: `${extractTailToWidth({ text, width: room })}${cursor}`, width: room });
 
   const editingRow = editing ? truncateToWidth({ text: EDITING_LABEL, width }) : null;
   const replyRow = replyingTo
@@ -101,7 +115,19 @@ export const Composer = (props: IComposerProps) => {
       ) : null}
       <text height={1} flexShrink={0}>
         <span fg={tokens.modeInsert}>{PROMPT}</span>
-        {showHint ? <span fg={tokens.dim}>{HINT}</span> : <span fg={tokens.foreground}>{body}</span>}
+        {showHint ? (
+          <span fg={tokens.dim}>{padToWidth({ text: HINT, width: room })}</span>
+        ) : (
+          <>
+            <span fg={tokens.foreground}>{view.before}</span>
+            {showCaret ? (
+              <span fg={tokens.background} bg={tokens.modeInsert}>{view.at}</span>
+            ) : (
+              <span fg={tokens.foreground}>{view.at}</span>
+            )}
+            <span fg={tokens.foreground}>{`${view.after}${' '.repeat(trailing)}`}</span>
+          </>
+        )}
       </text>
     </box>
   );

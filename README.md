@@ -466,9 +466,16 @@ question about which conversation `Enter` sends to.
 | Key | Action |
 | --- | --- |
 | `i` / `a` | write a message |
+| `←` / `→` | move the caret one character |
+| `<C-a>` / `<C-e>` | jump to the start or end of the message |
+| `Backspace` / `Delete` | delete behind or under the caret |
+| `<C-w>` | delete the word behind the caret |
 | `<A-Enter>` (insert) | a new line, rather than sending |
 | `jk` or `Esc` | leave insert mode |
 | `Enter` (insert) | send |
+
+The caret moves by whole characters, so a Vietnamese `ế` or a family emoji is
+one press to cross and one backspace to remove — never half a letter.
 
 ### Application
 

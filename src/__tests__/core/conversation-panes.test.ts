@@ -33,6 +33,7 @@ const conversation = (opts: Partial<IConversationState> = {}): IConversationStat
   messages: [message(1), message(2)],
   messageCursor: 1,
   composerText: '',
+  composerCursor: 0,
   replyToMessageId: null,
   editingMessageId: null,
   composerTextBeforeEdit: null,
