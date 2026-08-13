@@ -1,4 +1,5 @@
 import { getError } from '@venizia/ignis-inversion';
+import { NO_CONTINUATION_MESSAGE } from '../../keys/which-key-menu.ts';
 
 import { VimContexts, type TVimContext, type TVimMode } from '../../keys/common/index.ts';
 import type { ITokens } from '../theme/index.ts';
@@ -6,6 +7,8 @@ import { padToWidth, truncateToWidth } from '../text-width.ts';
 
 export interface IWhichKeyProps {
   bindings: Array<{ keys: string; description: string }>;
+  /** What has already been typed, when the popup was opened by a pending prefix. */
+  prefix?: string;
   mode: TVimMode;
   context: TVimContext;
   tokens: ITokens;
@@ -64,11 +67,16 @@ const resolvePaneLabel = (opts: { context: TVimContext }): string => {
  * only lays it out.
  */
 export const WhichKey = (props: IWhichKeyProps) => {
-  const { bindings, mode, context, tokens, width } = props;
+  const { bindings, mode, context, tokens, width, prefix = '' } = props;
 
   const columns = resolveColumnCount({ width });
   const rows = Math.ceil(bindings.length / columns);
-  const heading = `Keys · ${mode.toUpperCase()} · ${resolvePaneLabel({ context })}`;
+  // With a prefix pending, the prefix *is* the heading: what this is showing
+  // is what completes it, and repeating the mode and pane there would push the
+  // one piece of information the popup was opened for off to the side.
+  const heading = prefix === ''
+    ? `Keys · ${mode.toUpperCase()} · ${resolvePaneLabel({ context })}`
+    : `${prefix} · ${bindings.length === 0 ? NO_CONTINUATION_MESSAGE : 'what follows'}`;
 
   return (
     <box flexDirection="column" width={width}>

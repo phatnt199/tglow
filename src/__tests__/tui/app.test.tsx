@@ -1788,16 +1788,24 @@ test('escape closes the overlay', async () => {
   expect(store.getState().overlay).toBeNull();
 });
 
-test('while the overlay is open, j does not move the message cursor', async () => {
+// which-key is a hint, not a mode. It used to swallow every key like the chat
+// picker and search do -- but those are reading a query and this is not, and
+// now that it opens by itself on a pending prefix, swallowing the key that
+// completes the sequence would make the help stop you doing the thing it is
+// helping you do. So a key dismisses it and then means what it means.
+test('a key dismisses the overlay and still does what it does', async () => {
   const { renderer, store } = await mount();
   expect(store.getState().messageCursor).toBe(0);
 
   await act(async () => { renderer.mockInput.pressKey('\\'); });
   await renderer.flush();
+  expect(store.getState().overlay).toBe('whichkey');
+
   await act(async () => { renderer.mockInput.pressKey('j'); });
   await renderer.flush();
 
-  expect(store.getState().messageCursor).toBe(0);
+  expect(store.getState().overlay).toBeNull();
+  expect(store.getState().messageCursor).toBe(1);
 });
 
 // The chat list has its own <escape> binding (back to messages, added by
@@ -3951,4 +3959,95 @@ test(']u with nothing unread says so and opens nothing', async () => {
 
   expect(store.getState().statusMessage).toContain('No unread');
   expect(opened.length).toBe(before);
+});
+
+// ── which-key opening itself on a pending prefix ──────────────────────────
+//
+// The change that makes the popup worth having. Before it, a prefix could
+// never have the popup open over it at all -- `\` after `<C-w>` completes
+// `<C-w>\`, and after `g` or `z` it is unmapped and clears the prefix -- so
+// filtering by prefix would have been unreachable code.
+
+test('a prefix left unfinished opens the popup, showing only what continues it', async () => {
+  const { renderer, store } = await mount();
+
+  await act(async () => { renderer.mockInput.pressKey('w', { ctrl: true }); });
+  await renderer.flush();
+  expect(store.getState().overlay).toBeNull();
+  expect(store.getState().engine.pending).toEqual(['<C-w>']);
+
+  await act(async () => {
+    await new Promise(resolve => { setTimeout(resolve, AMBIGUOUS_KEY_SETTLE_MILLISECONDS); });
+  });
+  await renderer.flush();
+
+  expect(store.getState().overlay).toBe('whichkey');
+  const frame = renderer.captureCharFrame();
+  // The prefix is the heading, and what is listed is what completes it.
+  expect(frame).toContain('<C-w>');
+  expect(frame).toContain('Close pane');
+  // Not the whole keymap: `j` belongs to no <C-w> sequence.
+  expect(frame).not.toContain('Next message');
+});
+
+// The point of not swallowing keys: the help must not stop you doing the
+// thing it is helping you do.
+test('the key that completes the sequence still completes it', async () => {
+  // Wide enough that the split is not refused for want of room -- this is
+  // about the key reaching its binding, not about the layout.
+  const { renderer, store } = await mount({ width: 160, height: 30 });
+
+  await act(async () => { renderer.mockInput.pressKey('w', { ctrl: true }); });
+  await renderer.flush();
+  await act(async () => {
+    await new Promise(resolve => { setTimeout(resolve, AMBIGUOUS_KEY_SETTLE_MILLISECONDS); });
+  });
+  await renderer.flush();
+  expect(store.getState().overlay).toBe('whichkey');
+
+  await act(async () => { renderer.mockInput.pressKey('\\'); });
+  await renderer.flush();
+
+  expect(store.getState().overlay).toBeNull();
+  // <C-w>\ split, which is what the sequence meant -- and `\` is also the key
+  // that toggles this popup, so this pins that a pending prefix makes it a
+  // continuation rather than a toggle.
+  expect(store.getState().paneGrid).toHaveLength(2);
+});
+
+// Escape means "I have changed my mind", so it clears the prefix as well as
+// the popup -- otherwise the next key would complete a sequence the user had
+// just abandoned.
+test('escape closes the popup and abandons the prefix', async () => {
+  const { renderer, store } = await mount();
+
+  await act(async () => { renderer.mockInput.pressKey('w', { ctrl: true }); });
+  await renderer.flush();
+  await act(async () => {
+    await new Promise(resolve => { setTimeout(resolve, AMBIGUOUS_KEY_SETTLE_MILLISECONDS); });
+  });
+  await renderer.flush();
+
+  await pressEscape(renderer);
+
+  expect(store.getState().overlay).toBeNull();
+  expect(store.getState().engine.pending).toEqual([]);
+});
+
+// A prefix finished before the clock runs out must not summon a menu for a
+// sequence that is already over.
+test('a sequence completed in time never opens the popup', async () => {
+  const { renderer, store } = await mount();
+
+  await act(async () => {
+    renderer.mockInput.pressKey('w', { ctrl: true });
+    renderer.mockInput.pressKey('\\');
+  });
+  await renderer.flush();
+  await act(async () => {
+    await new Promise(resolve => { setTimeout(resolve, AMBIGUOUS_KEY_SETTLE_MILLISECONDS); });
+  });
+  await renderer.flush();
+
+  expect(store.getState().overlay).toBeNull();
 });

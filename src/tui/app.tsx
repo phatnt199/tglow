@@ -52,6 +52,7 @@ import {
   type IEngineState, type IResolveResult, type TAction,
 } from '../keys/common/index.ts';
 import type { KeyNormalizerService, KeymapService, VimEngineService } from '../keys/index.ts';
+import { resolveWhichKeyMenu } from '../keys/which-key-menu.ts';
 import { applyAction, resolveVisibleDialogs, resolveSearchMatchIndices } from './action-reducer.ts';
 import { ChatPicker, CommandLine, ContextMenu, ReactionPicker, resolveChatPickerHeight, resolveWhichKeyHeight, SEARCH_OVERLAY_HEIGHT, SearchOverlay, WhichKey } from './overlays/index.ts';
 import { buildChatMenu, buildMessageMenu, MenuActions, resolveMenuPosition, resolveMenuWidth } from './context-menu.ts';
@@ -550,6 +551,12 @@ export const App = (props: IAppProps) => {
   // the current timer id immediately to cancel it, and a state update is not
   // visible until React commits it.
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * Its own timer, not the ambiguity one: they can be waiting at the same
+   * moment on the same key, and sharing a slot would have whichever was
+   * scheduled second silently cancel the first.
+   */
+  const whichKeyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   /**
    * The last mile shared by an immediately resolved key press and a delayed
@@ -1038,6 +1045,10 @@ export const App = (props: IAppProps) => {
     // action, the data-loss shape this task exists to prevent (dd deletes,
     // then a stale d timer runs whatever d alone does). See the 'ambiguous'
     // branch below for where a fresh one gets armed.
+    if (whichKeyTimeoutRef.current !== null) {
+      clearTimeout(whichKeyTimeoutRef.current);
+      whichKeyTimeoutRef.current = null;
+    }
     if (timeoutRef.current !== null) {
       clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
@@ -1342,7 +1353,31 @@ export const App = (props: IAppProps) => {
     // is reached only for 'whichkey' -- 'chatpicker' and 'search' both have
     // their own dedicated blocks above, checked first, which always return
     // before this one is ever reached for either of them.
-    if (current.overlay !== null) {
+    // which-key is a hint, not a mode. Every other overlay is reading input --
+    // the chat picker and search both have a query being typed into them -- so
+    // they swallow keys and this one must not: it now opens by itself when a
+    // prefix has sat unfinished, and swallowing the very key that completes
+    // the sequence would make the help stop you doing the thing it is helping
+    // you do. So any key dismisses it and then goes on to mean what it means.
+    //
+    // Escape still only dismisses, because escape is how you say "I have
+    // changed my mind", and it also clears the pending prefix below.
+    // `\` is two different keys depending on what came before it. With
+    // nothing pending it is the toggle that opened this popup, and it must
+    // close it here rather than fall through -- dismissing *and* toggling
+    // would close it and immediately reopen it, so a second `\` would appear
+    // to do nothing. With a prefix pending it is the next key of a sequence
+    // (`<C-w>\` splits), and swallowing it would be the help refusing to let
+    // the sequence finish.
+    const whichKeyOpen = current.overlay === 'whichkey';
+    if (whichKeyOpen
+      && keyNormalizer.toCanonicalString({ key }) === OVERLAY_LEADER_TOKEN
+      && current.engine.pending.length === 0) {
+      store.setState({ patch: { overlay: null } });
+      return;
+    }
+    const dismissWhichKey = whichKeyOpen;
+    if (current.overlay !== null && current.overlay !== 'whichkey') {
       const overlayToken = keyNormalizer.toCanonicalString({ key });
       if (overlayToken === OVERLAY_ESCAPE_TOKEN) {
         store.setState({ patch: { overlay: null } });
@@ -1351,6 +1386,10 @@ export const App = (props: IAppProps) => {
       if (overlayToken !== OVERLAY_LEADER_TOKEN) {
         return;
       }
+    }
+    if (dismissWhichKey && keyNormalizer.toCanonicalString({ key }) === OVERLAY_ESCAPE_TOKEN) {
+      store.setState({ patch: { overlay: null, engine: { ...current.engine, pending: [] } } });
+      return;
     }
 
     // A pending reply is App-level state (IApplicationState), the same
@@ -1432,8 +1471,12 @@ export const App = (props: IAppProps) => {
         result = engine.resolve({ state: { ...current.engine, pending: [] }, key, keymap });
       }
     }
-    const flushPatch: Partial<IApplicationState> =
-      flushed === '' ? {} : { composerText: current.composerText + flushed };
+    const flushPatch: Partial<IApplicationState> = {
+      ...(flushed === '' ? {} : { composerText: current.composerText + flushed }),
+      // Dismissed as part of whatever this key does, in the same patch, so the
+      // popup cannot survive a frame past the press that answered it.
+      ...(dismissWhichKey ? { overlay: null } : {}),
+    };
 
     // In insert mode an unmapped printable key is text, not a missing binding.
     if (result.status === 'unmapped' && isInsert) {
@@ -1442,6 +1485,7 @@ export const App = (props: IAppProps) => {
         patch: {
           engine: result.state,
           ...(typed === '' ? {} : { composerText: current.composerText + typed }),
+          ...(dismissWhichKey ? { overlay: null } : {}),
         },
       });
       return;
@@ -1466,6 +1510,27 @@ export const App = (props: IAppProps) => {
           commitResolution({ current, result: flushedResult });
         }, timeoutMilliseconds);
       }
+
+      // The other half of vim's timeoutlen, and what makes which-key more than
+      // a list you can summon: a prefix left unfinished means the user has
+      // stopped, and stopping mid-sequence is exactly the moment to be shown
+      // what completes it. Same clock as the ambiguity above, because they are
+      // the same judgement -- "they are not still typing".
+      //
+      // The prefix is deliberately left alone: this shows help, it does not
+      // answer for them, and the next key still completes the binding because
+      // the overlay no longer swallows it.
+      if (result.status === 'pending') {
+        whichKeyTimeoutRef.current = setTimeout(() => {
+          whichKeyTimeoutRef.current = null;
+          // Re-read rather than closed over: a key may have landed and
+          // resolved the prefix while this waited, and opening then would
+          // show a menu for a sequence that is already finished.
+          if (store.getState().engine.pending.length > 0) {
+            store.setState({ patch: { overlay: 'whichkey' } });
+          }
+        }, timeoutMilliseconds);
+      }
       return;
     }
 
@@ -1477,6 +1542,10 @@ export const App = (props: IAppProps) => {
   // renderer.destroy() does -- and nothing else on that path clears this one.
   useEffect(() => {
     return () => {
+      if (whichKeyTimeoutRef.current !== null) {
+        clearTimeout(whichKeyTimeoutRef.current);
+        whichKeyTimeoutRef.current = null;
+      }
       if (timeoutRef.current !== null) {
         clearTimeout(timeoutRef.current);
       }
@@ -1533,7 +1602,14 @@ export const App = (props: IAppProps) => {
   // describe() is cheap (a filter + map over a couple dozen bindings at
   // most) and pure, so it costs nothing to compute unconditionally rather
   // than branching on whether the overlay is actually open.
-  const whichKeyBindings = keymapService.describe({ mode: state.engine.mode, context: state.engine.context });
+  // Narrowed to what continues whatever is pending. Without this the popup
+  // listed all forty-five bindings whatever had been typed, which is the one
+  // thing which-key exists not to do.
+  const whichKeyMenu = resolveWhichKeyMenu({
+    bindings: keymapService.describe({ mode: state.engine.mode, context: state.engine.context }),
+    pending: state.engine.pending,
+  });
+  const whichKeyBindings = whichKeyMenu.entries;
   const isWhichKeyOpen = state.overlay === 'whichkey';
   const isChatPickerOpen = state.overlay === 'chatpicker';
   const isSearchOpen = state.overlay === 'search';
@@ -2569,6 +2645,7 @@ export const App = (props: IAppProps) => {
       ) : isWhichKeyOpen ? (
         <WhichKey
           bindings={whichKeyBindings}
+          prefix={whichKeyMenu.prefix}
           mode={state.engine.mode}
           context={state.engine.context}
           tokens={tokens}
