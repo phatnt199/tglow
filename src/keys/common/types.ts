@@ -72,6 +72,7 @@ export type TAction =
   | { type: typeof ActionTypes.WARNING_DISMISS }
   | { type: typeof ActionTypes.SEARCH_CYCLE; direction: 'next' | 'previous' }
   | { type: typeof ActionTypes.FOLDER_CYCLE; delta: number }
+  | { type: typeof ActionTypes.UNREAD_CYCLE; delta: number }
   | { type: typeof ActionTypes.DISPLAY_TOGGLE; field: 'gutter' | 'time' }
   | { type: typeof ActionTypes.PIN_TOGGLE }
   | { type: typeof ActionTypes.FORWARD_START }

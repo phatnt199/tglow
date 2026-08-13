@@ -561,6 +561,44 @@ export const App = (props: IAppProps) => {
    * onto the newest message, say -- get exactly the same treatment as a live
    * one, rather than a second, divergence-prone copy of the switch below.
    */
+  /**
+   * Open whatever the chat cursor is on, and mark it read once it is loaded.
+   *
+   * One copy, because two keys reach it -- Enter in the chat list, and `]u`
+   * landing on the next unread -- and "go there" and "open what is there"
+   * drifting apart is exactly the class of bug that had the cursor and the
+   * opened chat coming from different lists in the first place.
+   */
+  const openChatAtCursor = useCallback((opts: { state: IApplicationState }): void => {
+    // From the *visible* list, which is the one the cursor is drawn into.
+    // Reading the unfiltered dialogs here opened a different chat from the
+    // highlighted one whenever a folder was filtering.
+    const target = resolveVisibleDialogs({ state: opts.state })[opts.state.chatCursor];
+    if (!target) {
+      return;
+    }
+    const { peerId } = target;
+    // onMarkRead is chained onto onOpenChat's own resolution, not fired
+    // alongside it: onOpenChat is what actually loads the chat's messages
+    // (MessageService.loadHistory), so only once it resolves does the store
+    // hold the newest message to mark -- reading store.getState() here, before
+    // that lands, would still see whatever chat was open previously.
+    void onOpenChat({ peerId })
+      .then(() => {
+        const { messages } = store.getState();
+        const newest = messages[messages.length - 1];
+        if (!newest) {
+          return;
+        }
+        void onMarkRead({ peerId, maxId: newest.id }).catch(error => {
+          logRejection({ method: 'onMarkRead', error });
+        });
+      })
+      .catch(error => {
+        logRejection({ method: 'onOpenChat', error });
+      });
+  }, [store, onOpenChat, onMarkRead]);
+
   const commitResolution = (opts: {
     current: IApplicationState;
     result: IResolveResult;
@@ -658,34 +696,24 @@ export const App = (props: IAppProps) => {
           break;
         }
 
-        case ActionTypes.CHAT_OPEN: {
-          // From the *visible* list, which is the one the cursor is drawn
-          // into. Reading the unfiltered dialogs here opened a different chat
-          // from the highlighted one whenever a folder was filtering.
-          const target = resolveVisibleDialogs({ state: accumulated })[accumulated.chatCursor];
-          if (target) {
-            const { peerId } = target;
-            // onMarkRead is chained onto onOpenChat's own resolution, not
-            // fired alongside it: onOpenChat is what actually loads the
-            // chat's messages (MessageService.loadHistory), so only once it
-            // resolves does the store hold the newest message to mark --
-            // reading store.getState() here, before that lands, would still
-            // see whatever chat was open previously.
-            void onOpenChat({ peerId })
-              .then(() => {
-                const { messages } = store.getState();
-                const newest = messages[messages.length - 1];
-                if (!newest) {
-                  return;
-                }
-                void onMarkRead({ peerId, maxId: newest.id }).catch(error => {
-                  logRejection({ method: 'onMarkRead', error });
-                });
-              })
-              .catch(error => {
-                logRejection({ method: 'onOpenChat', error });
-              });
+        // Opening is a network call, so the reducer moves the cursor and this
+        // opens what it landed on. Guarded, because when there is nothing
+        // unread the reducer deliberately leaves the cursor alone -- and
+        // falling straight through would then open whatever happened to be
+        // under it, which is a chat nobody asked for.
+        case ActionTypes.UNREAD_CYCLE: {
+          // The reducer sets chatCursor only when it actually found somewhere
+          // to go, so its absence is the "nothing unread" answer. Without this
+          // the case would open whatever happened to be under the unmoved
+          // cursor, which is a chat nobody asked for.
+          if (actionPatch.chatCursor === undefined) {
+            break;
           }
+          openChatAtCursor({ state: { ...accumulated, ...actionPatch } });
+          break;
+        }
+        case ActionTypes.CHAT_OPEN: {
+          openChatAtCursor({ state: accumulated });
           break;
         }
         case ActionTypes.CURSOR_MOVE:

@@ -79,6 +79,8 @@ export class ActionTypes {
   static readonly SEARCH_CYCLE = 'search.cycle';
   /** Moves the sidebar to the next or previous chat folder. */
   static readonly FOLDER_CYCLE = 'folder.cycle';
+  /** Moves to the next or previous chat with unread messages, and opens it. */
+  static readonly UNREAD_CYCLE = 'unread.cycle';
   /** Switches one of the conversation's rail fields on or off. */
   static readonly DISPLAY_TOGGLE = 'display.toggle';
   /** Pin or unpin the message under the cursor. Performed by App, like send and delete. */

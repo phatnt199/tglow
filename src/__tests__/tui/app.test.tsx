@@ -3910,3 +3910,45 @@ test('with no release known the status line says nothing about updates', async (
 
   expect(renderer.captureCharFrame()).not.toContain('available');
 });
+
+// ── ]u / [u ───────────────────────────────────────────────────────────────
+
+const unreadChats: IDialogRow[] = [
+  { peerId: 'u1', title: 'Alice', pinned: 0, unreadCount: 0, lastMessageAt: 3, topMessageId: 1, readOutboxMaxId: 0, readInboxMaxId: 0, preview: null },
+  { peerId: 'u2', title: 'Bob', pinned: 0, unreadCount: 4, lastMessageAt: 2, topMessageId: 1, readOutboxMaxId: 0, readInboxMaxId: 0, preview: null },
+];
+
+test(']u goes to the next unread chat and opens it', async () => {
+  const { renderer, store, opened } = await mount({ dialogs: unreadChats });
+  act(() => { store.setState({ patch: { activePeerId: 'u1', chatCursor: 0 } }); });
+  await renderer.flush();
+
+  await act(async () => {
+    renderer.mockInput.pressKey(']');
+    renderer.mockInput.pressKey('u');
+  });
+  await renderer.flush();
+
+  expect(store.getState().chatCursor).toBe(1);
+  expect(opened).toContain('u2');
+});
+
+// The one this could get wrong: with nothing unread the cursor does not move,
+// so falling through to "open what is under the cursor" would open a chat
+// nobody asked for.
+test(']u with nothing unread says so and opens nothing', async () => {
+  const quiet = unreadChats.map(dialog => ({ ...dialog, unreadCount: 0 }));
+  const { renderer, store, opened } = await mount({ dialogs: quiet });
+  const before = opened.length;
+  act(() => { store.setState({ patch: { activePeerId: 'u1', chatCursor: 0 } }); });
+  await renderer.flush();
+
+  await act(async () => {
+    renderer.mockInput.pressKey(']');
+    renderer.mockInput.pressKey('u');
+  });
+  await renderer.flush();
+
+  expect(store.getState().statusMessage).toContain('No unread');
+  expect(opened.length).toBe(before);
+});

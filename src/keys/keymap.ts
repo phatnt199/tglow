@@ -201,6 +201,19 @@ export class KeymapService {
       context: '*', mode: VimModes.NORMAL, keys: '[f', description: 'Previous folder',
       action: count => [{ type: ActionTypes.FOLDER_CYCLE, delta: -count }],
     },
+    // Beside the folder pair, because they answer the same question at
+    // different scales: `]f` is "what about the other folders", `]u` is "what
+    // is waiting for me in this one". Until these existed, reaching the next
+    // unread chat -- the loop a chat client is actually used for -- meant
+    // reading the sidebar and pressing `j` until you arrived.
+    {
+      context: '*', mode: VimModes.NORMAL, keys: ']u', description: 'Next unread chat',
+      action: count => [{ type: ActionTypes.UNREAD_CYCLE, delta: count }],
+    },
+    {
+      context: '*', mode: VimModes.NORMAL, keys: '[u', description: 'Previous unread chat',
+      action: count => [{ type: ActionTypes.UNREAD_CYCLE, delta: -count }],
+    },
     // <C-w>h/l echo vim's own window-navigation keys. Unlike nf (into the
     // chat list only, one-way) these move in both directions and work from
     // any context, so they double as the way out of the chat list too.

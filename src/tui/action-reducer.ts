@@ -22,6 +22,7 @@ import {
   withActive,
   type IPanePosition,
 } from '../core/conversation-panes.ts';
+import { NOTHING_UNREAD_MESSAGE, resolveNextUnread } from '../core/unread-navigation.ts';
 import { extractLinkUrls } from './entities.ts';
 
 /**
@@ -266,6 +267,23 @@ export const applyAction = (opts: { state: IApplicationState; action: TAction })
 
     case ActionTypes.FOCUS_SET: {
       return { engine: { ...state.engine, context: action.context } };
+    }
+
+    // The cursor moves here; App opens what it lands on, the same split
+    // CHAT_OPEN already uses -- the reducer is pure and opening a chat is a
+    // network call.
+    case ActionTypes.UNREAD_CYCLE: {
+      const visible = resolveVisibleDialogs({ state });
+      const target = resolveNextUnread({
+        dialogs: visible,
+        from: state.chatCursor,
+        delta: action.delta,
+        skipPeerId: state.activePeerId,
+      });
+      if (target === null) {
+        return { statusMessage: NOTHING_UNREAD_MESSAGE };
+      }
+      return { chatCursor: target, statusMessage: null };
     }
 
     case ActionTypes.PANE_SPLIT: {
