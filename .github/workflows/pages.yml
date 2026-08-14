@@ -1,0 +1,79 @@
+# Publish site/ to the gh-pages branch.
+#
+# This exists because the two had silently drifted: site/index.html in main
+# still said v0.4.0 while the page actually being served said v0.9.0. The live
+# site had been updated by hand and the source never committed back, so the
+# repository was not the source of truth for its own homepage.
+#
+# It also keeps site/CNAME on the branch. GitHub Pages reads the custom domain
+# from that file, so a deploy that dropped it would quietly unset the domain
+# and take tglow.phatnt.com down.
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Never two deploys at once, and never cancel one half-done: this pushes a
+# branch, so an interrupted run could leave gh-pages holding a partial tree.
+concurrency:
+  group: pages-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Publish
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          # A worktree rather than a checkout dance, so main stays untouched
+          # in this job whatever happens to the branch.
+          if git fetch origin gh-pages; then
+            git worktree add ../pages FETCH_HEAD --detach
+            git -C ../pages checkout -B gh-pages
+          else
+            git worktree add --detach ../pages
+            git -C ../pages checkout --orphan gh-pages
+          fi
+
+          # GitHub Pages reads the custom domain from a CNAME file on this
+          # branch, so a deploy that dropped one already there would quietly
+          # unset the domain and take the site down. Noticed before it could
+          # happen; the guard is "never drop it", not "always have one", so
+          # the site can be published before a domain is configured at all.
+          HAD_CNAME=0
+          [ -f ../pages/CNAME ] && { HAD_CNAME=1; cp ../pages/CNAME /tmp/cname.keep; }
+
+          # Emptied and refilled, so a file deleted from site/ is deleted from
+          # the branch too. `git rm` rather than `rm -rf *`, which would miss
+          # dotfiles and eat the worktree's own .git pointer.
+          git -C ../pages rm -rq --ignore-unmatch . || true
+          cp -R site/. ../pages/
+
+          if [ "$HAD_CNAME" = 1 ] && [ ! -f ../pages/CNAME ]; then
+            echo "::error::gh-pages had a CNAME and site/ has none -- refusing to unset the custom domain"
+            cat /tmp/cname.keep
+            exit 1
+          fi
+
+          cd ../pages
+          git add -A
+          if git diff --cached --quiet; then
+            echo "gh-pages already matches site/ -- nothing to publish"
+            exit 0
+          fi
+          git commit -m "site: ${GITHUB_SHA:0:7}"
+          git push origin gh-pages
