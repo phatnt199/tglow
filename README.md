@@ -12,6 +12,7 @@ One self-contained binary. No runtime, no `node_modules`, no Electron, no
 window.
 
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy_Me_A_Coffee-EBC17A?style=for-the-badge&logo=buymeacoffee&logoColor=080808)](https://buymeacoffee.com/tanphat199)
+[![Site](https://img.shields.io/badge/tglow.phatnt.com-7DB9B6?style=for-the-badge&logo=firefoxbrowser&logoColor=080808)](https://tglow.phatnt.com)
 [![GitHub](https://img.shields.io/badge/Source-phatnt199/tglow-87AFAF?style=for-the-badge&logo=github&logoColor=080808)](https://github.com/phatnt199/tglow)
 [![phatnt.com](https://img.shields.io/badge/phatnt.com-7DB9B6?style=for-the-badge&logo=firefoxbrowser&logoColor=080808)](https://phatnt.com)
 
