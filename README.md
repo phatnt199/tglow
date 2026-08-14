@@ -470,7 +470,7 @@ question about which conversation `Enter` sends to.
 | `<C-a>` / `<C-e>` | jump to the start or end of the message |
 | `Backspace` / `Delete` | delete behind or under the caret |
 | `<C-w>` | delete the word behind the caret |
-| `<A-Enter>` (insert) | a new line, rather than sending |
+| `<C-j>` or `<A-Enter>` | a new line, rather than sending |
 | `jk` or `Esc` | leave insert mode |
 | `Enter` (insert) | send |
 

@@ -3564,6 +3564,51 @@ test('a decomposed Vietnamese letter typed mid-draft builds one letter', async (
   expect(store.getState().composerCursor).toBe(3);
 });
 
+// Ctrl-J breaks a line, alongside <A-Enter>. It needs two bindings because a
+// terminal speaking the kitty keyboard protocol reports it as <C-j> while one
+// that is not sends the bare byte 0x0A, which OpenTUI names `linefeed` --
+// measured through a real pty, not assumed.
+test('Ctrl-J breaks the line, under either name a terminal gives it', async () => {
+  for (const press of [
+    (renderer: TestRendererSetup) => { renderer.mockInput.pressKey('j', { ctrl: true }); },
+    (renderer: TestRendererSetup) => { renderer.mockInput.pressKey('LINEFEED'); },
+  ]) {
+    const { renderer, store } = await mount();
+
+    await act(async () => { renderer.mockInput.pressKey('i'); });
+    await act(async () => { await renderer.mockInput.typeText('one'); });
+    await renderer.flush();
+    await act(async () => { press(renderer); });
+    await renderer.flush();
+    await act(async () => { await renderer.mockInput.typeText('two'); });
+    await renderer.flush();
+
+    expect(store.getState().composerText).toBe('one\ntwo');
+    // Still typing: a line break must not send, and must not leave insert.
+    expect(store.getState().engine.mode).toBe('insert');
+  }
+});
+
+// The one thing Ctrl-J must not do. Enter arrives as <return> (0x0D) in both
+// protocols and Ctrl-J as 0x0A, so they are different keys -- but a keymap
+// edit that confused them would silently turn every line break into a sent
+// message.
+test('Enter still sends, and a line break still does not', async () => {
+  const { renderer, store, sent } = await mount();
+
+  await act(async () => { renderer.mockInput.pressKey('i'); });
+  await act(async () => { await renderer.mockInput.typeText('hai dong'); });
+  await renderer.flush();
+  await act(async () => { renderer.mockInput.pressKey('j', { ctrl: true }); });
+  await renderer.flush();
+  expect(sent).toEqual([]);
+  expect(store.getState().composerText).toBe('hai dong\n');
+
+  await act(async () => { renderer.mockInput.pressEnter(); });
+  await renderer.flush();
+  expect(sent).toEqual(['hai dong\n']);
+});
+
 // ── resizing the folder / chat split ──────────────────────────────────────
 
 /** Distinctive enough that no other pane's text can be mistaken for a folder row. */

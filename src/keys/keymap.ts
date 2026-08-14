@@ -353,6 +353,30 @@ export class KeymapService {
       context: '*', mode: VimModes.INSERT, keys: '<A-return>', description: 'New line',
       action: () => [{ type: ActionTypes.COMPOSER_INSERT_TEXT, text: '\n' }],
     },
+    /**
+     * Ctrl-J, the other way to break a line -- and it takes two bindings.
+     *
+     * Measured through a real pty rather than assumed: a terminal speaking the
+     * kitty keyboard protocol reports it as `<C-j>`, and one that is not sends
+     * the bare byte 0x0A, which OpenTUI names `linefeed`. Binding only the
+     * first would have worked on this author's terminal and done nothing at
+     * all on xterm or Alacritty -- exactly how `<C-w>|` once passed its tests
+     * and bound nothing live.
+     *
+     * Neither collides with Enter: that arrives as `<return>` (0x0D) in both
+     * protocols, so sending is untouched.
+     */
+    {
+      context: '*', mode: VimModes.INSERT, keys: '<C-j>', description: 'New line',
+      action: () => [{ type: ActionTypes.COMPOSER_INSERT_TEXT, text: '\n' }],
+    },
+    {
+      context: '*', mode: VimModes.INSERT, keys: '<linefeed>', description: 'New line',
+      action: () => [{ type: ActionTypes.COMPOSER_INSERT_TEXT, text: '\n' }],
+      // The same key on a terminal without the kitty protocol, so the popup
+      // lists it once rather than twice.
+      alias: true,
+    },
     {
       context: '*', mode: VimModes.INSERT, keys: 'jk', description: 'Leave insert mode',
       action: () => [{ type: ActionTypes.MODE_SET, mode: VimModes.NORMAL }],
