@@ -198,7 +198,7 @@ footer{margin-top:4.5rem;padding-bottom:2rem;color:var(--dim);font-size:.82rem}
       <p class="links" style="margin-top:1.9rem">
         <a href="https://github.com/phatnt199/tglow">Source on GitHub</a>
         <span class="sep" aria-hidden="true">·</span>
-        <a href="https://github.com/phatnt199/tglow/releases/latest">Download v0.9.0</a>
+        <a href="https://github.com/phatnt199/tglow/releases/latest">Download v0.11.0</a>
         <span class="sep" aria-hidden="true">·</span>
         <span class="muted platforms">Linux · macOS · Windows</span>
       </p>
@@ -208,7 +208,7 @@ footer{margin-top:4.5rem;padding-bottom:2rem;color:var(--dim);font-size:.82rem}
                           <span class="them">a look</span>
 <span class="n">    2</span> <span class="t">09:15</span> <span class="who">me        </span> <span class="tick">✓</span>  <span class="me">reading it now</span>
 <span class="n">    1</span> <span class="t">09:16</span> <span class="who">Tấn Phát  </span>    <span class="them">run it with <span class="cd">`bun run build`</span> before you push</span>
-<span class="cur"><span class="n">    4</span> <span class="t">09:22</span> <span class="who">me        </span> <span class="tick">✓</span>  <span class="me"><span class="bd">shipped</span> — v0.9.0 is out</span></span>
+<span class="cur"><span class="n">    4</span> <span class="t">09:22</span> <span class="who">me        </span> <span class="tick">✓</span>  <span class="me"><span class="bd">shipped</span> — v0.11.0 is out</span></span>
       </div>
       <p class="caption">Real output. The gutter counts distance from the cursor, so <kbd>3j</kbd> is obvious before you type it.</p>
     </div>
@@ -243,6 +243,10 @@ footer{margin-top:4.5rem;padding-bottom:2rem;color:var(--dim);font-size:.82rem}
         <div class="k"><kbd>/</kbd><span>search this chat</span></div>
         <div class="k"><kbd>n / N</kbd><span>next, previous match</span></div>
         <div class="k"><kbd>i</kbd><span>write a message</span></div>
+        <div class="k"><kbd>← / →</kbd><span>move the caret while typing</span></div>
+        <div class="k"><kbd>&lt;C-a&gt; / &lt;C-e&gt;</kbd><span>start, end of the message</span></div>
+        <div class="k"><kbd>&lt;C-w&gt;</kbd><span>delete the word behind</span></div>
+        <div class="k"><kbd>&lt;C-j&gt;</kbd><span>a new line, rather than sending</span></div>
         <div class="k"><kbd>jk</kbd><span>back to normal mode</span></div>
         <div class="k"><kbd>r</kbd><span>reply</span></div>
         <div class="k"><kbd>e</kbd><span>edit your own message</span></div>
@@ -281,6 +285,10 @@ footer{margin-top:4.5rem;padding-bottom:2rem;color:var(--dim);font-size:.82rem}
             <span class="m">NORMAL</span><span class="q">Delete this message? (y/n)</span><span class="sp"></span><span class="r">4/11</span>
           </div>
           <p style="margin-top:.55rem;font-size:.78rem">The block turns red and every other key is ignored until you answer.</p>
+        </div>
+        <div class="item">
+          <h3>You can fix a typo where it is</h3>
+          <p>The caret moves through what you are writing, so a wrong letter in the middle of a message costs one <kbd>←</kbd>, not deleting the rest of the sentence. It steps by whole characters — <span style="color:var(--fg)">ế</span> is one press to cross and one backspace to remove, never half a letter.</p>
         </div>
         <div class="item">
           <h3>It speaks your language</h3>
@@ -383,8 +391,8 @@ printf 'api_id = 0\napi_hash = ""\n' &gt; ~/.config/tglow/config.toml</div>
         <li>Animated stickers draw their still frame. Playing them means a Lottie renderer, which is a larger thing than it sounds.</li>
         <li>Themes are chosen in the config file. There is a command line now, but no <code>:theme</code> on it — switching still needs a restart.</li>
         <li>Conversations split into columns and rows, but the layout is not remembered between runs.</li>
-        <li>The macOS and Windows binaries are cross-built and checked as far as their format and the renderer inside them. Only the Linux one is run before release.</li>
-        <li>No arm64 Linux or Windows build yet, though both are one line of the build script away.</li>
+        <li>The macOS Intel binary is cross-built and checked only as far as its format and the renderer inside it — GitHub has no Intel macOS runner left to build it on. Linux, Apple silicon and Windows are each built and started on their own operating system now, though nothing in CI draws to a real terminal.</li>
+        <li>No arm64 Linux or Windows build yet, though both are one line of the release workflow away.</li>
       </ul>
     </div>
   </section>
