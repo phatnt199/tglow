@@ -51,7 +51,7 @@ window.
 [The status line](#the-status-line) ·
 [Media, reactions and emoji](#media-reactions-and-emoji) ·
 [History](#history) · [Commands](#commands) · [Keys](#keys) ·
-[Security](#security) · [Development](#development)
+[Security](#security) · [Development](#development) · [Licence](#licence)
 
 ## Install
 
@@ -573,3 +573,11 @@ Conventions: `docs/superpowers/conventions/ignis-style.md`.
 Design: `docs/superpowers/specs/`. Plans: `docs/superpowers/plans/`.
 Logs go to `~/.local/share/tglow/tglow.log` — never stdout, which would corrupt
 the alternate screen.
+
+## Licence
+
+[MIT](LICENSE). Use it, change it, ship it; keep the copyright notice.
+
+tglow talks to Telegram through your own `api_id`, under your own account, and
+this licence covers tglow only — Telegram's own
+[Terms of Service](https://telegram.org/tos) still govern what you do with it.

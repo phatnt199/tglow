@@ -1,6 +1,7 @@
 {
   "name": "tglow",
   "version": "0.11.0",
+  "license": "MIT",
   "type": "module",
   "private": true,
   "bin": {
