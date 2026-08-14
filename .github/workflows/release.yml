@@ -1,0 +1,187 @@
+# Build every platform's binary and publish the release, from a tag.
+#
+# This replaces building on one machine and cross-compiling the other three.
+# Cross-compilation worked, but it could only ever be verified as far as the
+# file format: `scripts/build-all.sh` says so itself, and the v0.10.0 notes had
+# to admit that the macOS and Windows binaries had never been run. Here each
+# binary is built on its own operating system, by a Bun that resolved that
+# platform's own native renderer, and each one is then executed on it.
+#
+# What the smoke step proves, and what it does not: the binary starts, its
+# bundled JavaScript runs, and it reaches the configuration layer and reports a
+# missing config. It does not draw to a terminal -- that needs a pty and a
+# logged-in account, neither of which belongs in CI. So a binary that cannot
+# render would still pass this. It is a floor, not a guarantee, and the README
+# says so.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  # So a tag can be rebuilt without moving it.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and release'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  BUN_VERSION: 1.3.14
+
+jobs:
+  # A tag that cannot pass its own tests must not become a release.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: bunx tsc --noEmit
+      - run: bun test
+
+  build:
+    needs: test
+    strategy:
+      # One platform failing must not cancel the others: knowing that three of
+      # four built is worth more than one red cross.
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            artifact: tglow-linux-x64
+          - runner: macos-14           # Apple silicon
+            artifact: tglow-macos-arm64
+          - runner: macos-13           # Intel
+            artifact: tglow-macos-x64
+          - runner: windows-latest
+            artifact: tglow-windows-x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      # No --target: the runner *is* the target, so Bun compiles natively and
+      # picks up the @opentui/core-<platform> package `bun install` just
+      # resolved for this machine. That is the whole point of the matrix.
+      - name: Build
+        shell: bash
+        run: |
+          bun run scripts/build-migrations.ts
+          bun build --compile --asset-naming="[name].[ext]" src/main.ts --outfile dist/${{ matrix.artifact }}
+
+      # Bun appends .exe on Windows, so the file on disk is named for us.
+      - name: Smoke test (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          BIN="dist/${{ matrix.artifact }}"
+          chmod +x "$BIN"
+          EMPTY="$(mktemp -d)"
+          # A watchdog rather than `timeout`, which is GNU coreutils and is not
+          # on a macOS runner. Hanging is a distinct failure from refusing, and
+          # without a bound a hung binary would sit here until the job's own
+          # limit killed it an hour later.
+          HOME="$EMPTY" XDG_CONFIG_HOME="$EMPTY/.config" XDG_DATA_HOME="$EMPTY/.local/share" \
+            "$BIN" < /dev/null > smoke.log 2>&1 &
+          BINARY=$!
+          ( sleep 60; kill -9 "$BINARY" 2>/dev/null ) &
+          WATCHDOG=$!
+          set +e
+          wait "$BINARY"
+          STATUS=$?
+          set -e
+          kill "$WATCHDOG" 2>/dev/null || true
+          cat smoke.log
+          # 137 is SIGKILL: the watchdog fired, so it hung.
+          if [ "$STATUS" -eq 137 ]; then echo "::error::binary hung"; exit 1; fi
+          grep -q "No config file" smoke.log
+
+      - name: Smoke test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bin = "dist/${{ matrix.artifact }}.exe"
+          $empty = Join-Path $env:RUNNER_TEMP "empty-home"
+          New-Item -ItemType Directory -Force -Path $empty | Out-Null
+          $env:APPDATA = $empty
+          $env:LOCALAPPDATA = $empty
+          $out = & $bin 2>&1 | Out-String
+          Write-Host $out
+          if ($out -notmatch "No config file") { throw "binary did not reach its configuration layer" }
+          # The binary exits 1 by design when it finds no config, and GitHub's
+          # pwsh shell propagates $LASTEXITCODE as the step's own result -- so
+          # without this the step fails precisely when the test passes.
+          exit 0
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: staged
+          merge-multiple: true
+
+      # Same file and same format the previous releases shipped, so the
+      # instructions in the README keep working: one `sha256sum -c` covers all
+      # four. Generated here rather than per-runner, because a checksum file
+      # assembled from four machines' fragments is four files, not one.
+      - name: Checksums
+        working-directory: staged
+        run: |
+          ls -l
+          # `tglow-*`, not `tglow*`: the checksum file must not checksum itself.
+          # The upload below deliberately uses `tglow*` so that it ships too --
+          # the difference is one hyphen, and getting it wrong builds a
+          # checksum file that never reaches the release.
+          sha256sum tglow-* > tglow.sha256
+          sha256sum -c tglow.sha256
+          cat tglow.sha256
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          NOTES="docs/releases/${TAG}.md"
+          # Hand-written notes if this tag has them, and a draft if it does not
+          # -- every release so far has been written prose, and generated notes
+          # published automatically would be a quiet downgrade. A draft asks
+          # for them instead of shipping without them.
+          if [ -f "$NOTES" ]; then
+            # First line is the title, the rest is the body -- otherwise the
+            # title appears twice on the release page.
+            TITLE="$(head -n 1 "$NOTES")"
+            tail -n +2 "$NOTES" > body.md
+            gh release create "$TAG" --title "$TITLE" --notes-file body.md staged/tglow* \
+              || gh release upload "$TAG" staged/tglow* --clobber
+          else
+            echo "::warning::no $NOTES -- publishing a draft with generated notes"
+            gh release create "$TAG" --draft --generate-notes staged/tglow* \
+              || gh release upload "$TAG" staged/tglow* --clobber
+          fi

@@ -1,0 +1,44 @@
+# Typecheck and the whole suite, on every push and every pull request.
+#
+# Deliberately one job on one platform: the suite is pure TypeScript against
+# OpenTUI's test renderer and bun:sqlite, none of which behaves differently per
+# operating system, so a matrix here would buy three times the minutes and no
+# extra information. What genuinely differs per platform is the compiled
+# binary, and release.yml builds each of those on its own runner.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Only the newest run of a branch matters; the rest are superseded.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned rather than `latest`: this project compiles a binary with
+          # `bun build --compile`, so the toolchain is part of the artifact and
+          # a silent minor bump is a silent change to what ships.
+          bun-version: 1.3.14
+
+      - run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bunx tsc --noEmit
+
+      - name: Test
+        run: bun test

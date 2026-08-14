@@ -9,6 +9,11 @@
 # a cross-build fails to resolve the import until the rest are fetched by hand.
 # That is what the first half of this does.
 #
+# This is no longer how releases are built -- .github/workflows/release.yml
+# builds each platform on a runner of that platform, and starts it there. Keep
+# this for checking locally that a change still compiles everywhere, without
+# pushing a tag to find out.
+#
 # What this cannot do is *run* what it builds. A macOS or Windows binary made
 # here is verified as far as its file format and the native library inside it,
 # and no further; the first person to run one is finding out something this

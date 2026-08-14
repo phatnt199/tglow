@@ -64,9 +64,11 @@ runtime, no `node_modules`, no repository.
 | macOS Intel | `tglow-macos-x64` |
 | Windows x64 | `tglow-windows-x64.exe` |
 
-All four are built from one machine by `scripts/build-all.sh`, and all four are
-verified as far as their file format and the renderer inside them. Only the
-Linux one is *run* before release — if a macOS or Windows build misbehaves,
+Each one is built on its own operating system by GitHub Actions, by a Bun that
+resolved that platform's own native renderer, and each is then started there to
+check that it runs and reads its configuration. What that does *not* cover is
+drawing: a real terminal needs a pty and a logged-in account, neither of which
+belongs in CI. So if a build misbehaves once it is actually on screen,
 [say so](https://github.com/phatnt199/tglow/issues), because you found it
 before we did.
 
@@ -234,10 +236,24 @@ bun run scripts/login.ts
 bun run build
 ```
 
-Writes `dist/tglow` and `dist/tglow.sha256`. The build regenerates
-`src/core/cache/migrations.generated.ts` from `drizzle/` first: a compiled
-binary has no `drizzle/` folder to read migrations from, so they are compiled
-in, and a test fails if the committed copy ever drifts from `drizzle/`.
+Writes `dist/tglow` and `dist/tglow.sha256`, for the machine you are on. The
+build regenerates `src/core/cache/migrations.generated.ts` from `drizzle/`
+first: a compiled binary has no `drizzle/` folder to read migrations from, so
+they are compiled in, and a test fails if the committed copy ever drifts from
+`drizzle/`.
+
+Released binaries are not built this way. Pushing a `v*` tag runs
+[`.github/workflows/release.yml`](.github/workflows/release.yml), which runs
+the suite, builds each platform on a runner of that platform, starts each
+binary there, and publishes the four of them with one `tglow.sha256` covering
+all of them. It takes the release notes from `docs/releases/<tag>.md` — the
+first line is the title — and if that file is missing it publishes a *draft*
+with generated notes rather than shipping prose nobody wrote.
+
+`scripts/build-all.sh` still cross-compiles all four locally, which is useful
+for checking a change compiles everywhere without pushing a tag. It cannot
+verify them beyond their file format, which is why it no longer builds what is
+released.
 
 ## The status line
 
