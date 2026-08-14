@@ -56,10 +56,18 @@ jobs:
         include:
           - runner: ubuntu-latest
             artifact: tglow-linux-x64
-          - runner: macos-14           # Apple silicon
+          - runner: macos-15           # Apple silicon
             artifact: tglow-macos-arm64
-          - runner: macos-13           # Intel
+          # The one that cannot be native: GitHub no longer offers an Intel
+          # macOS runner. macos-13 was tried and sat queued indefinitely while
+          # every other job finished in about a minute. So this one is
+          # cross-compiled from Apple silicon -- still macOS, still the real
+          # darwin-x64 renderer, but nothing runs it, and the README says so.
+          - runner: macos-15
             artifact: tglow-macos-x64
+            target: bun-darwin-x64
+            renderer: core-darwin-x64
+            library: libopentui.dylib
           - runner: windows-latest
             artifact: tglow-windows-x64
     runs-on: ${{ matrix.runner }}
@@ -74,18 +82,35 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
-      # No --target: the runner *is* the target, so Bun compiles natively and
-      # picks up the @opentui/core-<platform> package `bun install` just
-      # resolved for this machine. That is the whole point of the matrix.
+      # OpenTUI reaches its renderer through a native library that ships in a
+      # per-platform package, and `bun install` fetches only the one matching
+      # the machine it ran on. A cross-build has to be handed the other by
+      # hand, and checked -- a tarball that extracted without the library
+      # compiles fine and then cannot draw.
+      - name: Fetch the cross-target renderer
+        if: matrix.renderer
+        shell: bash
+        run: |
+          VERSION="$(bun -e "console.log(require('./node_modules/@opentui/core/package.json').version)")"
+          DEST="node_modules/@opentui/${{ matrix.renderer }}"
+          mkdir -p "$DEST"
+          curl -sL "https://registry.npmjs.org/@opentui/${{ matrix.renderer }}/-/${{ matrix.renderer }}-$VERSION.tgz" \
+            | tar -xz -C "$DEST" --strip-components=1
+          test -f "$DEST/${{ matrix.library }}" || { echo "::error::${{ matrix.renderer }} has no ${{ matrix.library }}"; exit 1; }
+
+      # No --target unless the matrix names one: the runner *is* the target, so
+      # Bun compiles natively and picks up the @opentui/core-<platform> package
+      # `bun install` just resolved for this machine.
       - name: Build
         shell: bash
         run: |
           bun run scripts/build-migrations.ts
-          bun build --compile --asset-naming="[name].[ext]" src/main.ts --outfile dist/${{ matrix.artifact }}
+          bun build --compile ${{ matrix.target && format('--target={0}', matrix.target) || '' }} \
+            --asset-naming="[name].[ext]" src/main.ts --outfile dist/${{ matrix.artifact }}
 
       # Bun appends .exe on Windows, so the file on disk is named for us.
       - name: Smoke test (Unix)
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && !matrix.target
         shell: bash
         run: |
           BIN="dist/${{ matrix.artifact }}"

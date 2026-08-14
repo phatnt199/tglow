@@ -64,11 +64,19 @@ runtime, no `node_modules`, no repository.
 | macOS Intel | `tglow-macos-x64` |
 | Windows x64 | `tglow-windows-x64.exe` |
 
-Each one is built on its own operating system by GitHub Actions, by a Bun that
-resolved that platform's own native renderer, and each is then started there to
-check that it runs and reads its configuration. What that does *not* cover is
-drawing: a real terminal needs a pty and a logged-in account, neither of which
-belongs in CI. So if a build misbehaves once it is actually on screen,
+Linux, Apple silicon and Windows are each built by GitHub Actions on a runner
+of that operating system, by a Bun that resolved that platform's own native
+renderer, and each is then started there to check that it runs and reads its
+configuration.
+
+**macOS Intel is the exception**: GitHub no longer offers an Intel macOS
+runner, so that one is cross-compiled from Apple silicon and nothing runs it
+before release — it is checked as far as its file format and the renderer
+inside it, and no further.
+
+What none of this covers is drawing: a real terminal needs a pty and a
+logged-in account, neither of which belongs in CI. So if a build misbehaves
+once it is actually on screen,
 [say so](https://github.com/phatnt199/tglow/issues), because you found it
 before we did.
 
