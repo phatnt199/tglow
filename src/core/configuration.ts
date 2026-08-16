@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 
 import { getError } from '@venizia/ignis-inversion';
 
-import { resolvePlatformDirectories, type IPlatformDirectories } from './platform-paths.ts';
+import { resolvePlatformDirectories, APPLICATION_DIRECTORY, type IPlatformDirectories } from './platform-paths.ts';
 
 import type { IApplicationConfiguration } from './common/index.ts';
 
@@ -74,8 +74,30 @@ export class ConfigurationService {
     environment: process.env,
   });
 
-  getDefaultPath = (): string => {
-    return join(this.directories().configDirectory, 'config.toml');
+  getDefaultPath = (opts: {
+    platform?: string;
+    homeDirectory?: string;
+    environment?: Record<string, string | undefined>;
+    fileExists?: (path: string) => boolean;
+  } = {}): string => {
+    const platform = opts.platform ?? process.platform;
+    const homeDirectory = opts.homeDirectory ?? homedir();
+    const environment = opts.environment ?? process.env;
+    const fileExists = opts.fileExists ?? existsSync;
+
+    if (platform === 'win32') {
+      const dotConfigPath = join(homeDirectory, '.config', APPLICATION_DIRECTORY, 'config.toml');
+      if (fileExists(dotConfigPath)) {
+        return dotConfigPath;
+      }
+    }
+
+    const { configDirectory } = resolvePlatformDirectories({
+      platform,
+      homeDirectory,
+      environment,
+    });
+    return join(configDirectory, 'config.toml');
   };
 
   private parse = parseTomlPairs;

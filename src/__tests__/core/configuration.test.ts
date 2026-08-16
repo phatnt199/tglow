@@ -131,3 +131,30 @@ test('update_check defaults on, and only an explicit false turns it off', () => 
   expect(load('update_check = "maybe"')).toBe(true);
   expect(load('updatecheck = false')).toBe(true);
 });
+
+test('Windows prioritizes %USERPROFILE%/.config/tglow/config.toml when it exists', () => {
+  const homeDirectory = 'C:\\Users\\Ada';
+  const environment = {
+    APPDATA: 'C:\\Users\\Ada\\AppData\\Roaming',
+    LOCALAPPDATA: 'C:\\Users\\Ada\\AppData\\Local',
+  };
+  const dotConfig = join(homeDirectory, '.config', 'tglow', 'config.toml');
+
+  // When ~/.config/tglow/config.toml exists, it takes precedence
+  const resolved = service.getDefaultPath({
+    platform: 'win32',
+    homeDirectory,
+    environment,
+    fileExists: path => path === dotConfig,
+  });
+  expect(resolved).toBe(dotConfig);
+
+  // When ~/.config/tglow/config.toml does not exist, fall back to %APPDATA%/tglow/config.toml
+  const fallback = service.getDefaultPath({
+    platform: 'win32',
+    homeDirectory,
+    environment,
+    fileExists: () => false,
+  });
+  expect(fallback).toBe(join('C:\\Users\\Ada\\AppData\\Roaming', 'tglow', 'config.toml'));
+});

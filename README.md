@@ -55,6 +55,57 @@ window.
 
 ## Install
 
+### Get your Telegram API credentials
+
+Before installing **tglow**, you need to create a Telegram application and obtain your **`api_id`** and **`api_hash`**.
+
+1. Go to <https://my.telegram.org>.
+2. Sign in with the **same Telegram account** you will use with tglow.
+3. Open **API development tools**.
+4. Create a new application:
+   - **App title:** any name, for example `tglow`
+   - **Short name:** a unique lowercase name
+   - **Platform:** `Desktop`
+   - **URL:** optional
+   - **Description:** optional
+5. Click **Create application**.
+6. Copy your **`api_id`** and **`api_hash`**.
+
+> **Important:** Keep your `api_hash` private. Do not commit it to Git or share it publicly.
+
+These credentials identify **your own application** to Telegram. tglow does not provide or share API credentials.
+
+You only need to create them once. Keep them ready before starting the installation.
+
+### Linux and macOS
+
+```sh
+curl -sSf https://tglow.phatnt.com/install.sh | sh
+```
+
+### Windows
+
+```pwsh
+irm https://tglow.phatnt.com/install.ps1 | iex
+```
+
+
+Once the installer finishes, run:
+
+```sh
+tglow
+```
+
+The first run asks for your phone number, then the code Telegram sends you,
+then your two-factor password if you have one. The code and the password are
+not echoed. tglow then goes straight into the interface — there is no second
+launch — and later runs skip all of this.
+
+### Manual install (all platforms)
+
+<details>
+<summary>Step-by-step without the installer script</summary>
+
 tglow ships as one self-contained binary. There is nothing else to install — no
 runtime, no `node_modules`, no repository.
 
@@ -64,6 +115,31 @@ runtime, no `node_modules`, no repository.
 | macOS Apple silicon | `tglow-macos-arm64` |
 | macOS Intel | `tglow-macos-x64` |
 | Windows x64 | `tglow-windows-x64.exe` |
+
+1. Download the file for your platform and `tglow.sha256` from the
+   [latest release](https://github.com/phatnt199/tglow/releases/latest),
+   check it, and make it executable.
+
+   ```sh
+   sha256sum -c tglow.sha256
+   chmod +x tglow-linux-x64
+   mv tglow-linux-x64 ~/.local/bin/tglow
+   ```
+
+   On macOS, Gatekeeper will refuse an unsigned binary downloaded from the
+   internet the first time: `xattr -d com.apple.quarantine tglow-macos-arm64`.
+
+2. Write `~/.config/tglow/config.toml`:
+
+   ```toml
+   api_id   = 1234567
+   api_hash = "your-hash-here"
+   palette  = "sage"
+   ```
+
+3. Run `tglow`.
+
+</details>
 
 Linux, Apple silicon and Windows are each built by GitHub Actions on a runner
 of that operating system, by a Bun that resolved that platform's own native
@@ -80,43 +156,6 @@ logged-in account, neither of which belongs in CI. So if a build misbehaves
 once it is actually on screen,
 [say so](https://github.com/phatnt199/tglow/issues), because you found it
 before we did.
-
-1. Download the file for your platform and `tglow.sha256`, check it, and make
-   it executable.
-
-   ```sh
-   sha256sum -c tglow.sha256
-   chmod +x tglow-linux-x64
-   mv tglow-linux-x64 ~/.local/bin/tglow      # or anywhere on your PATH
-   ```
-
-   On macOS, Gatekeeper will refuse an unsigned binary downloaded from the
-   internet the first time: `xattr -d com.apple.quarantine tglow-macos-arm64`.
-
-2. **Get your own `api_id` and `api_hash`** from <https://my.telegram.org> (log
-   in, then "API development tools"). tglow ships no keys and never will: these
-   identify *your* application to Telegram, they are issued against your own
-   account, and nobody can obtain them for you. It takes about a minute.
-
-3. Write them to `~/.config/tglow/config.toml` — or, on Windows,
-   `%APPDATA%\tglow\config.toml`:
-
-   ```toml
-   api_id = 1234567
-   api_hash = "your-hash-here"
-   palette = "sage"
-   ```
-
-4. Run it:
-
-   ```sh
-   tglow
-   ```
-
-   The first run asks for your phone number, then the code Telegram sends you,
-   then your two-factor password if you have one. The code and the password are
-   not echoed. tglow then goes straight into the interface — there is no second
-   launch — and later runs skip all of this.
 
 Everything tglow stores lives under `~/.local/share/tglow/` — on Windows,
 `%LOCALAPPDATA%\tglow\`: the session, the message cache, the thumbnails and the
