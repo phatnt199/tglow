@@ -6,18 +6,19 @@
 #   1. Detects OS / architecture
 #   2. Downloads the latest release binary + tglow.sha256
 #   3. Verifies the checksum
-#   4. Installs the binary to ~/.local/bin (Linux/macOS) or tells you where to put it
+#   4. Installs the binary:
+#      - Windows: %LOCALAPPDATA%\tglow\tglow.exe (and adds to User PATH)
+#      - Linux/macOS: ~/.local/bin/tglow
 #   5. Asks for api_id and api_hash and writes ~/.config/tglow/config.toml
 #
 # Environment overrides:
-#   TGLOW_INSTALL_DIR   install directory (default: ~/.local/bin)
+#   TGLOW_INSTALL_DIR   install directory
 #   TGLOW_NO_CONFIG     set to 1 to skip the config.toml step
 
 set -eu
 
 REPO="phatnt199/tglow"
 RELEASES_URL="https://github.com/${REPO}/releases"
-API_URL="https://api.github.com/repos/${REPO}/releases/latest"
 
 # ── Colour helpers ────────────────────────────────────────────────────────────
 
@@ -37,6 +38,7 @@ die()   { printf '\n  %s %s\n\n' "$(red '✗')" "$1" >&2; exit 1; }
 detect_platform() {
   OS="$(uname -s)"
   ARCH="$(uname -m)"
+  BIN_NAME="tglow"
 
   case "$OS" in
     Linux)
@@ -53,7 +55,11 @@ detect_platform() {
       esac
       ;;
     MINGW*|MSYS*|CYGWIN*)
-      die "Windows detected. Please install tglow manually from ${RELEASES_URL}"
+      case "$ARCH" in
+        x86_64|amd64) ARTIFACT="tglow-windows-x64.exe" ;;
+        *) die "Unsupported Windows architecture: $ARCH (only x86_64 supported)" ;;
+      esac
+      BIN_NAME="tglow.exe"
       ;;
     *)
       die "Unsupported OS: $OS"
@@ -67,22 +73,6 @@ require() {
   command -v "$1" >/dev/null 2>&1 || die "Required tool not found: $1 — please install it and retry"
 }
 
-# ── Fetch latest release tag from GitHub API ──────────────────────────────────
-
-fetch_latest_version() {
-  if command -v curl >/dev/null 2>&1; then
-    VERSION="$(curl -sSf "$API_URL" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')"
-  elif command -v wget >/dev/null 2>&1; then
-    VERSION="$(wget -qO- "$API_URL" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')"
-  else
-    die "Neither curl nor wget found — cannot fetch release info"
-  fi
-
-  if [ -z "$VERSION" ]; then
-    die "Could not determine the latest tglow version from GitHub API"
-  fi
-}
-
 # ── Download helper (curl or wget) ────────────────────────────────────────────
 
 download() {
@@ -90,8 +80,10 @@ download() {
   DEST="$2"
   if command -v curl >/dev/null 2>&1; then
     curl -sSfL --progress-bar "$URL" -o "$DEST"
-  else
+  elif command -v wget >/dev/null 2>&1; then
     wget -q --show-progress "$URL" -O "$DEST"
+  else
+    die "Neither curl nor wget found — cannot download release files"
   fi
 }
 
@@ -104,7 +96,7 @@ verify_checksum() {
   BASENAME="$(basename "$BINARY")"
 
   # Extract the expected hash for this specific artifact from the .sha256 file.
-  EXPECTED="$(grep "$BASENAME" "$SHAFILE" | awk '{print $1}')"
+  EXPECTED="$(grep -E "(^|[[:space:]])${BASENAME}\$" "$SHAFILE" | awk '{print $1}')"
   if [ -z "$EXPECTED" ]; then
     die "No checksum found for $BASENAME in tglow.sha256"
   fi
@@ -113,9 +105,11 @@ verify_checksum() {
     ACTUAL="$(sha256sum "$BINARY" | awk '{print $1}')"
   elif command -v shasum >/dev/null 2>&1; then
     ACTUAL="$(shasum -a 256 "$BINARY" | awk '{print $1}')"
+  elif command -v certutil.exe >/dev/null 2>&1 || command -v certutil >/dev/null 2>&1; then
+    CERTUTIL_CMD="$(command -v certutil.exe 2>/dev/null || command -v certutil 2>/dev/null)"
+    ACTUAL="$("$CERTUTIL_CMD" -hashfile "$BINARY" SHA256 2>/dev/null | grep -v ":" | tr -d ' \r\n' | tr '[:upper:]' '[:lower:]')"
   else
-    warn "No sha256 tool found — skipping checksum verification"
-    return
+    die "No sha256 tool found (sha256sum, shasum, or certutil required) — cannot verify checksum"
   fi
 
   if [ "$ACTUAL" != "$EXPECTED" ]; then
@@ -130,20 +124,66 @@ resolve_install_dir() {
   INSTALL_DIR="${TGLOW_INSTALL_DIR:-}"
 
   if [ -z "$INSTALL_DIR" ]; then
-    INSTALL_DIR="$HOME/.local/bin"
+    case "$OS" in
+      MINGW*|MSYS*|CYGWIN*)
+        if [ -n "${LOCALAPPDATA:-}" ]; then
+          if command -v cygpath >/dev/null 2>&1; then
+            INSTALL_DIR="$(cygpath -u "$LOCALAPPDATA")/tglow"
+          else
+            INSTALL_DIR="$HOME/AppData/Local/tglow"
+          fi
+        else
+          INSTALL_DIR="$HOME/AppData/Local/tglow"
+        fi
+        ;;
+      *)
+        INSTALL_DIR="$HOME/.local/bin"
+        ;;
+    esac
   fi
 
   mkdir -p "$INSTALL_DIR"
 
-  # Warn if the directory is not on PATH.
-  case ":$PATH:" in
-    *":$INSTALL_DIR:"*) ;;
+  # Warn on Linux/macOS if the directory is not on PATH.
+  case "$OS" in
+    MINGW*|MSYS*|CYGWIN*) ;;
     *)
-      warn "$INSTALL_DIR is not on your PATH."
-      warn "Add this to your shell profile:"
-      warn "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+      case ":$PATH:" in
+        *":$INSTALL_DIR:"*) ;;
+        *)
+          warn "$INSTALL_DIR is not on your PATH."
+          warn "Add this to your environment PATH or shell profile:"
+          warn "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+          ;;
+      esac
       ;;
   esac
+}
+
+# ── Windows PATH helper ───────────────────────────────────────────────────────
+
+setup_windows_path() {
+  DIR="$1"
+  if command -v cygpath >/dev/null 2>&1; then
+    WIN_DIR="$(cygpath -w "$DIR")"
+  else
+    WIN_DIR="$DIR"
+  fi
+
+  if command -v powershell.exe >/dev/null 2>&1 || command -v powershell >/dev/null 2>&1; then
+    PS_CMD="$(command -v powershell.exe 2>/dev/null || command -v powershell 2>/dev/null)"
+    "$PS_CMD" -NoProfile -Command "
+      \$target = '$WIN_DIR'.TrimEnd('\\');
+      \$userPath = [Environment]::GetEnvironmentVariable('Path', 'User');
+      \$paths = @();
+      if (\$userPath) { \$paths = \$userPath.Split(';') | Where-Object { \$_ -ne '' } };
+      if (\$paths -notcontains \$target) {
+        \$newPath = (\$paths + \$target) -join ';';
+        [Environment]::SetEnvironmentVariable('Path', \$newPath, 'User');
+      }
+    " >/dev/null 2>&1 || true
+    ok "Configured User PATH: $WIN_DIR"
+  fi
 }
 
 # ── Config setup ──────────────────────────────────────────────────────────────
@@ -154,6 +194,12 @@ setup_config() {
 
   if [ -f "$CONFIG_FILE" ]; then
     ok "Config already exists at $CONFIG_FILE — skipping"
+    return
+  fi
+
+  if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+    info "No interactive terminal available (/dev/tty) — skipping config creation."
+    info "You can configure tglow later by creating $CONFIG_FILE"
     return
   fi
 
@@ -168,7 +214,10 @@ setup_config() {
   # Read api_id — must be a number
   while true; do
     printf '  api_id (number): '
-    read -r API_ID
+    if ! read -r API_ID </dev/tty; then
+      warn "Failed to read api_id — skipping config creation"
+      return
+    fi
     case "$API_ID" in
       ''|*[!0-9]*)
         warn "api_id must be a number — try again"
@@ -182,7 +231,10 @@ setup_config() {
   # Read api_hash — must be non-empty
   while true; do
     printf '  api_hash (string): '
-    read -r API_HASH
+    if ! read -r API_HASH </dev/tty; then
+      warn "Failed to read api_hash — skipping config creation"
+      return
+    fi
     if [ -z "$API_HASH" ]; then
       warn "api_hash cannot be empty — try again"
     else
@@ -198,7 +250,6 @@ api_id   = ${API_ID}
 api_hash = "${API_HASH}"
 palette  = "sage"
 
-# keymap = "vim"     # or "emacs"
 # mouse  = true      # set to false to disable mouse capture
 # update_check = true
 EOF
@@ -226,15 +277,13 @@ main() {
   printf '\n\n'
 
   detect_platform
-  fetch_latest_version
   resolve_install_dir
 
-  info "Version  : $VERSION"
   info "Platform : $ARTIFACT"
-  info "Install  : $INSTALL_DIR/tglow"
+  info "Install  : $INSTALL_DIR/$BIN_NAME"
   printf '\n'
 
-  DOWNLOAD_BASE="${RELEASES_URL}/download/${VERSION}"
+  DOWNLOAD_BASE="${RELEASES_URL}/latest/download"
   TMPDIR_WORK="$(mktemp -d)"
   trap 'rm -rf "$TMPDIR_WORK"' EXIT
 
@@ -255,9 +304,19 @@ main() {
   chmod +x "${TMPDIR_WORK}/${ARTIFACT}"
   remove_quarantine "${TMPDIR_WORK}/${ARTIFACT}"
 
-  cp "${TMPDIR_WORK}/${ARTIFACT}" "${INSTALL_DIR}/tglow"
+  # Atomic copy-then-mv to avoid ETXTBSY on running binaries
+  TMP_DEST="${INSTALL_DIR}/.${BIN_NAME}.tmp.$$"
+  cp "${TMPDIR_WORK}/${ARTIFACT}" "$TMP_DEST"
+  mv -f "$TMP_DEST" "${INSTALL_DIR}/${BIN_NAME}"
 
-  ok "Installed tglow ${VERSION} → ${INSTALL_DIR}/tglow"
+  ok "Installed tglow → ${INSTALL_DIR}/${BIN_NAME}"
+
+  # Configure Windows PATH automatically
+  case "$OS" in
+    MINGW*|MSYS*|CYGWIN*)
+      setup_windows_path "$INSTALL_DIR"
+      ;;
+  esac
 
   # Config step — skippable via env var
   if [ "${TGLOW_NO_CONFIG:-0}" != "1" ]; then

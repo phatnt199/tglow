@@ -55,21 +55,40 @@ window.
 
 ## Install
 
-### Linux and macOS — one command
+### Get your Telegram API credentials
+
+Before installing **tglow**, you need to create a Telegram application and obtain your **`api_id`** and **`api_hash`**.
+
+1. Go to <https://my.telegram.org>.
+2. Sign in with the **same Telegram account** you will use with tglow.
+3. Open **API development tools**.
+4. Create a new application:
+   - **App title:** any name, for example `tglow`
+   - **Short name:** a unique lowercase name
+   - **Platform:** `Desktop`
+   - **URL:** optional
+   - **Description:** optional
+5. Click **Create application**.
+6. Copy your **`api_id`** and **`api_hash`**.
+
+> **Important:** Keep your `api_hash` private. Do not commit it to Git or share it publicly.
+
+These credentials identify **your own application** to Telegram. tglow does not provide or share API credentials.
+
+You only need to create them once. Keep them ready before starting the installation.
+
+### Linux and macOS
 
 ```sh
 curl -sSf https://tglow.phatnt.com/install.sh | sh
 ```
 
-The script detects your platform, downloads the latest release from GitHub,
-verifies its SHA-256 checksum, installs the binary to `~/.local/bin/tglow`,
-and prompts for your `api_id` and `api_hash` to write
-`~/.config/tglow/config.toml`.
+### Windows
 
-You need your own `api_id` and `api_hash` from <https://my.telegram.org> (log
-in, then "API development tools"). tglow ships no keys and never will: these
-identify *your* application to Telegram, they are issued against your own
-account, and nobody can obtain them for you. It takes about a minute.
+```pwsh
+irm https://tglow.phatnt.com/install.ps1 | iex
+```
+
 
 Once the installer finishes, run:
 
@@ -81,31 +100,6 @@ The first run asks for your phone number, then the code Telegram sends you,
 then your two-factor password if you have one. The code and the password are
 not echoed. tglow then goes straight into the interface — there is no second
 launch — and later runs skip all of this.
-
-**Skip the config step** if `~/.config/tglow/config.toml` already exists:
-
-```sh
-curl -sSf https://tglow.phatnt.com/install.sh | TGLOW_NO_CONFIG=1 sh
-```
-
-**Custom install directory** (default is `~/.local/bin`):
-
-```sh
-curl -sSf https://tglow.phatnt.com/install.sh | TGLOW_INSTALL_DIR=/usr/local/bin sh
-```
-
-### Windows
-
-Download `tglow-windows-x64.exe` and `tglow.sha256` from the
-[latest release](https://github.com/phatnt199/tglow/releases/latest), verify
-the checksum, rename the binary to `tglow.exe`, put it somewhere on your
-`PATH`, then write `%APPDATA%\tglow\config.toml`:
-
-```toml
-api_id   = 1234567
-api_hash = "your-hash-here"
-palette  = "sage"
-```
 
 ### Manual install (all platforms)
 
@@ -129,7 +123,7 @@ runtime, no `node_modules`, no repository.
    ```sh
    sha256sum -c tglow.sha256
    chmod +x tglow-linux-x64
-   mv tglow-linux-x64 ~/.local/bin/tglow      # or anywhere on your PATH
+   mv tglow-linux-x64 ~/.local/bin/tglow
    ```
 
    On macOS, Gatekeeper will refuse an unsigned binary downloaded from the

@@ -41,7 +41,7 @@ export interface IPlatformDirectories {
   dataDirectory: string;
 }
 
-const APPLICATION_DIRECTORY = 'tglow';
+export const APPLICATION_DIRECTORY = 'tglow';
 
 /** Whether a value is a usable path, rather than absent or an empty string. */
 const usable = (value: string | undefined): value is string =>
